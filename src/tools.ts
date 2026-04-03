@@ -7,7 +7,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_session",
     description:
-      "Open, trace, or close a memory session. Sessions group related interactions and enable context continuity. Open a session at the start of a conversation, trace key moments during it, and close it at the end to trigger distillation.",
+      "Manage conversation sessions. ALWAYS open a session at the start of a substantial conversation (label it with the topic). Use 'trace' to bookmark key moments (decisions made, important facts shared). Close the session at the end with a summary of what was discussed. Sessions enable the graph to track conversation continuity and trigger knowledge distillation on close.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -43,7 +43,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_journal",
     description:
-      "Low-friction capture of observations, notes, preferences, and reflections. Creates a Journal node in the Memory layer. Use this for quick thoughts, user preferences, mood tracking, and daily notes that don't fit a formal structure.",
+      "Quick, informal capture for the user's inner world: preferences ('I prefer dark mode'), reflections ('I've been thinking about...'), moods, daily notes, and anything subjective. Use this instead of mindgraph_capture when the content is personal/informal rather than a structured fact about the external world. Good for: likes/dislikes, feelings, habits, reminders-to-self, freeform notes.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -79,7 +79,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_capture",
     description:
-      "Capture entities, observations, concepts, sources, and snippets into the Reality layer with automatic deduplication. Use 'entity' for people, organizations, places, events, nations, or abstract concepts. Use 'observation' for factual observations. Use 'source' for documents or references. Use 'snippet' for direct quotes linked to a source.",
+      "Capture structured facts about the external world into the Reality layer. Use proactively whenever the user mentions a named entity. Actions: 'entity' for people/orgs/places/events/nations/concepts (auto-deduplicates — safe to call even if already exists), 'observation' for factual statements about the world, 'source' for documents/URLs/references, 'snippet' for direct quotes from a source. Prefer this over mindgraph_journal when the content is an objective fact rather than a personal note.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -139,7 +139,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_argue",
     description:
-      "Construct a structured argument with claims, evidence, warrants, and rebuttals. Creates interconnected Epistemic layer nodes. Use this when you need to record or evaluate a reasoned position with supporting evidence and logical connections.",
+      "Record a claim WITH supporting evidence. Use when the user states something as true/false and provides reasoning or sources. Creates interconnected Claim + Evidence + Warrant nodes. Set confidence based on evidence strength: 0.9+ for well-sourced facts, 0.5-0.8 for plausible claims, below 0.5 for speculation. Prefer mindgraph_inquire instead when there's a question or hypothesis WITHOUT evidence yet.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -196,7 +196,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_inquire",
     description:
-      "Record questions, hypotheses, theories, anomalies, assumptions, and paradigms in the Epistemic layer. Use this to track open questions worth investigating, form testable hypotheses, flag anomalies that challenge existing understanding, or articulate theoretical frameworks.",
+      "Record things that need investigation or are uncertain. Use 'open_question' when the user asks something worth tracking ('How does X work?'), 'hypothesis' for testable predictions, 'theory' for explanatory frameworks, 'anomaly' for things that don't fit existing understanding, 'assumption' for unstated beliefs worth surfacing. These stay in the graph as open items until resolved. Prefer mindgraph_argue instead when there IS evidence to attach.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -248,7 +248,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_commit",
     description:
-      "Create goals, projects, and milestones in the Intent layer. Use 'goal' for desired outcomes, 'project' for organized efforts toward goals, and 'milestone' for measurable checkpoints within projects.",
+      "Track the user's goals, projects, and milestones. Use 'goal' when the user expresses a desired outcome ('I want to learn Rust'), 'project' for organized efforts ('my blog redesign'), 'milestone' for checkpoints ('launch MVP by March'). Link milestones to projects and projects to goals via parent_uid. These appear in daily briefings and active goals queries.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -295,7 +295,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_decide",
     description:
-      "Manage decisions through their full lifecycle: open a decision, add options and constraints, then resolve by choosing an option. Use 'get_open' to list all unresolved decisions.",
+      "Track decisions through their lifecycle. Use 'open_decision' when the user faces a choice ('Should I use Postgres or SQLite?'), 'add_option' to record each alternative, 'add_constraint' for requirements or dealbreakers, 'resolve' when a choice is made. Use 'get_open' to review pending decisions. This creates a structured decision record that can be referenced later.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -335,7 +335,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_action",
     description:
-      "Record procedural knowledge (workflows, steps, affordances, controls) and risk assessments in the Action layer. Use this for SOPs, runbooks, capability mappings, and risk analysis.",
+      "Record procedural knowledge and risk assessments. Use 'create_flow' for workflows/processes, 'add_step' for individual steps in a flow, 'add_affordance' for capabilities ('this API supports batch operations'), 'add_control' for guardrails/constraints. Use 'assess_risk' when the user identifies a risk or potential problem. Less commonly used than capture/argue/commit — reach for this when the conversation is about HOW to do something.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -378,7 +378,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_plan",
     description:
-      "Create and manage plans, tasks, execution tracking, and governance policies in the Agent layer. Supports full task lifecycle from creation through completion, plan hierarchies, and approval workflows.",
+      "Agent-level task management and governance. Use 'create_plan'/'create_task'/'add_step' for breaking down work into trackable items, 'update_status' to mark progress, 'start_execution'/'complete_execution'/'fail_execution' for execution tracking. Use 'create_policy' and 'request_approval' for governance workflows. Prefer mindgraph_commit for the user's goals/projects; use mindgraph_plan for agent-managed task breakdowns and execution.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -435,7 +435,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_retrieve",
     description:
-      "Search and query the knowledge graph. Supports hybrid (text + semantic) search, active goals, open questions, weak claims, pending approvals, contradictions, layer-filtered retrieval, and rich context retrieval that follows graph edges from matching chunks.",
+      "Search and query the knowledge graph. ALWAYS retrieve before answering questions about previously stored knowledge. Actions: 'context' for rich retrieval (follows graph edges — best for RAG), 'hybrid' for fast keyword+semantic search, 'text' for exact keyword match, 'semantic' for meaning-based search. Convenience queries: 'active_goals', 'open_questions', 'weak_claims', 'pending_approvals', 'unresolved_contradictions'. Use 'layer' to browse a specific cognitive layer, 'recent' for latest additions.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -491,7 +491,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_ingest",
     description:
-      "Ingest long-form content into the knowledge graph. Supports single chunks (synchronous), full documents (async with job tracking), and session transcripts. The ingestion pipeline automatically extracts entities, claims, relationships, and structures across cognitive layers.",
+      "Ingest long-form content (articles, transcripts, documents, meeting notes) into the knowledge graph. The pipeline automatically chunks the text, extracts entities/claims/relationships via LLM, and deduplicates against existing nodes. Use 'chunk' for a single passage (synchronous), 'document' for full documents (async — returns a job ID), 'session' for conversation transcripts. Use 'job_status' to check progress. For short individual facts, use the specific cognitive tools instead.",
     inputSchema: {
       type: "object" as const,
       properties: {
