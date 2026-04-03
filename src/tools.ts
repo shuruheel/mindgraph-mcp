@@ -5,42 +5,6 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 export const TOOLS: Tool[] = [
   {
-    name: "mindgraph_session",
-    description:
-      "Manage conversation sessions. Only open a session for long, substantive conversations — never as a first action. Use 'trace' to bookmark key moments (decisions, important facts). Close with a summary to trigger knowledge distillation. Sessions track conversation continuity but are optional for short interactions.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        action: {
-          type: "string",
-          enum: ["open", "trace", "close"],
-          description: "Session lifecycle action",
-        },
-        label: {
-          type: "string",
-          description: "Session or trace label (required for open/trace)",
-        },
-        session_uid: {
-          type: "string",
-          description: "Session UID (required for trace/close)",
-        },
-        summary: {
-          type: "string",
-          description: "Session summary (used on close)",
-        },
-        props: {
-          type: "object",
-          description: "Additional properties",
-        },
-        agent_id: {
-          type: "string",
-          description: "Agent identity for multi-agent systems",
-        },
-      },
-      required: ["action"],
-    },
-  },
-  {
     name: "mindgraph_journal",
     description:
       "Quick, informal capture for the user's inner world: preferences ('I prefer dark mode'), reflections ('I've been thinking about...'), moods, daily notes, and anything subjective. Use this instead of mindgraph_capture when the content is personal/informal rather than a structured fact about the external world. Good for: likes/dislikes, feelings, habits, reminders-to-self, freeform notes.",
@@ -63,10 +27,6 @@ export const TOOLS: Tool[] = [
           type: "array",
           items: { type: "string" },
           description: "Categorization tags",
-        },
-        session_uid: {
-          type: "string",
-          description: "Link to an active session",
         },
         agent_id: {
           type: "string",
@@ -596,8 +556,6 @@ export async function handleTool(
 ): Promise<ToolResult> {
   try {
     switch (name) {
-      case "mindgraph_session":
-        return await handleSession(client, args);
       case "mindgraph_journal":
         return await handleJournal(client, args);
       case "mindgraph_capture":
@@ -627,72 +585,17 @@ export async function handleTool(
   }
 }
 
-// ── Session ───────────────────────────────────────────────────────────
-
-async function handleSession(
-  client: MindGraph,
-  args: Record<string, unknown>
-): Promise<ToolResult> {
-  const { action, label, session_uid, summary, props, agent_id } = args as {
-    action: string;
-    label?: string;
-    session_uid?: string;
-    summary?: string;
-    props?: Record<string, unknown>;
-    agent_id?: string;
-  };
-
-  switch (action) {
-    case "open": {
-      if (!label) return err("label is required for open");
-      const result = await client.session({
-        action: "open",
-        label,
-        summary,
-        props,
-        agent_id,
-      });
-      return ok(result);
-    }
-    case "trace": {
-      if (!session_uid) return err("session_uid is required for trace");
-      if (!label) return err("label is required for trace");
-      const result = await client.session({
-        action: "trace",
-        label,
-        session_uid,
-        props,
-        agent_id,
-      });
-      return ok(result);
-    }
-    case "close": {
-      if (!session_uid) return err("session_uid is required for close");
-      const result = await client.session({
-        action: "close",
-        session_uid,
-        summary,
-        agent_id,
-      } as any);
-      return ok(result);
-    }
-    default:
-      return err(`Unknown session action: ${action}`);
-  }
-}
-
 // ── Journal ───────────────────────────────────────────────────────────
 
 async function handleJournal(
   client: MindGraph,
   args: Record<string, unknown>
 ): Promise<ToolResult> {
-  const { label, content, mood, tags, session_uid, agent_id } = args as {
+  const { label, content, mood, tags, agent_id } = args as {
     label: string;
     content: string;
     mood?: string;
     tags?: string[];
-    session_uid?: string;
     agent_id?: string;
   };
 
@@ -703,7 +606,7 @@ async function handleJournal(
   const result = await client.journal(
     label,
     props,
-    { session_uid, agent_id }
+    { agent_id }
   );
   return ok(result);
 }

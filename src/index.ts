@@ -43,7 +43,6 @@ const INSTRUCTIONS = `You have access to a persistent knowledge graph via MindGr
 
 - **Jump straight to the user's topic.** Do NOT pre-fetch goals, open questions, or other convenience queries unless the user specifically asks about them.
 - **Parallelize tool calls.** When you need to search and capture at the same time, issue all calls in a single parallel batch — never serialize independent calls.
-- **Sessions are optional.** Only open a session if the conversation is long and substantive. Never open a session as a first action — answer the user's question first, then open a session in the background if warranted.
 
 ## When to READ from the graph
 
@@ -494,7 +493,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(
-    `MindGraph MCP server v0.3.1 running on stdio (${BASE_URL})`
+    `MindGraph MCP server v0.3.2 running on stdio (${BASE_URL})`
   );
 }
 
