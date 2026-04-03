@@ -37,64 +37,65 @@ const client = new MindGraph({
 
 // ── Server Instructions ───────────────────────────────────────────────
 
-const INSTRUCTIONS = `You have access to a persistent knowledge graph via MindGraph. This is the user's long-term memory — use it proactively.
+const INSTRUCTIONS = `You have access to a persistent knowledge graph via MindGraph.
 
-## Critical: minimize latency
+## #1 RULE: Go straight to the user's topic
 
-- **Jump straight to the user's topic.** Do NOT pre-fetch goals, open questions, or other convenience queries unless the user specifically asks about them.
-- **Parallelize tool calls.** When you need to search and capture at the same time, issue all calls in a single parallel batch — never serialize independent calls.
+When the user asks about something, your FIRST and ONLY action should be a SINGLE \`mindgraph_retrieve\` call with action "context" and keyword terms from their message. Nothing else first.
 
-## When to READ from the graph
+**NEVER do any of these before addressing the user's topic:**
+- Do NOT retrieve active_goals
+- Do NOT retrieve open_questions
+- Do NOT retrieve contradictions or weak_claims
+- Do NOT follow a "session lifecycle" or "warm-up" sequence
+- Do NOT make multiple serial retrieve calls when one "context" call covers it
 
-Only retrieve when the user's message references or would benefit from stored knowledge:
-- User asks about a topic → \`mindgraph_retrieve\` with action "context" and keyword query
-- User asks about goals → \`mindgraph_retrieve\` with action "active_goals"
-- User asks about open questions → \`mindgraph_retrieve\` with action "open_questions"
-- Before asserting something the user previously told you → retrieve to check
+There is no session to open. There is no context to pre-load. Just search for what the user asked about.
 
-Do NOT retrieve preemptively. If the user says "let's discuss X", search for X — don't also fetch goals, questions, and contradictions.
+**Example:** User says "Tell me about Indian philosophy and Taoism"
+✓ CORRECT: \`mindgraph_retrieve({action: "context", query: "Indian philosophy Taoism"})\`
+✗ WRONG: First retrieve active_goals, then open_questions, then search for the topic
 
 ## Search query style
 
-MindGraph uses **full-text search (BM25)**, not semantic/embedding search. Write queries as **short keyword phrases**, not natural language questions:
-- GOOD: \`"Rust async runtime"\`, \`"project deadline March"\`, \`"Sarah engineering manager"\`
-- BAD: \`"what do I know about async programming in Rust?"\`, \`"tell me about Sarah's role"\`
+Full-text search (BM25) — use short keyword phrases, not natural language:
+- GOOD: \`"Rust async runtime"\`, \`"Indian philosophy Taoism"\`
+- BAD: \`"what do I know about async programming in Rust?"\`
 
-Use the most specific nouns and terms from the topic. Multiple keywords broaden recall across label, summary, and content fields.
+## When to READ
 
-## When to WRITE to the graph
+- User asks about topic X → \`mindgraph_retrieve\` action "context", query "X keywords"
+- User explicitly asks "what are my goals?" → action "active_goals"
+- User explicitly asks about open questions → action "open_questions"
+- Before asserting something the user previously said → retrieve to check
+- Parallelize independent calls in a single batch
 
-Store knowledge whenever the user shares something worth remembering:
-- **People, organizations, places, events** → \`mindgraph_capture\` with action "entity"
-- **Quick notes, preferences, reflections, moods** → \`mindgraph_journal\`
-- **Factual observations** → \`mindgraph_capture\` with action "observation"
-- **Claims with evidence** → \`mindgraph_argue\`
-- **Questions to track** → \`mindgraph_inquire\` with action "open_question"
-- **Hypotheses or theories** → \`mindgraph_inquire\` with action "hypothesis" or "theory"
-- **Goals or projects** → \`mindgraph_commit\`
-- **Decisions** → \`mindgraph_decide\`
-- **Long-form content** → \`mindgraph_ingest\`
+## When to WRITE
 
-## Tool selection guide
+Capture knowledge when the user shares something worth remembering:
+- People/orgs/places/events → \`mindgraph_capture\` action "entity"
+- Quick notes, preferences → \`mindgraph_journal\`
+- Factual observations → \`mindgraph_capture\` action "observation"
+- Claims with evidence → \`mindgraph_argue\`
+- Questions to track → \`mindgraph_inquire\` action "open_question"
+- Goals or projects → \`mindgraph_commit\`
+- Decisions → \`mindgraph_decide\`
+- Long-form content → \`mindgraph_ingest\`
 
-- **mindgraph_capture vs mindgraph_journal**: \`capture\` for structured entities and factual observations. \`journal\` for informal notes, preferences, and reflections.
-- **mindgraph_argue vs mindgraph_inquire**: \`argue\` when there's evidence. \`inquire\` for open questions and hypotheses without evidence yet.
-- **mindgraph_retrieve "text" vs "context"**: "text" for fast direct keyword lookup. "context" for richer retrieval that follows graph edges to connected entities and source chunks — best for RAG.
-- **mindgraph_ingest**: For content longer than a paragraph. Automatically extracts entities, claims, and relationships.
+## Tool tips
 
-## Important behaviors
-
-- Be proactive about capturing: if the user mentions a person, place, or organization, capture it
-- Deduplicate: the graph handles deduplication automatically
-- Confidence scores: 0.9+ for stated facts, 0.5-0.8 for uncertain claims, below 0.5 for speculation
-- Don't narrate tool usage — capture knowledge naturally as part of the conversation`;
+- \`capture\` for structured/factual, \`journal\` for personal/informal
+- \`argue\` when evidence exists, \`inquire\` for open questions
+- \`text\` for fast lookup, \`context\` for rich retrieval with graph traversal
+- Confidence: 0.9+ for facts, 0.5-0.8 for uncertain, <0.5 for speculation
+- Don't narrate tool usage — capture naturally as part of conversation`;
 
 // ── MCP Server ────────────────────────────────────────────────────────
 
 const server = new Server(
   {
     name: "mindgraph",
-    version: "0.2.1",
+    version: "0.3.3",
   },
   {
     capabilities: {

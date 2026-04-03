@@ -395,7 +395,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_retrieve",
     description:
-      "Search and query the knowledge graph using full-text search (BM25). Use short keyword queries — specific nouns and terms, NOT full sentences. Only retrieve when the user's message references or benefits from stored knowledge — do NOT pre-fetch goals/questions/contradictions unless asked. Actions: 'context' for rich retrieval (FTS + graph traversal, returns connected entities and source chunks), 'text' for fast direct keyword search. Convenience queries (no query needed): 'active_goals', 'open_questions', 'weak_claims', 'pending_approvals', 'unresolved_contradictions'. Use 'layer' to browse a cognitive layer, 'recent' for latest additions.",
+      "Search the knowledge graph. Primary action: 'context' — pass a short keyword query (specific nouns/terms, not sentences) for FTS + graph traversal results. Use 'text' for fast keyword-only lookup. Other actions ('active_goals', 'open_questions', 'weak_claims', 'pending_approvals', 'unresolved_contradictions', 'layer', 'recent') are ONLY for when the user explicitly asks about those topics — never pre-fetch them.",
     inputSchema: {
       type: "object" as const,
       properties: {
