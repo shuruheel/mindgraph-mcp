@@ -1,6 +1,6 @@
 {
   "name": "mindgraph-mcp",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "MCP server for MindGraph — connect Claude Desktop, Claude Code, and any MCP client to your knowledge graph",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

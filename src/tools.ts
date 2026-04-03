@@ -435,15 +435,13 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_retrieve",
     description:
-      "Search and query the knowledge graph. ALWAYS retrieve before answering questions about previously stored knowledge. Actions: 'context' for rich retrieval (follows graph edges — best for RAG), 'hybrid' for fast keyword+semantic search, 'text' for exact keyword match, 'semantic' for meaning-based search. Convenience queries: 'active_goals', 'open_questions', 'weak_claims', 'pending_approvals', 'unresolved_contradictions'. Use 'layer' to browse a specific cognitive layer, 'recent' for latest additions.",
+      "Search and query the knowledge graph using full-text search (BM25). ALWAYS retrieve before answering questions about previously stored knowledge. Use short keyword queries — specific nouns and terms, NOT full sentences. Actions: 'context' for rich retrieval (FTS + graph traversal — best for RAG, returns connected entities and source chunks), 'text' for fast direct keyword search. Convenience queries (no query needed): 'active_goals', 'open_questions', 'weak_claims', 'pending_approvals', 'unresolved_contradictions'. Use 'layer' to browse a specific cognitive layer, 'recent' for latest additions.",
     inputSchema: {
       type: "object" as const,
       properties: {
         action: {
           type: "string",
           enum: [
-            "hybrid",
-            "semantic",
             "text",
             "context",
             "active_goals",
@@ -458,7 +456,13 @@ export const TOOLS: Tool[] = [
         },
         query: {
           type: "string",
-          description: "Search query (for hybrid, semantic, text, context)",
+          description:
+            "Keyword search query — use specific nouns and terms, e.g. 'Rust async runtime' not 'what do I know about async in Rust' (for text, context)",
+        },
+        node_types: {
+          type: "array",
+          items: { type: "string" },
+          description: "Filter by node types (e.g. ['Claim', 'Entity', 'Observation'])",
         },
         layer: {
           type: "string",
@@ -470,15 +474,31 @@ export const TOOLS: Tool[] = [
             "memory",
             "agent",
           ],
-          description: "Layer filter (for layer action)",
+          description: "Filter by cognitive layer (for context, text, layer actions)",
         },
         limit: {
           type: "number",
           description: "Max results to return (default: 10)",
         },
-        node_type: {
-          type: "string",
-          description: "Filter by node type",
+        include_chunks: {
+          type: "boolean",
+          description: "Include source document chunks in context results (default: true)",
+        },
+        include_graph: {
+          type: "boolean",
+          description: "Include graph nodes in context results (default: true)",
+        },
+        confidence_min: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description: "Minimum confidence filter (for recent action)",
+        },
+        salience_min: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+          description: "Minimum salience filter (for recent action)",
         },
         agent_id: {
           type: "string",
@@ -1093,44 +1113,56 @@ async function handleRetrieve(
   client: MindGraph,
   args: Record<string, unknown>
 ): Promise<ToolResult> {
-  const { action, query, layer, limit, node_type, agent_id } = args as {
+  const {
+    action,
+    query,
+    node_types,
+    layer,
+    limit,
+    include_chunks,
+    include_graph,
+    confidence_min,
+    salience_min,
+    agent_id,
+  } = args as {
     action: string;
     query?: string;
+    node_types?: string[];
     layer?: string;
     limit?: number;
-    node_type?: string;
+    include_chunks?: boolean;
+    include_graph?: boolean;
+    confidence_min?: number;
+    salience_min?: number;
     agent_id?: string;
   };
 
   switch (action) {
     case "context":
       if (!query) return err("query is required for context retrieval");
-      return ok(await client.retrieveContext({ query, k: limit }));
-
-    case "hybrid":
-      if (!query) return err("query is required for hybrid search");
       return ok(
-        await client.hybridSearch(query, {
-          k: limit,
-          node_types: node_type ? [node_type] : undefined,
-        })
-      );
-
-    case "semantic":
-      if (!query) return err("query is required for semantic search");
-      return ok(
-        await client.retrieve({
-          action: "semantic",
+        await client.retrieveContext({
           query,
-          limit,
-          node_type,
-          agent_id,
-        } as any)
+          k: limit,
+          node_types,
+          layer,
+          include_chunks,
+          include_graph,
+        })
       );
 
     case "text":
       if (!query) return err("query is required for text search");
-      return ok(await client.search(query, { limit, node_type }));
+      return ok(
+        await client.retrieve({
+          action: "text",
+          query,
+          limit,
+          node_types,
+          layer,
+          agent_id,
+        } as any)
+      );
 
     case "active_goals":
       return ok(await client.getGoals());
@@ -1163,7 +1195,9 @@ async function handleRetrieve(
         await client.retrieve({
           action: "recent",
           limit,
-          node_type,
+          node_types,
+          confidence_min,
+          salience_min,
           agent_id,
         } as any)
       );

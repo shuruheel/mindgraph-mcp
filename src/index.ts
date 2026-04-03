@@ -55,11 +55,19 @@ Store knowledge whenever the user shares something worth remembering:
 ## When to READ from the graph
 
 Retrieve context before answering questions that might benefit from prior knowledge:
-- **"What do I know about X?"** → \`mindgraph_retrieve\` with action "hybrid" or "context"
+- **"What do I know about X?"** → \`mindgraph_retrieve\` with action "context" and keyword query
 - **"What are my goals?"** → \`mindgraph_retrieve\` with action "active_goals"
 - **"What questions are open?"** → \`mindgraph_retrieve\` with action "open_questions"
 - **Anything referencing past conversations or stored knowledge** → \`mindgraph_retrieve\` with action "context"
 - **Before making claims about things the user has told you** → retrieve first to avoid contradictions
+
+## Search query style
+
+MindGraph uses **full-text search (BM25)**, not semantic/embedding search. Write queries as **short keyword phrases**, not natural language questions:
+- GOOD: \`"Rust async runtime"\`, \`"project deadline March"\`, \`"Sarah engineering manager"\`
+- BAD: \`"what do I know about async programming in Rust?"\`, \`"tell me about Sarah's role"\`
+
+Use the most specific nouns and terms from the topic. Multiple keywords broaden recall across label, summary, and content fields.
 
 ## Session management
 
@@ -72,7 +80,7 @@ Retrieve context before answering questions that might benefit from prior knowle
 - **mindgraph_capture vs mindgraph_journal**: Use \`capture\` for structured entities (people, orgs, places) and factual observations. Use \`journal\` for informal notes, preferences, reflections, and anything that's more about the user's inner state than external facts.
 - **mindgraph_argue vs mindgraph_inquire**: Use \`argue\` when there's a specific claim with supporting evidence. Use \`inquire\` for open-ended questions, hypotheses without evidence yet, or theoretical frameworks.
 - **mindgraph_commit vs mindgraph_plan**: Use \`commit\` for the user's goals, projects, and milestones. Use \`plan\` for agent-level task management and execution tracking.
-- **mindgraph_retrieve "hybrid" vs "context"**: Use "hybrid" for quick keyword+semantic search. Use "context" for richer retrieval that follows graph edges from matching chunks to find connected entities and claims.
+- **mindgraph_retrieve "text" vs "context"**: Use "text" for fast direct keyword lookup. Use "context" for richer retrieval that searches nodes via FTS, then follows graph edges to find connected entities, claims, and source chunks — best for RAG and comprehensive answers.
 - **mindgraph_ingest**: Use for any content longer than a paragraph. It automatically extracts entities, claims, and relationships. For short facts, use the specific cognitive tools instead.
 
 ## Important behaviors
@@ -244,7 +252,7 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
             role: "user" as const,
             content: {
               type: "text" as const,
-              text: `Search my knowledge graph for everything related to "${topic}". Use both hybrid search and context retrieval to find entities, claims, evidence, questions, and any connected knowledge. Present a structured overview of what I know about this topic, highlighting any gaps or open questions.`,
+              text: `Search my knowledge graph for everything related to "${topic}". Use context retrieval with keyword queries to find entities, claims, evidence, questions, and any connected knowledge. Try multiple keyword variations to ensure broad coverage. Present a structured overview of what I know about this topic, highlighting any gaps or open questions.`,
             },
           },
         ],
@@ -449,7 +457,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   const searchMatch = uri.match(/^mindgraph:\/\/search\/(.+)$/);
   if (searchMatch) {
     const query = decodeURIComponent(searchMatch[1]);
-    const results = await client.hybridSearch(query, { k: 20 });
+    const results = await client.search(query, { limit: 20 });
     return {
       contents: [
         {
@@ -486,7 +494,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(
-    `MindGraph MCP server v0.2.0 running on stdio (${BASE_URL})`
+    `MindGraph MCP server v0.3.0 running on stdio (${BASE_URL})`
   );
 }
 
