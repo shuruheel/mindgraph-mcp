@@ -60,7 +60,7 @@ function getMcpServerEntry(apiKey: string, baseUrl?: string) {
 
   return {
     command: "npx",
-    args: ["-y", "mindgraph-mcp"],
+    args: ["-y", "mindgraph-mcp@latest"],
     env,
   };
 }
@@ -107,7 +107,7 @@ function installClaudeCode(apiKey: string, baseUrl?: string): void {
         "--",
         "npx",
         "-y",
-        "mindgraph-mcp",
+        "mindgraph-mcp@latest",
       ].join(" "),
       { stdio: "inherit" }
     );

@@ -87,7 +87,7 @@ Retrieve context before answering questions that might benefit from prior knowle
 const server = new Server(
   {
     name: "mindgraph",
-    version: "0.2.0",
+    version: "0.2.1",
   },
   {
     capabilities: {
