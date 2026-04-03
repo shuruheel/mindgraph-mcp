@@ -7,7 +7,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_session",
     description:
-      "Manage conversation sessions. ALWAYS open a session at the start of a substantial conversation (label it with the topic). Use 'trace' to bookmark key moments (decisions made, important facts shared). Close the session at the end with a summary of what was discussed. Sessions enable the graph to track conversation continuity and trigger knowledge distillation on close.",
+      "Manage conversation sessions. Only open a session for long, substantive conversations — never as a first action. Use 'trace' to bookmark key moments (decisions, important facts). Close with a summary to trigger knowledge distillation. Sessions track conversation continuity but are optional for short interactions.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -435,7 +435,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_retrieve",
     description:
-      "Search and query the knowledge graph using full-text search (BM25). ALWAYS retrieve before answering questions about previously stored knowledge. Use short keyword queries — specific nouns and terms, NOT full sentences. Actions: 'context' for rich retrieval (FTS + graph traversal — best for RAG, returns connected entities and source chunks), 'text' for fast direct keyword search. Convenience queries (no query needed): 'active_goals', 'open_questions', 'weak_claims', 'pending_approvals', 'unresolved_contradictions'. Use 'layer' to browse a specific cognitive layer, 'recent' for latest additions.",
+      "Search and query the knowledge graph using full-text search (BM25). Use short keyword queries — specific nouns and terms, NOT full sentences. Only retrieve when the user's message references or benefits from stored knowledge — do NOT pre-fetch goals/questions/contradictions unless asked. Actions: 'context' for rich retrieval (FTS + graph traversal, returns connected entities and source chunks), 'text' for fast direct keyword search. Convenience queries (no query needed): 'active_goals', 'open_questions', 'weak_claims', 'pending_approvals', 'unresolved_contradictions'. Use 'layer' to browse a cognitive layer, 'recent' for latest additions.",
     inputSchema: {
       type: "object" as const,
       properties: {

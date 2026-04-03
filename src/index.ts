@@ -39,27 +39,21 @@ const client = new MindGraph({
 
 const INSTRUCTIONS = `You have access to a persistent knowledge graph via MindGraph. This is the user's long-term memory — use it proactively.
 
-## When to WRITE to the graph
+## Critical: minimize latency
 
-Store knowledge whenever the user shares something worth remembering:
-- **People, organizations, places, events** → \`mindgraph_capture\` with action "entity" and the appropriate entity_type
-- **Quick notes, preferences, reflections, moods** → \`mindgraph_journal\`
-- **Factual observations about the world** → \`mindgraph_capture\` with action "observation"
-- **Claims that could be true or false** → \`mindgraph_argue\` (with evidence if available)
-- **Questions to investigate later** → \`mindgraph_inquire\` with action "open_question"
-- **Hypotheses or theories** → \`mindgraph_inquire\` with action "hypothesis" or "theory"
-- **Goals or projects the user is working on** → \`mindgraph_commit\`
-- **Decisions being made** → \`mindgraph_decide\` (open, add options, resolve)
-- **Long-form content (articles, transcripts, documents)** → \`mindgraph_ingest\`
+- **Jump straight to the user's topic.** Do NOT pre-fetch goals, open questions, or other convenience queries unless the user specifically asks about them.
+- **Parallelize tool calls.** When you need to search and capture at the same time, issue all calls in a single parallel batch — never serialize independent calls.
+- **Sessions are optional.** Only open a session if the conversation is long and substantive. Never open a session as a first action — answer the user's question first, then open a session in the background if warranted.
 
 ## When to READ from the graph
 
-Retrieve context before answering questions that might benefit from prior knowledge:
-- **"What do I know about X?"** → \`mindgraph_retrieve\` with action "context" and keyword query
-- **"What are my goals?"** → \`mindgraph_retrieve\` with action "active_goals"
-- **"What questions are open?"** → \`mindgraph_retrieve\` with action "open_questions"
-- **Anything referencing past conversations or stored knowledge** → \`mindgraph_retrieve\` with action "context"
-- **Before making claims about things the user has told you** → retrieve first to avoid contradictions
+Only retrieve when the user's message references or would benefit from stored knowledge:
+- User asks about a topic → \`mindgraph_retrieve\` with action "context" and keyword query
+- User asks about goals → \`mindgraph_retrieve\` with action "active_goals"
+- User asks about open questions → \`mindgraph_retrieve\` with action "open_questions"
+- Before asserting something the user previously told you → retrieve to check
+
+Do NOT retrieve preemptively. If the user says "let's discuss X", search for X — don't also fetch goals, questions, and contradictions.
 
 ## Search query style
 
@@ -69,26 +63,32 @@ MindGraph uses **full-text search (BM25)**, not semantic/embedding search. Write
 
 Use the most specific nouns and terms from the topic. Multiple keywords broaden recall across label, summary, and content fields.
 
-## Session management
+## When to WRITE to the graph
 
-- Open a session with \`mindgraph_session\` action "open" at the start of a substantial conversation
-- Use action "trace" to mark key moments during the conversation
-- Close the session with action "close" and a summary at the end
+Store knowledge whenever the user shares something worth remembering:
+- **People, organizations, places, events** → \`mindgraph_capture\` with action "entity"
+- **Quick notes, preferences, reflections, moods** → \`mindgraph_journal\`
+- **Factual observations** → \`mindgraph_capture\` with action "observation"
+- **Claims with evidence** → \`mindgraph_argue\`
+- **Questions to track** → \`mindgraph_inquire\` with action "open_question"
+- **Hypotheses or theories** → \`mindgraph_inquire\` with action "hypothesis" or "theory"
+- **Goals or projects** → \`mindgraph_commit\`
+- **Decisions** → \`mindgraph_decide\`
+- **Long-form content** → \`mindgraph_ingest\`
 
 ## Tool selection guide
 
-- **mindgraph_capture vs mindgraph_journal**: Use \`capture\` for structured entities (people, orgs, places) and factual observations. Use \`journal\` for informal notes, preferences, reflections, and anything that's more about the user's inner state than external facts.
-- **mindgraph_argue vs mindgraph_inquire**: Use \`argue\` when there's a specific claim with supporting evidence. Use \`inquire\` for open-ended questions, hypotheses without evidence yet, or theoretical frameworks.
-- **mindgraph_commit vs mindgraph_plan**: Use \`commit\` for the user's goals, projects, and milestones. Use \`plan\` for agent-level task management and execution tracking.
-- **mindgraph_retrieve "text" vs "context"**: Use "text" for fast direct keyword lookup. Use "context" for richer retrieval that searches nodes via FTS, then follows graph edges to find connected entities, claims, and source chunks — best for RAG and comprehensive answers.
-- **mindgraph_ingest**: Use for any content longer than a paragraph. It automatically extracts entities, claims, and relationships. For short facts, use the specific cognitive tools instead.
+- **mindgraph_capture vs mindgraph_journal**: \`capture\` for structured entities and factual observations. \`journal\` for informal notes, preferences, and reflections.
+- **mindgraph_argue vs mindgraph_inquire**: \`argue\` when there's evidence. \`inquire\` for open questions and hypotheses without evidence yet.
+- **mindgraph_retrieve "text" vs "context"**: "text" for fast direct keyword lookup. "context" for richer retrieval that follows graph edges to connected entities and source chunks — best for RAG.
+- **mindgraph_ingest**: For content longer than a paragraph. Automatically extracts entities, claims, and relationships.
 
 ## Important behaviors
 
-- Be proactive: if the user mentions a person, place, or organization you haven't captured yet, capture it
-- Deduplicate: the graph handles entity deduplication automatically — don't worry about creating duplicates
-- Confidence scores: use 0.9+ for things the user states as fact, 0.5-0.8 for uncertain claims, below 0.5 for speculation
-- Don't narrate tool usage excessively — capture knowledge naturally as part of the conversation`;
+- Be proactive about capturing: if the user mentions a person, place, or organization, capture it
+- Deduplicate: the graph handles deduplication automatically
+- Confidence scores: 0.9+ for stated facts, 0.5-0.8 for uncertain claims, below 0.5 for speculation
+- Don't narrate tool usage — capture knowledge naturally as part of the conversation`;
 
 // ── MCP Server ────────────────────────────────────────────────────────
 
@@ -494,7 +494,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(
-    `MindGraph MCP server v0.3.0 running on stdio (${BASE_URL})`
+    `MindGraph MCP server v0.3.1 running on stdio (${BASE_URL})`
   );
 }
 
