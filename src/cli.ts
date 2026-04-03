@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import * as crypto from "crypto";
 import { execSync } from "child_process";
 
 // ── Config Paths ──────────────────────────────────────────────────────
@@ -241,6 +242,62 @@ function parseArgs(argv: string[]): {
   return { command, apiKey, baseUrl };
 }
 
+const DASHBOARD_URL =
+  process.env.MINDGRAPH_DASHBOARD_URL || "https://mindgraph.cloud";
+const POLL_INTERVAL = 2000; // 2 seconds
+const POLL_TIMEOUT = 10 * 60 * 1000; // 10 minutes
+
+function generateCode(): string {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+function openBrowser(url: string): void {
+  try {
+    switch (process.platform) {
+      case "darwin":
+        execSync(`open "${url}"`);
+        break;
+      case "win32":
+        execSync(`start "" "${url}"`);
+        break;
+      case "linux":
+        execSync(`xdg-open "${url}"`);
+        break;
+    }
+  } catch {
+    // Silently fail — we'll show the URL for manual copy
+  }
+}
+
+async function pollForKey(code: string): Promise<string> {
+  const pollUrl = `${DASHBOARD_URL}/api/connect?code=${code}`;
+  const deadline = Date.now() + POLL_TIMEOUT;
+
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(pollUrl);
+      const data = await res.json();
+
+      if (data.status === "authorized" && data.api_key) {
+        return data.api_key;
+      }
+      if (data.status === "expired") {
+        throw new Error("Session expired. Please try again.");
+      }
+      if (data.status === "claimed") {
+        throw new Error("Session already used. Please try again.");
+      }
+    } catch (e: unknown) {
+      if (e instanceof Error && e.message.includes("Session")) throw e;
+      // Network error — keep polling
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
+  }
+
+  throw new Error("Timed out waiting for authorization.");
+}
+
 async function interactiveInit(baseUrl?: string): Promise<void> {
   const readline = await import("readline");
   const rl = readline.createInterface({
@@ -252,17 +309,47 @@ async function interactiveInit(baseUrl?: string): Promise<void> {
     new Promise((resolve) => rl.question(q, resolve));
 
   console.log("\nMindGraph MCP Server Setup\n");
+  console.log("  1. Sign in via browser (recommended)");
+  console.log("  2. Enter API key manually");
+  console.log("");
 
-  const apiKey = await ask(
-    "Enter your MindGraph API key (from mindgraph.cloud/dashboard/keys): "
-  );
-  if (!apiKey || !apiKey.startsWith("mg_")) {
-    console.error('Invalid API key. Keys start with "mg_".');
-    rl.close();
-    process.exit(1);
+  const method = await ask("Choice (1/2): ");
+
+  let apiKey: string;
+
+  if (method.trim() === "2") {
+    // Manual API key entry
+    apiKey = await ask(
+      "\nEnter your MindGraph API key (from mindgraph.cloud/dashboard/keys): "
+    );
+    if (!apiKey || !apiKey.startsWith("mg_")) {
+      console.error('Invalid API key. Keys start with "mg_".');
+      rl.close();
+      process.exit(1);
+    }
+  } else {
+    // Browser auth flow
+    const code = generateCode();
+    const authUrl = `${DASHBOARD_URL}/dashboard/connect?code=${code}`;
+
+    console.log("\nOpening browser to authorize...\n");
+    console.log(`  ${authUrl}\n`);
+    console.log("If the browser didn't open, copy the URL above and paste it in your browser.");
+    console.log("Waiting for authorization...\n");
+
+    openBrowser(authUrl);
+
+    try {
+      apiKey = await pollForKey(code);
+      console.log("Authorization received!\n");
+    } catch (e) {
+      console.error(e instanceof Error ? e.message : "Authorization failed.");
+      rl.close();
+      process.exit(1);
+    }
   }
 
-  console.log("\nWhere do you want to install?\n");
+  console.log("Where do you want to install?\n");
   console.log("  1. Claude Desktop");
   console.log("  2. Claude Code");
   console.log("  3. Both");
