@@ -37,66 +37,64 @@ const client = new MindGraph({
 
 // ── Server Instructions ───────────────────────────────────────────────
 
-const INSTRUCTIONS = `You have access to a persistent knowledge graph via MindGraph.
+const INSTRUCTIONS = `You have access to a persistent knowledge graph via MindGraph (6 tools).
 
 ## #1 RULE: Go straight to the user's topic
 
 When the user asks about something, your FIRST and ONLY action should be a SINGLE \`mindgraph_retrieve\` call with action "context" and keyword terms from their message. Nothing else first.
 
 **NEVER do any of these before addressing the user's topic:**
-- Do NOT retrieve active_goals
-- Do NOT retrieve open_questions
-- Do NOT retrieve contradictions or weak_claims
+- Do NOT retrieve active_goals, open_questions, contradictions, or weak_claims
 - Do NOT follow a "session lifecycle" or "warm-up" sequence
 - Do NOT make multiple serial retrieve calls when one "context" call covers it
 
 There is no session to open. There is no context to pre-load. Just search for what the user asked about.
 
 **Example:** User says "Tell me about Indian philosophy and Taoism"
-✓ CORRECT: \`mindgraph_retrieve({action: "context", query: "Indian philosophy Taoism"})\` — extracted key nouns, dropped "Tell me about"
-✗ WRONG: First retrieve active_goals, then open_questions, then search for the topic
-✗ WRONG: \`mindgraph_retrieve({action: "context", query: "Tell me about Indian philosophy and Taoism"})\` — natural language sentence won't match BM25 index
+✓ CORRECT: \`mindgraph_retrieve({action: "context", query: "Indian philosophy Taoism"})\`
+✗ WRONG: First retrieve active_goals, then open_questions, then search
+✗ WRONG: \`mindgraph_retrieve({action: "context", query: "Tell me about Indian philosophy and Taoism"})\` — natural language won't match BM25
 
-## Search query style — BM25 keyword matching
+## Search strategy — keyword first, semantic as fallback
 
-The search index uses BM25 keyword matching against node labels and summaries. It matches individual words, NOT meaning or concepts. Drop filler words like "what", "how", "implications of", "tell me about". Query with 1–3 discriminating terms (proper nouns, technical terms, domain-specific words).
+The default search uses BM25 keyword matching. Query with 1–3 discriminating terms (proper nouns, technical terms). Drop filler words.
 
-**Derive keywords from the user's question — examples:**
-- User asks "What is Kissinger's view on NATO expansion?" → query: \`"Kissinger NATO"\`
-- User asks "Tell me about async programming in Rust" → query: \`"Rust async runtime"\`
-- User asks "How does Indian philosophy relate to Taoism?" → query: \`"Indian philosophy Taoism"\`
-- User asks "What are the implications of carbon tax policy?" → query: \`"carbon tax"\`
+**Keyword examples:**
+- "What is Kissinger's view on NATO?" → query: \`"Kissinger NATO"\`
+- "Tell me about async in Rust" → query: \`"Rust async runtime"\`
+- "Implications of carbon tax?" → query: \`"carbon tax"\`
 
-**GOOD queries:** \`"Rust async runtime"\`, \`"Kissinger NATO"\`, \`"carbon tax emissions"\`
-**BAD queries:** \`"what do I know about async programming in Rust?"\`, \`"how does X relate to Y"\`, \`"implications of climate change"\`
-
-If the first query returns no results, try synonym or related terms (e.g. \`"global warming"\` instead of \`"climate change"\`).
+If keyword search returns no results, escalate:
+1. Try synonyms (e.g. \`"global warming"\` instead of \`"climate change"\`)
+2. Use \`action: "semantic"\` — vector similarity, natural language OK (e.g. \`"ways to manage stress"\` finds "mental health" nodes)
+3. Use \`action: "hybrid"\` — combines BM25 + semantic for best coverage
 
 ## When to READ
 
 - User asks about topic X → \`mindgraph_retrieve\` action "context", query "X keywords"
 - User explicitly asks "what are my goals?" → action "active_goals"
 - User explicitly asks about open questions → action "open_questions"
-- Before asserting something the user previously said → retrieve to check
-- Parallelize independent calls in a single batch
+- Explore around a known node → action "neighborhood" with start_uid
+- Find connections between nodes → action "path" with start_uid + end_uid
 
 ## When to WRITE
 
 Capture knowledge when the user shares something worth remembering:
 - People/orgs/places/events → \`mindgraph_capture\` action "entity"
-- Quick notes, preferences → \`mindgraph_journal\`
+- Quick notes, preferences → \`mindgraph_capture\` action "journal"
 - Factual observations → \`mindgraph_capture\` action "observation"
-- Claims with evidence → \`mindgraph_argue\`
-- Questions to track → \`mindgraph_inquire\` action "open_question"
-- Goals or projects → \`mindgraph_commit\`
-- Decisions → \`mindgraph_decide\`
+- Claims with evidence → \`mindgraph_reason\` action "claim"
+- Questions to track → \`mindgraph_reason\` action "open_question"
+- Goals or projects → \`mindgraph_commit\` action "goal"/"project"
+- Decisions → \`mindgraph_commit\` action "open_decision"
 - Long-form content → \`mindgraph_ingest\`
 
 ## Tool tips
 
-- \`capture\` for structured/factual, \`journal\` for personal/informal
-- \`argue\` when evidence exists, \`inquire\` for open questions
-- \`text\` for fast lookup, \`context\` for rich retrieval with graph traversal
+- \`capture\`: "entity"/"observation" for facts, "journal" for personal/informal
+- \`reason\`: "claim" when evidence exists, "open_question"/"hypothesis" otherwise
+- \`retrieve\`: "context" (FTS default) → "semantic" (conceptual fallback) → "hybrid" (both)
+- \`retrieve\`: "neighborhood"/"chain"/"path"/"subgraph" for graph exploration
 - Confidence: 0.9+ for facts, 0.5-0.8 for uncertain, <0.5 for speculation
 - Don't narrate tool usage — capture naturally as part of conversation`;
 
@@ -105,7 +103,7 @@ Capture knowledge when the user shares something worth remembering:
 const server = new Server(
   {
     name: "mindgraph",
-    version: "0.3.4",
+    version: "0.4.0",
   },
   {
     capabilities: {
@@ -290,7 +288,7 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
             role: "user" as const,
             content: {
               type: "text" as const,
-              text: `Analyze the following conversation and capture all important information into my knowledge graph. Extract:\n- Named entities (people, organizations, places, events)\n- Factual claims and observations\n- Decisions made or pending\n- Goals or commitments mentioned\n- Open questions raised\n- Any hypotheses or theories discussed\n\nUse the appropriate MindGraph tools for each type of knowledge.\n\nConversation:\n${conversation}`,
+              text: `Analyze the following conversation and capture all important information into my knowledge graph. Extract:\n- Named entities (people, organizations, places, events) → mindgraph_capture action "entity"\n- Factual claims and observations → mindgraph_capture action "observation" or mindgraph_reason action "claim"\n- Decisions made or pending → mindgraph_commit action "open_decision"\n- Goals or commitments mentioned → mindgraph_commit action "goal"/"project"\n- Open questions raised → mindgraph_reason action "open_question"\n- Any hypotheses or theories discussed → mindgraph_reason action "hypothesis"/"theory"\n\nConversation:\n${conversation}`,
             },
           },
         ],
@@ -504,7 +502,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(
-    `MindGraph MCP server v0.3.2 running on stdio (${BASE_URL})`
+    `MindGraph MCP server v0.4.0 running on stdio (${BASE_URL})`
   );
 }
 
