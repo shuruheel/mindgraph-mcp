@@ -53,14 +53,24 @@ When the user asks about something, your FIRST and ONLY action should be a SINGL
 There is no session to open. There is no context to pre-load. Just search for what the user asked about.
 
 **Example:** User says "Tell me about Indian philosophy and Taoism"
-✓ CORRECT: \`mindgraph_retrieve({action: "context", query: "Indian philosophy Taoism"})\`
+✓ CORRECT: \`mindgraph_retrieve({action: "context", query: "Indian philosophy Taoism"})\` — extracted key nouns, dropped "Tell me about"
 ✗ WRONG: First retrieve active_goals, then open_questions, then search for the topic
+✗ WRONG: \`mindgraph_retrieve({action: "context", query: "Tell me about Indian philosophy and Taoism"})\` — natural language sentence won't match BM25 index
 
-## Search query style
+## Search query style — BM25 keyword matching
 
-Full-text search (BM25) — use short keyword phrases, not natural language:
-- GOOD: \`"Rust async runtime"\`, \`"Indian philosophy Taoism"\`
-- BAD: \`"what do I know about async programming in Rust?"\`
+The search index uses BM25 keyword matching against node labels and summaries. It matches individual words, NOT meaning or concepts. Drop filler words like "what", "how", "implications of", "tell me about". Query with 1–3 discriminating terms (proper nouns, technical terms, domain-specific words).
+
+**Derive keywords from the user's question — examples:**
+- User asks "What is Kissinger's view on NATO expansion?" → query: \`"Kissinger NATO"\`
+- User asks "Tell me about async programming in Rust" → query: \`"Rust async runtime"\`
+- User asks "How does Indian philosophy relate to Taoism?" → query: \`"Indian philosophy Taoism"\`
+- User asks "What are the implications of carbon tax policy?" → query: \`"carbon tax"\`
+
+**GOOD queries:** \`"Rust async runtime"\`, \`"Kissinger NATO"\`, \`"carbon tax emissions"\`
+**BAD queries:** \`"what do I know about async programming in Rust?"\`, \`"how does X relate to Y"\`, \`"implications of climate change"\`
+
+If the first query returns no results, try synonym or related terms (e.g. \`"global warming"\` instead of \`"climate change"\`).
 
 ## When to READ
 
@@ -95,7 +105,7 @@ Capture knowledge when the user shares something worth remembering:
 const server = new Server(
   {
     name: "mindgraph",
-    version: "0.3.3",
+    version: "0.3.4",
   },
   {
     capabilities: {
@@ -252,7 +262,7 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
             role: "user" as const,
             content: {
               type: "text" as const,
-              text: `Search my knowledge graph for everything related to "${topic}". Use context retrieval with keyword queries to find entities, claims, evidence, questions, and any connected knowledge. Try multiple keyword variations to ensure broad coverage. Present a structured overview of what I know about this topic, highlighting any gaps or open questions.`,
+              text: `Search my knowledge graph for everything related to "${topic}". Use context retrieval with short BM25 keyword queries (1–3 discriminating terms extracted from the topic, not full sentences). Try multiple keyword variations and synonyms to ensure broad coverage. Present a structured overview of what I know about this topic, highlighting any gaps or open questions.`,
             },
           },
         ],
@@ -348,7 +358,7 @@ server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
         uriTemplate: "mindgraph://search/{query}",
         name: "Search Results",
         description:
-          "Full-text search across all nodes in the knowledge graph",
+          "BM25 keyword search across all nodes — pass 1–3 discriminating terms (e.g. 'Kissinger NATO'), not natural language sentences",
         mimeType: "application/json",
       },
       {

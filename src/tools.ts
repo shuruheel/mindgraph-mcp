@@ -395,7 +395,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_retrieve",
     description:
-      "Search the knowledge graph. Primary action: 'context' — pass a short keyword query (specific nouns/terms, not sentences) for FTS + graph traversal results. Use 'text' for fast keyword-only lookup. Other actions ('active_goals', 'open_questions', 'weak_claims', 'pending_approvals', 'unresolved_contradictions', 'layer', 'recent') are ONLY for when the user explicitly asks about those topics — never pre-fetch them.",
+      "Search the knowledge graph using BM25 keyword matching. Primary action: 'context' — pass 1–3 discriminating keywords (proper nouns, technical terms) extracted from the user's question. Drop filler words (what, how, tell me about, implications of). GOOD: 'Kissinger NATO', 'Rust async runtime'. BAD: 'What is Kissinger\\'s view on NATO?'. Use 'text' for fast keyword-only lookup. Other actions ('active_goals', 'open_questions', 'weak_claims', 'pending_approvals', 'unresolved_contradictions', 'layer', 'recent') are ONLY for when the user explicitly asks about those topics — never pre-fetch them.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -417,7 +417,7 @@ export const TOOLS: Tool[] = [
         query: {
           type: "string",
           description:
-            "Keyword search query — use specific nouns and terms, e.g. 'Rust async runtime' not 'what do I know about async in Rust' (for text, context)",
+            "BM25 keyword query — extract 1–3 discriminating terms from the user's question, drop filler words. User asks 'What is Kissinger's view on NATO?' → 'Kissinger NATO'. User asks about async in Rust → 'Rust async runtime'. NEVER pass natural language sentences. (for text, context)",
         },
         node_types: {
           type: "array",
