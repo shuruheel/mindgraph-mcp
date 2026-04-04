@@ -298,7 +298,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_retrieve",
     description:
-      "Search and explore the knowledge graph. Use 'context' (default) for BM25 keyword retrieval — pass 1-3 discriminating keywords (proper nouns, technical terms), not sentences. GOOD: 'Kissinger NATO'. BAD: 'What is Kissinger\\'s view on NATO?'. Use 'semantic' when keywords return nothing — good for conceptual/fuzzy queries where user words differ from stored labels. Use 'hybrid' to combine keyword + semantic. Use 'text' for fast keyword-only lookup. Use 'neighborhood' to explore around a known node, 'chain' for reasoning chains, 'path' between two nodes, 'subgraph' for connected components. Other actions ('active_goals', 'open_questions', etc.) only when the user explicitly asks.",
+      "Search and explore the knowledge graph. Use 'context' (default) for BM25 keyword retrieval — returns graph nodes only by default (labels, summaries, types, confidence); set include_chunks=true to also get full source text. Pass 1-3 discriminating keywords, not sentences. GOOD: 'Kissinger NATO'. BAD: 'What is Kissinger\\'s view on NATO?'. Use 'document_index' to list all ingested documents (titles, dates, UIDs) for orientation. Use 'semantic' when keywords return nothing — conceptual/fuzzy queries. Use 'hybrid' for keyword + semantic. Use 'text' for fast keyword-only. Use 'neighborhood'/'chain'/'path'/'subgraph' for graph traversal. Other actions ('active_goals', 'open_questions', etc.) only when the user explicitly asks.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -320,6 +320,7 @@ export const TOOLS: Tool[] = [
             "neighborhood",
             "path",
             "subgraph",
+            "document_index",
           ],
           description: "Retrieval or traversal strategy",
         },
@@ -366,7 +367,7 @@ export const TOOLS: Tool[] = [
         },
         include_chunks: {
           type: "boolean",
-          description: "Include source document chunks in context results (default: true)",
+          description: "Include source document chunks in context results (default: false — set true to fetch full chunk text for citations or deep reading)",
         },
         include_graph: {
           type: "boolean",
@@ -941,7 +942,7 @@ async function handleRetrieve(
           k: limit,
           node_types,
           layer,
-          include_chunks,
+          include_chunks: include_chunks ?? false,
           include_graph,
         })
       );
@@ -1022,6 +1023,15 @@ async function handleRetrieve(
           salience_min,
           agent_id,
         } as any)
+      );
+
+    // Document inventory
+    case "document_index":
+      return ok(
+        await client.getNodes({
+          node_type: "Document",
+          limit: limit ?? 100,
+        })
       );
 
     // Graph traversal

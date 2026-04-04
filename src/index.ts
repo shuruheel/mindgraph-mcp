@@ -55,6 +55,17 @@ There is no session to open. There is no context to pre-load. Just search for wh
 ✗ WRONG: First retrieve active_goals, then open_questions, then search
 ✗ WRONG: \`mindgraph_retrieve({action: "context", query: "Tell me about Indian philosophy and Taoism"})\` — natural language won't match BM25
 
+## Two-phase retrieval protocol
+
+**Phase 1 — Orient (default, fast, lightweight):**
+Use \`action: "context"\` with keywords. By default this returns only graph nodes — structured knowledge with labels, summaries, types, confidence scores, and edges. This is usually sufficient and keeps results compact.
+
+**Phase 2 — Fetch source text (only when needed):**
+If you need the original source text behind a node (for verbatim quotes, citations, or when graph summaries lack detail), use \`action: "context"\` with \`include_chunks: true\`. This adds full document chunks (400-800 words each) to the response.
+
+**Orientation shortcut:**
+- \`action: "document_index"\` — list all ingested documents (titles, dates, UIDs) to see what's in the graph
+
 ## Search strategy — keyword first, semantic as fallback
 
 The default search uses BM25 keyword matching. Query with 1–3 discriminating terms (proper nouns, technical terms). Drop filler words.
@@ -72,6 +83,7 @@ If keyword search returns no results, escalate:
 ## When to READ
 
 - User asks about topic X → \`mindgraph_retrieve\` action "context", query "X keywords"
+- User asks "what documents are in my graph?" → action "document_index"
 - User explicitly asks "what are my goals?" → action "active_goals"
 - User explicitly asks about open questions → action "open_questions"
 - Explore around a known node → action "neighborhood" with start_uid
@@ -93,6 +105,7 @@ Capture knowledge when the user shares something worth remembering:
 
 - \`capture\`: "entity"/"observation" for facts, "journal" for personal/informal
 - \`reason\`: "claim" when evidence exists, "open_question"/"hypothesis" otherwise
+- \`retrieve\`: "context" returns graph nodes only by default — set include_chunks=true for source text
 - \`retrieve\`: "context" (FTS default) → "semantic" (conceptual fallback) → "hybrid" (both)
 - \`retrieve\`: "neighborhood"/"chain"/"path"/"subgraph" for graph exploration
 - Confidence: 0.9+ for facts, 0.5-0.8 for uncertain, <0.5 for speculation
@@ -103,7 +116,7 @@ Capture knowledge when the user shares something worth remembering:
 const server = new Server(
   {
     name: "mindgraph",
-    version: "0.4.0",
+    version: "0.5.0",
   },
   {
     capabilities: {
@@ -502,7 +515,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(
-    `MindGraph MCP server v0.4.0 running on stdio (${BASE_URL})`
+    `MindGraph MCP server v0.5.0 running on stdio (${BASE_URL})`
   );
 }
 
