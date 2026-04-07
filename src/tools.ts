@@ -363,7 +363,7 @@ export const TOOLS: Tool[] = [
         },
         limit: {
           type: "number",
-          description: "Max results to return (default: 10)",
+          description: "Max results to return (default: 27)",
         },
         include_chunks: {
           type: "boolean",
