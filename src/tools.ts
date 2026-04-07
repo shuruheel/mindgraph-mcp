@@ -939,10 +939,10 @@ async function handleRetrieve(
       return ok(
         await client.retrieveContext({
           query,
-          k: limit,
+          node_limit: limit,
           node_types,
           layer,
-          include_chunks: include_chunks ?? false,
+          chunk_limit: include_chunks ? (limit ?? 5) : 0,
           include_graph,
         })
       );
