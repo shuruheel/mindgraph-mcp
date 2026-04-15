@@ -18,6 +18,7 @@ const API_KEY = process.env.MINDGRAPH_API_KEY;
 const BASE_URL =
   process.env.MINDGRAPH_BASE_URL || "https://api.mindgraph.cloud";
 const AGENT_ID = process.env.MINDGRAPH_AGENT_ID || "mcp";
+const ORG_ID = process.env.MINDGRAPH_ORG_ID;
 
 if (!API_KEY) {
   console.error(
@@ -33,6 +34,7 @@ if (!API_KEY) {
 const client = new MindGraph({
   baseUrl: BASE_URL,
   apiKey: API_KEY,
+  orgId: ORG_ID,
 });
 
 // ── Server Instructions ───────────────────────────────────────────────
