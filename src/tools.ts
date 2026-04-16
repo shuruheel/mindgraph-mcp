@@ -452,6 +452,44 @@ export const TOOLS: Tool[] = [
       required: ["action"],
     },
   },
+  {
+    name: "mindgraph_synthesize",
+    description:
+      "Work with Projects — scoped document corpora — and run cross-document synthesis over them. Use 'signals' to mine structural signals (entity bridges, claim hubs, theory support gaps, concept clusters, analogy candidates, dialectical pairs) without any LLM calls; useful for orientation before a full synthesis. Use 'run' to spawn a background synthesis job that turns the top idea clusters into Article nodes linked via Covers edges. Both operate on a Project's corpus, where documents are linked to the Project via PartOfProject edges (create the project with mindgraph_commit action 'project', then link docs via the ingest flow or add_link). Use 'job_status' to poll a synthesis job.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        action: {
+          type: "string",
+          enum: ["signals", "run", "job_status"],
+          description: "Synthesis action",
+        },
+        project_uid: {
+          type: "string",
+          description: "UID of the Project node (required for signals/run)",
+        },
+        signals: {
+          type: "string",
+          description:
+            "Comma-separated subset of signal names to compute, e.g. 'clustered_claim_hubs,dialectical_pairs'. If omitted, all signals run. (Only for action='signals'.)",
+        },
+        target_types: {
+          type: "string",
+          description:
+            "Comma-separated node types used to filter entity_bridges and claim_hubs (e.g. 'Person,Organization,Theory'). (Only for action='signals'.)",
+        },
+        job_id: {
+          type: "string",
+          description: "Job ID to poll (for action='job_status')",
+        },
+        agent_id: {
+          type: "string",
+          description: "Agent identity",
+        },
+      },
+      required: ["action"],
+    },
+  },
 ];
 
 // ── Tool Handlers ─────────────────────────────────────────────────────
@@ -493,6 +531,8 @@ export async function handleTool(
         return await handleRetrieve(client, args);
       case "mindgraph_ingest":
         return await handleIngest(client, args);
+      case "mindgraph_synthesize":
+        return await handleSynthesize(client, args);
       default:
         return err(`Unknown tool: ${name}`);
     }
@@ -1154,5 +1194,40 @@ async function handleIngest(
 
     default:
       return err(`Unknown ingest action: ${action}`);
+  }
+}
+
+async function handleSynthesize(
+  client: MindGraph,
+  args: Record<string, unknown>
+): Promise<ToolResult> {
+  const { action, project_uid, signals, target_types, job_id } =
+    args as {
+      action: string;
+      project_uid?: string;
+      signals?: string;
+      target_types?: string;
+      job_id?: string;
+    };
+
+  switch (action) {
+    case "signals":
+      if (!project_uid)
+        return err("project_uid is required for action='signals'");
+      return ok(
+        await client.signals(project_uid, { signals, target_types })
+      );
+
+    case "run":
+      if (!project_uid)
+        return err("project_uid is required for action='run'");
+      return ok(await client.runSynthesis(project_uid));
+
+    case "job_status":
+      if (!job_id) return err("job_id is required for action='job_status'");
+      return ok(await client.getJob(job_id));
+
+    default:
+      return err(`Unknown synthesize action: ${action}`);
   }
 }

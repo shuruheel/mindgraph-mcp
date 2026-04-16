@@ -39,7 +39,7 @@ const client = new MindGraph({
 
 // ── Server Instructions ───────────────────────────────────────────────
 
-const INSTRUCTIONS = `You have access to a persistent knowledge graph via MindGraph (6 tools).
+const INSTRUCTIONS = `You have access to a persistent knowledge graph via MindGraph (7 tools).
 
 ## #1 RULE: Go straight to the user's topic
 
@@ -102,6 +102,7 @@ Capture knowledge when the user shares something worth remembering:
 - Goals or projects → \`mindgraph_commit\` action "goal"/"project"
 - Decisions → \`mindgraph_commit\` action "open_decision"
 - Long-form content → \`mindgraph_ingest\`
+- Cross-document synthesis over a project corpus → \`mindgraph_synthesize\` (action "signals" for structural signals; action "run" to spawn a synthesis job that writes Article nodes)
 
 ## Tool tips
 
@@ -118,7 +119,7 @@ Capture knowledge when the user shares something worth remembering:
 const server = new Server(
   {
     name: "mindgraph",
-    version: "0.5.0",
+    version: "0.7.0",
   },
   {
     capabilities: {
@@ -517,7 +518,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(
-    `MindGraph MCP server v0.5.0 running on stdio (${BASE_URL})`
+    `MindGraph MCP server v0.7.0 running on stdio (${BASE_URL})`
   );
 }
 
