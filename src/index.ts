@@ -119,7 +119,7 @@ Capture knowledge when the user shares something worth remembering:
 const server = new Server(
   {
     name: "mindgraph",
-    version: "0.7.0",
+    version: "0.7.1",
   },
   {
     capabilities: {
@@ -518,7 +518,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(
-    `MindGraph MCP server v0.7.0 running on stdio (${BASE_URL})`
+    `MindGraph MCP server v0.7.1 running on stdio (${BASE_URL})`
   );
 }
 
