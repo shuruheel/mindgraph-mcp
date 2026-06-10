@@ -49,7 +49,7 @@ Or drop this into your Claude Desktop config by hand (`~/Library/Application Sup
 
 ## What You Get
 
-**7 tools** covering the full knowledge-graph workflow:
+**8 tools** covering the full knowledge-graph workflow:
 
 | Tool | Purpose |
 |------|---------|
@@ -60,6 +60,7 @@ Or drop this into your Claude Desktop config by hand (`~/Library/Application Sup
 | `mindgraph_retrieve` | BM25 / semantic / hybrid search, traversal (chain, neighborhood, path, subgraph), document index |
 | `mindgraph_ingest` | Chunk / document / session ingestion with LLM-powered extraction |
 | `mindgraph_synthesize` | Project-scoped cross-document synthesis — mine signals, spawn Article-generation jobs |
+| `mindgraph_ontology` | Operational Ontology (Layer 7) — typed domain objects, NL queries with provenance, extraction proposal review (approve/reject), object linking |
 
 **7 prompt templates** for common workflows:
 

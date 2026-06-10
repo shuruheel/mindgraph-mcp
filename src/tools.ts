@@ -490,6 +490,116 @@ export const TOOLS: Tool[] = [
       required: ["action"],
     },
   },
+  {
+    name: "mindgraph_ontology",
+    description:
+      "Work with the Operational Ontology (Layer 7) — workspace-specific domain objects typed by a user-approved schema (e.g. Client, Contract, Patient, Experiment). Use 'schemas'/'schema' to discover what object and relation types exist before anything else. Use 'query' for natural-language retrieval of typed objects with cognitive context (claims, decisions, risks about them) and source provenance; 'search' for hybrid search over objects; 'objects'/'object'/'object_context' to browse instances. Extraction proposes new objects/relations into a review queue rather than writing directly: use 'proposals'/'proposal' to inspect the queue, and 'approve'/'reject' ONLY when the user explicitly asks — proposal review is the human-in-the-loop boundary. Use 'link' to relate two existing objects, 'extract' to run schema-typed extraction over already-ingested sources.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        action: {
+          type: "string",
+          enum: [
+            "schemas",
+            "schema",
+            "query",
+            "search",
+            "objects",
+            "object",
+            "object_context",
+            "proposals",
+            "proposal",
+            "approve",
+            "reject",
+            "link",
+            "extract",
+          ],
+          description: "Ontology operation",
+        },
+        schema_id: {
+          type: "string",
+          description:
+            "Ontology schema ID (required for query/objects/extract; optional filter for proposals). Get it from action='schemas'.",
+        },
+        query: {
+          type: "string",
+          description: "Natural-language query (for action=query) or search text (for action=search)",
+        },
+        object_types: {
+          type: "array",
+          items: { type: "string" },
+          description: "Restrict to these object type names, e.g. ['Client'] (for query/search)",
+        },
+        object_type: {
+          type: "string",
+          description: "Single object type name filter (for objects/proposals)",
+        },
+        uid: {
+          type: "string",
+          description: "Domain object UID (for object/object_context)",
+        },
+        depth: {
+          type: "number",
+          description: "Traversal depth for context (for query/object_context, default 1)",
+        },
+        include_cognitive_context: {
+          type: "boolean",
+          description: "Include linked cognitive nodes — claims, decisions, risks (for action=query, default true)",
+        },
+        include_sources: {
+          type: "boolean",
+          description: "Include source provenance entries (for action=query, default true)",
+        },
+        limit: {
+          type: "number",
+          description: "Max results (for query/search/objects/proposals)",
+        },
+        status: {
+          type: "string",
+          enum: ["pending", "approved", "approval_required", "rejected", "applied", "apply_failed"],
+          description: "Review-status filter (for action=proposals, default 'pending')",
+        },
+        proposal_id: {
+          type: "string",
+          description: "Proposal ID (for proposal/approve/reject)",
+        },
+        feedback: {
+          type: "string",
+          description: "Reviewer feedback to record (for action=approve)",
+        },
+        reason: {
+          type: "string",
+          description: "Rejection reason (for action=reject)",
+        },
+        from_uid: {
+          type: "string",
+          description: "Source domain object UID (for action=link)",
+        },
+        to_uid: {
+          type: "string",
+          description: "Target domain object UID (for action=link)",
+        },
+        relation_type: {
+          type: "string",
+          description: "Relation type name from the schema (for action=link)",
+        },
+        fields: {
+          type: "object",
+          description: "Relation field values (for action=link)",
+        },
+        source_uids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Chunk/document UIDs to extract from (for action=extract)",
+        },
+        agent_id: {
+          type: "string",
+          description: "Agent identity",
+        },
+      },
+      required: ["action"],
+    },
+  },
 ];
 
 // ── Tool Handlers ─────────────────────────────────────────────────────
@@ -533,6 +643,8 @@ export async function handleTool(
         return await handleIngest(client, args);
       case "mindgraph_synthesize":
         return await handleSynthesize(client, args);
+      case "mindgraph_ontology":
+        return await handleOntology(client, args);
       default:
         return err(`Unknown tool: ${name}`);
     }
@@ -1229,5 +1341,164 @@ async function handleSynthesize(
 
     default:
       return err(`Unknown synthesize action: ${action}`);
+  }
+}
+
+// ── Ontology (Layer 7) ───────────────────────────────────────────────
+
+async function handleOntology(
+  client: MindGraph,
+  args: Record<string, unknown>
+): Promise<ToolResult> {
+  const {
+    action,
+    schema_id,
+    query,
+    object_types,
+    object_type,
+    uid,
+    depth,
+    include_cognitive_context,
+    include_sources,
+    limit,
+    status,
+    proposal_id,
+    feedback,
+    reason,
+    from_uid,
+    to_uid,
+    relation_type,
+    fields,
+    source_uids,
+    agent_id,
+  } = args as {
+    action: string;
+    schema_id?: string;
+    query?: string;
+    object_types?: string[];
+    object_type?: string;
+    uid?: string;
+    depth?: number;
+    include_cognitive_context?: boolean;
+    include_sources?: boolean;
+    limit?: number;
+    status?: string;
+    proposal_id?: string;
+    feedback?: string;
+    reason?: string;
+    from_uid?: string;
+    to_uid?: string;
+    relation_type?: string;
+    fields?: Record<string, unknown>;
+    source_uids?: string[];
+    agent_id?: string;
+  };
+
+  switch (action) {
+    case "schemas":
+      return ok(await client.listOntologySchemas());
+
+    case "schema":
+      if (!schema_id) return err("schema_id is required for action='schema'");
+      return ok(await client.getOntologySchema(schema_id));
+
+    case "query": {
+      if (!query) return err("query is required for action='query'");
+      if (!schema_id) {
+        return err(
+          "schema_id is required for action='query' (use action='schemas' to find the active schema)"
+        );
+      }
+      return ok(
+        await client.queryOntology({
+          query,
+          schema_id,
+          object_types,
+          include_cognitive_context: include_cognitive_context ?? true,
+          include_sources: include_sources ?? true,
+          depth,
+          limit,
+        })
+      );
+    }
+
+    case "search":
+      if (!query) return err("query is required for action='search'");
+      return ok(
+        await client.searchDomainObjects(query, {
+          schema_id,
+          object_types,
+          limit,
+        })
+      );
+
+    case "objects":
+      if (!schema_id) return err("schema_id is required for action='objects'");
+      return ok(
+        await client.listDomainObjects({ schema_id, object_type, limit })
+      );
+
+    case "object":
+      if (!uid) return err("uid is required for action='object'");
+      return ok(await client.getDomainObject(uid));
+
+    case "object_context":
+      if (!uid) return err("uid is required for action='object_context'");
+      return ok(await client.getDomainObjectContext(uid, depth));
+
+    case "proposals":
+      return ok(
+        await client.listOntologyProposals({
+          status: status ?? "pending",
+          schema_id,
+          object_type,
+          limit,
+        })
+      );
+
+    case "proposal":
+      if (!proposal_id) return err("proposal_id is required for action='proposal'");
+      return ok(await client.getOntologyProposal(proposal_id));
+
+    case "approve":
+      if (!proposal_id) return err("proposal_id is required for action='approve'");
+      return ok(await client.approveOntologyProposal(proposal_id, { feedback }));
+
+    case "reject":
+      if (!proposal_id) return err("proposal_id is required for action='reject'");
+      return ok(await client.rejectOntologyProposal(proposal_id, reason));
+
+    case "link": {
+      if (!from_uid || !to_uid || !relation_type) {
+        return err(
+          "from_uid, to_uid, and relation_type are required for action='link'"
+        );
+      }
+      return ok(
+        await client.linkDomainObjects({
+          from_uid,
+          to_uid,
+          relation_type,
+          fields,
+          agent_id,
+        })
+      );
+    }
+
+    case "extract": {
+      if (!schema_id) return err("schema_id is required for action='extract'");
+      if (!source_uids?.length) {
+        return err("source_uids is required for action='extract'");
+      }
+      return ok(
+        await client.extractOntology({
+          ontology_schema_id: schema_id,
+          source_uids,
+        })
+      );
+    }
+
+    default:
+      return err(`Unknown ontology action: ${action}`);
   }
 }
