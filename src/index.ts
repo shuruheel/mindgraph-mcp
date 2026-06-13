@@ -88,6 +88,7 @@ If keyword search returns no results, escalate:
 - User asks "what documents are in my graph?" → action "document_index"
 - User explicitly asks "what are my goals?" → action "active_goals"
 - User explicitly asks about open questions → action "open_questions"
+- User asks for advice or a recommendation ("suggest a hotel", "what should I read?") → action "preferences", query "topic keywords" — tailor the answer to what they like
 - Explore around a known node → action "neighborhood" with start_uid
 - Find connections between nodes → action "path" with start_uid + end_uid
 

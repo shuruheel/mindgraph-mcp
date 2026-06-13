@@ -298,7 +298,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_retrieve",
     description:
-      "Search and explore the knowledge graph. Use 'context' (default) for BM25 keyword retrieval — returns graph nodes only by default (labels, summaries, types, confidence); set include_chunks=true to also get full source text. Pass 1-3 discriminating keywords, not sentences. GOOD: 'Kissinger NATO'. BAD: 'What is Kissinger\\'s view on NATO?'. Use 'document_index' to list all ingested documents (titles, dates, UIDs) for orientation. Use 'semantic' when keywords return nothing — conceptual/fuzzy queries. Use 'hybrid' for keyword + semantic. Use 'text' for fast keyword-only. Use 'neighborhood'/'chain'/'path'/'subgraph' for graph traversal. Other actions ('active_goals', 'open_questions', etc.) only when the user explicitly asks.",
+      "Search and explore the knowledge graph. Use 'context' (default) for BM25 keyword retrieval — returns graph nodes only by default (labels, summaries, types, confidence); set include_chunks=true to also get full source text. Pass 1-3 discriminating keywords, not sentences. GOOD: 'Kissinger NATO'. BAD: 'What is Kissinger\\'s view on NATO?'. Use 'document_index' to list all ingested documents (titles, dates, UIDs) for orientation. Use 'semantic' when keywords return nothing — conceptual/fuzzy queries. Use 'hybrid' for keyword + semantic. Use 'text' for fast keyword-only. Use 'neighborhood'/'chain'/'path'/'subgraph' for graph traversal. Use 'preferences' for advice or recommendation requests ('suggest a hotel', 'what should I read?') — it returns the user's stated/learned preferences relevant to the query (pass the topic as 'query'), so your answer reflects what they actually like instead of being generic. Other structured actions ('active_goals', 'open_questions', etc.) only when the user explicitly asks.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -314,6 +314,7 @@ export const TOOLS: Tool[] = [
             "weak_claims",
             "pending_approvals",
             "unresolved_contradictions",
+            "preferences",
             "layer",
             "recent",
             "chain",
@@ -1153,6 +1154,19 @@ async function handleRetrieve(
 
     case "unresolved_contradictions":
       return ok(await client.getContradictions());
+
+    case "preferences":
+      // With a query, returns topic-relevant preferences (the semantic leg
+      // bridges low lexical overlap); without one, all preferences, most
+      // salient first.
+      return ok(
+        await client.retrieve({
+          action: "preferences",
+          ...(query ? { query, k: limit } : {}),
+          limit,
+          agent_id,
+        } as any)
+      );
 
     case "layer":
       if (!layer) return err("layer is required for layer retrieval");

@@ -1,0 +1,2 @@
+- [Extraction retry/escalation invariants](extraction_retry_escalation.md) — pipeline.rs call_llm_with_retries + run_single_pass: where the fragile arithmetic and classification edges live
+- [Dedup supersession idempotency](dedup_supersession.md) — ingestion.rs dedup updates→Supersedes edge: routed/have_* sets, edge orientation, entity downgrade
