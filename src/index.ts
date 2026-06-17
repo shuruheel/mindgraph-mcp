@@ -11,6 +11,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { MindGraph } from "mindgraph";
 import { TOOLS, handleTool } from "./tools.js";
+import { getGeneratedTools, handleGeneratedTool } from "./generated-tools.js";
 
 // ── Configuration ─────────────────────────────────────────────────────
 
@@ -135,7 +136,10 @@ const server = new Server(
 // ── Tool Handlers ─────────────────────────────────────────────────────
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return { tools: TOOLS };
+  // Static tools + per-object-type read tools generated from the active
+  // ontology (never throws — empty set if the manifest endpoint is absent).
+  const generated = await getGeneratedTools(client);
+  return { tools: [...TOOLS, ...generated.tools] };
 });
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -145,6 +149,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const toolArgs = { ...((args as Record<string, unknown>) || {}) };
   if (!toolArgs.agent_id) {
     toolArgs.agent_id = AGENT_ID;
+  }
+
+  // Route generated ontology tools (search_<objs>/get_<obj>/summarize_<obj>).
+  const generated = await getGeneratedTools(client);
+  const desc = generated.byName.get(name);
+  if (desc) {
+    return handleGeneratedTool(client, desc, toolArgs);
   }
 
   return handleTool(client, name, toolArgs);
