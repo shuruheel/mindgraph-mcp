@@ -22,6 +22,7 @@ jobs:
       - run: npm install
       - run: npm run build
       - run: npm run lint
+      - run: npm run test
 
       - name: Verify tag matches package.json version
         if: github.ref_type == 'tag'
