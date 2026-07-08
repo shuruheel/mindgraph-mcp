@@ -9,15 +9,23 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Must match the environment configured on the npm trusted-publisher.
+    environment: npm
     permissions:
       contents: read
+      # Required: npm trusted publishing authenticates via the workflow's OIDC
+      # token (no NODE_AUTH_TOKEN). Also enables automatic provenance.
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
+
+      # Trusted publishing (OIDC) requires npm >= 11.5.1; Node 22 ships an older npm.
+      - run: npm install -g npm@latest
 
       - run: npm install
       - run: npm run build
@@ -35,6 +43,12 @@ jobs:
           fi
           echo "Version match OK: $PKG"
 
+      # No NODE_AUTH_TOKEN: npm authenticates via the OIDC id-token against the
+      # trusted-publisher config on npmjs.com. Configure it there as:
+      #   Publisher:          GitHub Actions
+      #   Organization/user:  shuruheel
+      #   Repository:         mindgraph-mcp
+      #   Workflow filename:  publish.yml
+      #   Environment:        npm
+      # Provenance is attached automatically.
       - run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
