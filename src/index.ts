@@ -121,7 +121,7 @@ Capture knowledge when the user shares something worth remembering:
 const server = new Server(
   {
     name: "mindgraph",
-    version: "0.9.1",
+    version: "0.10.0",
   },
   {
     capabilities: {

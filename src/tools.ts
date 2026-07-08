@@ -414,9 +414,19 @@ export const TOOLS: Tool[] = [
           type: "string",
           description: "Document or session title",
         },
-        source: {
+        source_uri: {
           type: "string",
           description: "Source URL or reference",
+        },
+        content_type: {
+          type: "string",
+          enum: ["article", "meeting_notes", "report", "journal", "transcript"],
+          description:
+            "Semantic type that drives default extraction layers. IMPORTANT: for conversation transcripts, use action 'session' OR content_type 'transcript' — otherwise Decisions, Options, and Constraints are NOT extracted.",
+        },
+        document_type: {
+          type: "string",
+          description: "Free-form document type label (e.g. 'note', 'spec').",
         },
         layers: {
           type: "array",
@@ -429,9 +439,46 @@ export const TOOLS: Tool[] = [
               "action",
               "memory",
               "agent",
+              "ontology",
             ],
           },
           description: "Cognitive layers to extract (defaults vary by action)",
+        },
+        ontology_schema_id: {
+          type: "string",
+          description:
+            "When set, run typed Layer-7 (domain-object) extraction against this schema in addition to the cognitive layers.",
+        },
+        participants: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              organization: { type: "string" },
+              role: { type: "string" },
+            },
+            required: ["name"],
+          },
+          description:
+            "Named conversation participants. Maps generic speaker labels ('Interviewer:') to real people so claims/demands attribute to the named person.",
+        },
+        occurred_at: {
+          type: "string",
+          description: "When the conversation/document occurred (ISO-8601).",
+        },
+        context: {
+          type: "string",
+          description: "Free-text context grounding attribution during extraction.",
+        },
+        document_uid: {
+          type: "string",
+          description:
+            "chunk action: the parent Document uid, so this chunk joins that document's provenance chain.",
+        },
+        chunk_index: {
+          type: "number",
+          description: "chunk action: 0-based index of this chunk within its document.",
         },
         chunk_size: {
           type: "number",
@@ -1260,18 +1307,47 @@ async function handleIngest(
   client: MindGraph,
   args: Record<string, unknown>
 ): Promise<ToolResult> {
-  const { action, content, title, source, layers, chunk_size, chunk_overlap, job_id, agent_id } =
-    args as {
-      action: string;
-      content?: string;
-      title?: string;
-      source?: string;
-      layers?: string[];
-      chunk_size?: number;
-      chunk_overlap?: number;
-      job_id?: string;
-      agent_id?: string;
-    };
+  const {
+    action,
+    content,
+    title,
+    source_uri,
+    source, // deprecated alias for source_uri (kept for cached tool schemas)
+    content_type,
+    document_type,
+    layers,
+    ontology_schema_id,
+    participants,
+    occurred_at,
+    context,
+    document_uid,
+    chunk_index,
+    chunk_size,
+    chunk_overlap,
+    job_id,
+    agent_id,
+  } = args as {
+    action: string;
+    content?: string;
+    title?: string;
+    source_uri?: string;
+    source?: string;
+    content_type?: string;
+    document_type?: string;
+    layers?: string[];
+    ontology_schema_id?: string;
+    participants?: Array<{ name: string; organization?: string; role?: string }>;
+    occurred_at?: string;
+    context?: string;
+    document_uid?: string;
+    chunk_index?: number;
+    chunk_size?: number;
+    chunk_overlap?: number;
+    job_id?: string;
+    agent_id?: string;
+  };
+
+  const src = source_uri ?? source;
 
   switch (action) {
     case "chunk":
@@ -1279,10 +1355,12 @@ async function handleIngest(
       return ok(
         await client.ingestChunk({
           content,
-          title,
-          source,
+          label: title,
+          document_uid,
+          chunk_index,
           layers,
           agent_id,
+          ontology_schema_id,
         } as any)
       );
 
@@ -1292,8 +1370,14 @@ async function handleIngest(
         await client.ingestDocument({
           content,
           title,
-          source,
+          source_uri: src,
+          content_type,
+          document_type,
           layers,
+          ontology_schema_id,
+          participants,
+          occurred_at,
+          context,
           chunk_size,
           chunk_overlap,
           agent_id,
@@ -1306,8 +1390,13 @@ async function handleIngest(
         await client.ingestSession({
           content,
           title,
-          source,
           layers,
+          ontology_schema_id,
+          participants,
+          occurred_at,
+          context,
+          chunk_size,
+          chunk_overlap,
           agent_id,
         } as any)
       );

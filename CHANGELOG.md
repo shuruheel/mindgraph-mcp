@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.10.0 (2026-07-07)
+
+### Changed
+
+- `mindgraph_ingest` contract fixes: `source` → `source_uri` (old `source`
+  kept as a silent alias); chunk `title` → `label` with `document_uid` /
+  `chunk_index` so chunks join their document's provenance chain. **Transcripts
+  now extract Decisions/Options/Constraints** — pass `content_type: "transcript"`
+  (or action `"session"`); the server gives it the full transcript layer set.
+- `mindgraph` SDK dependency `^0.9.0` → `^0.11.0` (the 1.8 train's TS SDK).
+  **Release order:** publish `mindgraph` (TS SDK) 0.11.0 and deploy the cloud
+  server (mindgraph 1.8.0) before/with this package so the advertised fields
+  are present in responses.
+
+### Added
+
+- `mindgraph_ingest` gains `content_type` (incl. `transcript`), `document_type`,
+  `ontology_schema_id` + the `ontology` layer, and D1 conversation metadata
+  (`participants` / `occurred_at` / `context`) so demands attribute to the
+  named participant.
+
 ## 0.9.1 (2026-07-03)
 
 ### Changed
