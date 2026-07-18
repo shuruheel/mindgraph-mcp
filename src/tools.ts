@@ -206,6 +206,23 @@ export const TOOLS: Tool[] = [
           type: "string",
           description: "UID of the chosen option (for resolve_decision)",
         },
+        informs_uid: {
+          type: "array",
+          items: { type: "string" },
+          description: "Decision-time context UIDs to link with dated INFORMS edges",
+        },
+        as_of_date: {
+          type: "string",
+          description: "ISO 8601 date when the decision context was available",
+        },
+        session_id: {
+          type: "string",
+          description: "Session whose retrieval context informed the decision",
+        },
+        retrieval_trace_id: {
+          type: "string",
+          description: "Identifier of the decision-time retrieval trace",
+        },
         confidence: {
           type: "number",
           minimum: 0,
@@ -314,6 +331,7 @@ export const TOOLS: Tool[] = [
             "weak_claims",
             "pending_approvals",
             "unresolved_contradictions",
+            "stale_derivations",
             "preferences",
             "layer",
             "recent",
@@ -365,6 +383,10 @@ export const TOOLS: Tool[] = [
         limit: {
           type: "number",
           description: "Max results to return (default: 27)",
+        },
+        offset: {
+          type: "number",
+          description: "Pagination offset (for stale_derivations)",
         },
         include_chunks: {
           type: "boolean",
@@ -894,6 +916,10 @@ async function handleCommit(
     parent_uid,
     decision_uid,
     chosen_option_uid,
+    informs_uid,
+    as_of_date,
+    session_id,
+    retrieval_trace_id,
     confidence,
     salience,
     props,
@@ -905,6 +931,10 @@ async function handleCommit(
     parent_uid?: string;
     decision_uid?: string;
     chosen_option_uid?: string;
+    informs_uid?: string[];
+    as_of_date?: string;
+    session_id?: string;
+    retrieval_trace_id?: string;
     confidence?: number;
     salience?: number;
     props?: Record<string, unknown>;
@@ -957,8 +987,13 @@ async function handleCommit(
       return ok(
         await client.resolveDecision(decision_uid, chosen_option_uid, {
           summary,
+          props,
+          informs_uid,
+          as_of_date,
+          session_id,
+          retrieval_trace_id,
           agent_id,
-        })
+        } as any)
       );
 
     case "get_open_decisions":
@@ -1110,6 +1145,7 @@ async function handleRetrieve(
     node_types,
     layer,
     limit,
+    offset,
     include_chunks,
     include_graph,
     confidence_min,
@@ -1126,6 +1162,7 @@ async function handleRetrieve(
     node_types?: string[];
     layer?: string;
     limit?: number;
+    offset?: number;
     include_chunks?: boolean;
     include_graph?: boolean;
     confidence_min?: number;
@@ -1201,6 +1238,15 @@ async function handleRetrieve(
 
     case "unresolved_contradictions":
       return ok(await client.getContradictions());
+
+    case "stale_derivations":
+      return ok(
+        await client.retrieve({
+          action: "stale_derivations",
+          limit,
+          offset,
+        } as any)
+      );
 
     case "preferences":
       // With a query, returns topic-relevant preferences (the semantic leg

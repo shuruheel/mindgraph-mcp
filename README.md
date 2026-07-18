@@ -55,7 +55,7 @@ Or drop this into your Claude Desktop config by hand (`~/Library/Application Sup
 |------|---------|
 | `mindgraph_capture` | Entities, observations, sources, snippets, concepts, journal entries |
 | `mindgraph_reason` | Claims with evidence, open questions, hypotheses, theories, anomalies |
-| `mindgraph_commit` | Goals, projects, decisions, options, milestones |
+| `mindgraph_commit` | Goals, projects, decisions, options, milestones, and dated decision-context linkage |
 | `mindgraph_plan` | Plans, tasks, procedures, governance policies, risk assessments, executions |
 | `mindgraph_retrieve` | BM25 / semantic / hybrid search, traversal (chain, neighborhood, path, subgraph), document index |
 | `mindgraph_ingest` | Chunk / document / session ingestion with LLM-powered extraction |

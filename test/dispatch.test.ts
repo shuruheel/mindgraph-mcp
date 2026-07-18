@@ -280,10 +280,20 @@ describe("mindgraph_commit dispatch", () => {
       action: "resolve_decision",
       decision_uid: "d1",
       chosen_option_uid: "o1",
+      informs_uid: ["ctx1"],
+      as_of_date: "2026-07-17",
+      session_id: "session7",
+      retrieval_trace_id: "trace7",
     });
     expect(client.resolveDecision).toHaveBeenCalledTimes(1);
     expect(client.resolveDecision.mock.calls[0][0]).toBe("d1");
     expect(client.resolveDecision.mock.calls[0][1]).toBe("o1");
+    expect(client.resolveDecision.mock.calls[0][2]).toMatchObject({
+      informs_uid: ["ctx1"],
+      as_of_date: "2026-07-17",
+      session_id: "session7",
+      retrieval_trace_id: "trace7",
+    });
   });
 
   it("get_open_decisions -> getOpenDecisions()", async () => {
@@ -397,6 +407,7 @@ describe("mindgraph_retrieve dispatch", () => {
       ["weak_claims", "getWeakClaims"],
       ["pending_approvals", "getPendingApprovals"],
       ["unresolved_contradictions", "getContradictions"],
+      ["stale_derivations", "retrieve"],
     ];
     for (const [action, method] of map) {
       const c = makeClient();

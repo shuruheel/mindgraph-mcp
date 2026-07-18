@@ -24,6 +24,7 @@ export const RETRIEVE_ACTIONS = [
   "unresolved_contradictions",
   "merge_candidates",
   "curation_counts",
+  "stale_derivations",
   "preferences",
   "layer",
   "recent",
