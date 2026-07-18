@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased (1.9 product train)
+## Unreleased
+
+## 0.11.0 (2026-07-18)
 
 ### Added
 
@@ -15,6 +17,8 @@
 - Traversal guidance now describes the server 1.9 min-cost witness semantics.
 - Context expansion preserves direct-ranking recall when the graph cannot fill
   its three-slot default reservation.
+- Bumps the `mindgraph` TS-SDK dependency `^0.11.0` → `^0.12.0`; release after
+  the SDK's 0.12.0 is on npm.
 
 ## 0.10.0 (2026-07-07)
 
