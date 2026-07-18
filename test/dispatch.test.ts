@@ -377,12 +377,30 @@ describe("mindgraph_retrieve dispatch", () => {
   it("context -> retrieveContext() with chunk_limit gated by include_chunks", async () => {
     await handleTool(client, "mindgraph_retrieve", { action: "context", query: "Kissinger NATO" });
     expect(client.retrieveContext).toHaveBeenCalledTimes(1);
-    expect(client.retrieveContext.mock.calls[0][0]).toMatchObject({ query: "Kissinger NATO", chunk_limit: 0 });
+    expect(client.retrieveContext.mock.calls[0][0]).toMatchObject({
+      query: "Kissinger NATO",
+      chunk_limit: 0,
+      graph_expansion_limit: 3,
+      graph_max_depth: 2,
+    });
   });
 
   it("context include_chunks=true sets a nonzero chunk_limit", async () => {
     await handleTool(client, "mindgraph_retrieve", { action: "context", query: "q", include_chunks: true, limit: 3 });
     expect(client.retrieveContext.mock.calls[0][0]).toMatchObject({ chunk_limit: 3 });
+  });
+
+  it("context forwards explicit graph expansion budgets", async () => {
+    await handleTool(client, "mindgraph_retrieve", {
+      action: "context",
+      query: "q",
+      graph_expansion_limit: 8,
+      graph_max_depth: 4,
+    });
+    expect(client.retrieveContext.mock.calls[0][0]).toMatchObject({
+      graph_expansion_limit: 8,
+      graph_max_depth: 4,
+    });
   });
 
   it("context without query errors and does not call retrieveContext", async () => {
@@ -435,8 +453,18 @@ describe("mindgraph_retrieve dispatch", () => {
   });
 
   it("traversal: neighborhood/path/subgraph route to traverse() with start_uid/end_uid field names", async () => {
-    await handleTool(client, "mindgraph_retrieve", { action: "neighborhood", start_uid: "n1" });
-    expect(client.traverse.mock.calls[0][0]).toMatchObject({ action: "neighborhood", start_uid: "n1" });
+    await handleTool(client, "mindgraph_retrieve", {
+      action: "neighborhood",
+      start_uid: "n1",
+      max_nodes: 42,
+      exclude_edge_types: ["CONTAINS"],
+    });
+    expect(client.traverse.mock.calls[0][0]).toMatchObject({
+      action: "neighborhood",
+      start_uid: "n1",
+      max_nodes: 42,
+      exclude_edge_types: ["CONTAINS"],
+    });
 
     const c2 = makeClient();
     await handleTool(c2, "mindgraph_retrieve", { action: "path", start_uid: "a", end_uid: "b" });

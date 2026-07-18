@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased (1.9 product train)
+
+### Added
+
+- `mindgraph_retrieve` context calls opt into three graph-expansion slots and
+  depth two by default; callers can set `graph_expansion_limit` and
+  `graph_max_depth` explicitly.
+- Traversal actions expose `exclude_edge_types`, `include_provenance`, and the
+  global `max_nodes` budget.
+
+### Changed
+
+- Traversal guidance now describes the server 1.9 min-cost witness semantics.
+- Context expansion preserves direct-ranking recall when the graph cannot fill
+  its three-slot default reservation.
+
 ## 0.10.0 (2026-07-07)
 
 ### Changed

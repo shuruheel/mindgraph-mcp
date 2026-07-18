@@ -57,7 +57,7 @@ Or drop this into your Claude Desktop config by hand (`~/Library/Application Sup
 | `mindgraph_reason` | Claims with evidence, open questions, hypotheses, theories, anomalies |
 | `mindgraph_commit` | Goals, projects, decisions, options, milestones, and dated decision-context linkage |
 | `mindgraph_plan` | Plans, tasks, procedures, governance policies, risk assessments, executions |
-| `mindgraph_retrieve` | BM25 / semantic / hybrid search, traversal (chain, neighborhood, path, subgraph), document index |
+| `mindgraph_retrieve` | Context retrieval with bounded graph expansion, search, min-cost traversal, document index |
 | `mindgraph_ingest` | Chunk / document / session ingestion with LLM-powered extraction |
 | `mindgraph_synthesize` | Project-scoped cross-document synthesis — mine signals, spawn Article-generation jobs |
 | `mindgraph_ontology` | Operational Ontology (Layer 7) — typed domain objects, NL queries with provenance, extraction proposal review (approve/reject), object linking |
@@ -113,7 +113,7 @@ The server auto-injects `agent_id: "mcp"` on every write so you always know whic
 
 This MCP server is a thin wrapper over the [mindgraph](https://www.npmjs.com/package/mindgraph) TypeScript SDK. It exposes cognitive-layer abstractions (Reality, Epistemic, Intent, Action, Memory, Agent) as consolidated tools rather than one-tool-per-endpoint, which keeps the tool surface compact enough for high-quality tool selection by the model.
 
-Search strategy is **keyword-first**: `mindgraph_retrieve` defaults to `action: "context"` which uses BM25. Escalate to `semantic` or `hybrid` only when keywords fail.
+Search strategy is **keyword-first**: `mindgraph_retrieve` defaults to `action: "context"`, which seeds bounded cheapest-first graph expansion from BM25/hybrid recall. Escalate to `semantic` or `hybrid` only when keywords fail. Set `graph_expansion_limit: 0` when direct-only retrieval is required.
 
 ## Development
 

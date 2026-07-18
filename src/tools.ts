@@ -315,7 +315,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_retrieve",
     description:
-      "Search and explore the knowledge graph. Use 'context' (default) for BM25 keyword retrieval — returns graph nodes only by default (labels, summaries, types, confidence); set include_chunks=true to also get full source text. Pass 1-3 discriminating keywords, not sentences. GOOD: 'Kissinger NATO'. BAD: 'What is Kissinger\\'s view on NATO?'. Use 'document_index' to list all ingested documents (titles, dates, UIDs) for orientation. Use 'semantic' when keywords return nothing — conceptual/fuzzy queries. Use 'hybrid' for keyword + semantic. Use 'text' for fast keyword-only. Use 'neighborhood'/'chain'/'path'/'subgraph' for graph traversal — traversal steps carry path_cost (lower = stronger connection; sum of -ln(edge weight)) and path_confidence (product of edge confidences; a ranking signal, not a calibrated probability) for the returned path, useful for ranking results; they score the path returned, not the best possible path. Use 'preferences' for advice or recommendation requests ('suggest a hotel', 'what should I read?') — it returns the user's stated/learned preferences relevant to the query (pass the topic as 'query'), so your answer reflects what they actually like instead of being generic. Other structured actions ('active_goals', 'open_questions', etc.) only when the user explicitly asks.",
+      "Search and explore the knowledge graph. Use 'context' (default) for BM25 keyword retrieval plus bounded cheapest-first graph expansion — returns graph nodes only by default (labels, summaries, types, confidence); set include_chunks=true to also get full source text. Pass 1-3 discriminating keywords, not sentences. GOOD: 'Kissinger NATO'. BAD: 'What is Kissinger\\'s view on NATO?'. Use 'document_index' to list all ingested documents (titles, dates, UIDs) for orientation. Use 'semantic' when keywords return nothing — conceptual/fuzzy queries. Use 'hybrid' for keyword + semantic. Use 'text' for fast keyword-only. Use 'neighborhood'/'chain'/'path'/'subgraph' for graph traversal — traversal steps carry the cheapest witness path_cost (lower = stronger connection; sum of -ln(edge weight)), path_confidence, and witness depth. Use 'preferences' for advice or recommendation requests ('suggest a hotel', 'what should I read?') — it returns the user's stated/learned preferences relevant to the query (pass the topic as 'query'), so your answer reflects what they actually like instead of being generic. Other structured actions ('active_goals', 'open_questions', etc.) only when the user explicitly asks.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -370,6 +370,19 @@ export const TOOLS: Tool[] = [
           items: { type: "string" },
           description: "Filter by edge types (for traversal actions)",
         },
+        exclude_edge_types: {
+          type: "array",
+          items: { type: "string" },
+          description: "Denylist edge types (for traversal actions)",
+        },
+        include_provenance: {
+          type: "boolean",
+          description: "Include ingestion/provenance edges in traversal (default false)",
+        },
+        max_nodes: {
+          type: "number",
+          description: "Global distinct-node traversal budget, including the seed (default 500)",
+        },
         node_types: {
           type: "array",
           items: { type: "string" },
@@ -395,6 +408,14 @@ export const TOOLS: Tool[] = [
         include_graph: {
           type: "boolean",
           description: "Include graph nodes in context results (default: true)",
+        },
+        graph_expansion_limit: {
+          type: "number",
+          description: "Context-only graph expansion slots (default 3; set 0 for direct-only retrieval)",
+        },
+        graph_max_depth: {
+          type: "number",
+          description: "Context-only graph expansion hop limit (default 2)",
         },
         confidence_min: {
           type: "number",
@@ -1142,12 +1163,17 @@ async function handleRetrieve(
     max_depth,
     direction,
     edge_types,
+    exclude_edge_types,
+    include_provenance,
+    max_nodes,
     node_types,
     layer,
     limit,
     offset,
     include_chunks,
     include_graph,
+    graph_expansion_limit,
+    graph_max_depth,
     confidence_min,
     salience_min,
     agent_id,
@@ -1159,12 +1185,17 @@ async function handleRetrieve(
     max_depth?: number;
     direction?: string;
     edge_types?: string[];
+    exclude_edge_types?: string[];
+    include_provenance?: boolean;
+    max_nodes?: number;
     node_types?: string[];
     layer?: string;
     limit?: number;
     offset?: number;
     include_chunks?: boolean;
     include_graph?: boolean;
+    graph_expansion_limit?: number;
+    graph_max_depth?: number;
     confidence_min?: number;
     salience_min?: number;
     agent_id?: string;
@@ -1181,7 +1212,9 @@ async function handleRetrieve(
           layer,
           chunk_limit: include_chunks ? (limit ?? 5) : 0,
           include_graph,
-        })
+          graph_expansion_limit: graph_expansion_limit ?? 3,
+          graph_max_depth: graph_max_depth ?? 2,
+        } as any)
       );
 
     case "text":
@@ -1301,6 +1334,9 @@ async function handleRetrieve(
           action: "chain",
           start_uid,
           max_depth,
+          exclude_edge_types,
+          include_provenance,
+          max_nodes,
         } as any)
       );
 
@@ -1313,6 +1349,9 @@ async function handleRetrieve(
           max_depth,
           direction,
           edge_types,
+          exclude_edge_types,
+          include_provenance,
+          max_nodes,
         } as any)
       );
 
@@ -1327,6 +1366,9 @@ async function handleRetrieve(
           max_depth,
           direction,
           edge_types,
+          exclude_edge_types,
+          include_provenance,
+          max_nodes,
         } as any)
       );
 
@@ -1339,6 +1381,9 @@ async function handleRetrieve(
           max_depth,
           direction,
           edge_types,
+          exclude_edge_types,
+          include_provenance,
+          max_nodes,
         } as any)
       );
 
