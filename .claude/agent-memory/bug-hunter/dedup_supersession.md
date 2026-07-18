@@ -5,6 +5,8 @@ metadata:
   type: project
 ---
 
+> ⚠️ **DRIFTED — do not trust the orientation claim** (flagged 2026-07-18, memory reorg). This says Supersedes is oriented by `created_at` (newer→older). The current authority — `mindgraph-rs/CLAUDE.md` — documents VALID-TIME-primary orientation: open window beats closed, then `valid_from`/`event_date`, with `created_at` only as a fallback. Re-read the current dedup path before relying on this. (Also misfiled: this is a mindgraph-server finding living under mcp memory.)
+
 `mindgraph-server/src/ingestion.rs` dedup `updates` verdict (audited 2026-06-12, found correct):
 
 - Supersedes edge points newer→older: `from=a, to=b` where a,b = pair; `if a.created_at >= b.created_at {(from,to)} else {(to,from)}`. Retrieval `edges_to_set(uids, Supersedes)` maps `to_uid→superseded`, so `flag_superseded_nodes` flags the older node. End-to-end consistent.
