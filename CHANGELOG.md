@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.12.0 (2026-07-22)
+
+### Added
+
+- Adds a checkpoint-tier governance gate before every static and generated MCP tool invocation.
+- Surfaces policy denials and approval handles to MCP clients, while failing closed on provider
+  failures and obligations the adapter cannot enforce.
+- Preserves compatibility with servers that do not expose the governance capability by probing
+  once per session and leaving the existing tool flow unchanged.
+
+### Fixed
+
+- Reports the package's current version in the MCP server handshake.
+
 ## 0.11.0 (2026-07-18)
 
 ### Added
