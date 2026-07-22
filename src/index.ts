@@ -12,6 +12,7 @@ import {
 import { MindGraph } from "mindgraph";
 import { TOOLS, handleTool } from "./tools.js";
 import { getGeneratedTools, handleGeneratedTool } from "./generated-tools.js";
+import { checkMcpGovernance } from "./governance.js";
 
 // ── Configuration ─────────────────────────────────────────────────────
 
@@ -149,6 +150,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const toolArgs = { ...((args as Record<string, unknown>) || {}) };
   if (!toolArgs.agent_id) {
     toolArgs.agent_id = AGENT_ID;
+  }
+
+  const governance = await checkMcpGovernance(name, toolArgs, {
+    baseUrl: BASE_URL,
+    apiKey: API_KEY,
+    orgId: ORG_ID,
+    agentId: AGENT_ID,
+    disabled: process.env.MINDGRAPH_GOVERNANCE === "off",
+  });
+  if (!governance.allowed) {
+    return {
+      content: [{ type: "text", text: JSON.stringify({ error: governance.message, ...governance }) }],
+      isError: true,
+    };
   }
 
   // Route generated ontology tools (search_<objs>/get_<obj>/summarize_<obj>).
