@@ -37,7 +37,11 @@ const client = new MindGraph({
   baseUrl: BASE_URL,
   apiKey: API_KEY,
   orgId: ORG_ID,
-});
+  // Available in the companion mindgraph SDK from the D6 telemetry batch.
+  // Cast keeps this repository buildable during the cross-package release
+  // window where npm may still resolve the preceding SDK declaration file.
+  telemetrySurface: "mcp",
+} as ConstructorParameters<typeof MindGraph>[0] & { telemetrySurface: "mcp" });
 
 // ── Server Instructions ───────────────────────────────────────────────
 
@@ -166,7 +170,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
-  // Route generated ontology tools (search_<objs>/get_<obj>/summarize_<obj>).
+  // Route schema-qualified generated ontology tools, including relation-role
+  // reads and the structured composite.
   const generated = await getGeneratedTools(client);
   const desc = generated.byName.get(name);
   if (desc) {

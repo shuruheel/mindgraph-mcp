@@ -1,19 +1,22 @@
 // Dynamic, per-object-type read tools generated from the active ontology.
 //
-// The cloud emits descriptors (GET /v1/ontology/tools) for each active schema's
-// object types — `search_<objs>`, `get_<obj>`, `summarize_<obj>`. We render them
-// into MCP tools at list-time (cached, short TTL) and dispatch them into the
-// generic /ontology read endpoints with `object_type` bound. No codegen.
+// The cloud emits schema-qualified descriptors (GET /v1/ontology/tools) for
+// object discovery/point/context reads, every declared relation+entry-role,
+// and one structured composite per active schema. We render them into MCP tools
+// at list-time (cached, short TTL) and dispatch through the typed SDK methods.
 
 import { MindGraph } from "mindgraph";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
-interface GeneratedToolDescriptor {
+export interface GeneratedToolDescriptor {
   name: string;
   description: string;
   schema_id: string;
   object_type: string;
-  maps_to: string; // "search" | "object" | "object_context"
+  maps_to: string; // search | object | object_context | related | structured_query
+  relation?: string;
+  entry_role?: "source" | "target";
+  far_type?: string;
   input_schema: Record<string, unknown>;
 }
 
@@ -38,6 +41,12 @@ interface Cache {
   fetchedAt: number;
 }
 let cache: Cache | null = null;
+
+class DuplicateGeneratedToolError extends Error {}
+
+export function clearGeneratedToolCache(): void {
+  cache = null;
+}
 
 /**
  * Fetch (and cache) the generated tools for the active ontology. Never throws:
@@ -64,6 +73,11 @@ export async function getGeneratedTools(
     const byName = new Map<string, GeneratedToolDescriptor>();
     const tools: Tool[] = [];
     for (const d of resp.tools ?? []) {
+      if (byName.has(d.name)) {
+        throw new DuplicateGeneratedToolError(
+          `duplicate generated ontology tool name: ${d.name}`,
+        );
+      }
       byName.set(d.name, d);
       tools.push({
         name: d.name,
@@ -73,7 +87,8 @@ export async function getGeneratedTools(
     }
     cache = { tools, byName, fetchedAt: Date.now() };
     return { tools, byName };
-  } catch {
+  } catch (error) {
+    if (error instanceof DuplicateGeneratedToolError) throw error;
     // Endpoint absent or unreachable — degrade to no generated tools.
     cache = { tools: [], byName: new Map(), fetchedAt: Date.now() };
     return { tools: cache.tools, byName: cache.byName };
@@ -87,15 +102,40 @@ export async function handleGeneratedTool(
   args: Record<string, unknown>,
 ): Promise<ToolResult> {
   try {
+    const ontologyClient = client as unknown as {
+      searchDomainObjects: (
+        query: string,
+        options: Record<string, unknown>,
+      ) => Promise<unknown>;
+      getDomainObject: (
+        uid: string,
+        binding: Record<string, unknown>,
+      ) => Promise<unknown>;
+      getDomainObjectContext: (
+        uid: string,
+        depth: number | undefined,
+        binding: Record<string, unknown>,
+      ) => Promise<unknown>;
+      queryDomainStructured: (request: Record<string, unknown>) => Promise<unknown>;
+      queryRelatedDomainObjects: (request: Record<string, unknown>) => Promise<unknown>;
+    };
     switch (desc.maps_to) {
       case "search": {
         const query = args.query as string | undefined;
         if (!query) return err(`query is required for ${desc.name}`);
         const limit = typeof args.limit === "number" ? args.limit : undefined;
+        const filters = Array.isArray(args.filters)
+          ? args.filters as Array<{
+              field: string;
+              op: "eq" | "neq" | "in" | "contains" | "gte" | "lte" | "exists";
+              value?: unknown;
+            }>
+          : undefined;
         return ok(
-          await client.searchDomainObjects(query, {
+          await ontologyClient.searchDomainObjects(query, {
             schema_id: desc.schema_id,
             object_types: [desc.object_type],
+            filters,
             limit,
           }),
         );
@@ -103,13 +143,53 @@ export async function handleGeneratedTool(
       case "object": {
         const uid = args.uid as string | undefined;
         if (!uid) return err(`uid is required for ${desc.name}`);
-        return ok(await client.getDomainObject(uid));
+        return ok(await ontologyClient.getDomainObject(uid, {
+          schema_id: desc.schema_id,
+          object_type: desc.object_type,
+        }));
       }
       case "object_context": {
         const uid = args.uid as string | undefined;
         if (!uid) return err(`uid is required for ${desc.name}`);
         const depth = typeof args.depth === "number" ? args.depth : undefined;
-        return ok(await client.getDomainObjectContext(uid, depth));
+        return ok(await ontologyClient.getDomainObjectContext(uid, depth, {
+          schema_id: desc.schema_id,
+          object_type: desc.object_type,
+        }));
+      }
+      case "related": {
+        const uid = args.uid as string | undefined;
+        if (!uid) return err(`uid is required for ${desc.name}`);
+        if (!desc.relation || !desc.entry_role || !desc.far_type) {
+          return err(`invalid related descriptor: ${desc.name}`);
+        }
+        return ok(await ontologyClient.queryRelatedDomainObjects({
+          schema_id: desc.schema_id,
+          entry_type: desc.object_type,
+          uid,
+          relation: desc.relation,
+          entry_role: desc.entry_role,
+          far_type: desc.far_type,
+          where: Array.isArray(args.where)
+            ? args.where as Array<{
+                field: string;
+                op: "eq" | "neq" | "in" | "contains" | "gte" | "lte" | "exists";
+                value?: unknown;
+              }>
+            : undefined,
+          include_provenance: args.include_provenance === true,
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+          offset: typeof args.offset === "number" ? args.offset : undefined,
+        }));
+      }
+      case "structured_query": {
+        const select = args.select as string | undefined;
+        if (!select) return err(`select is required for ${desc.name}`);
+        return ok(await ontologyClient.queryDomainStructured({
+          ...args,
+          schema_id: desc.schema_id,
+          select,
+        }));
       }
       default:
         return err(`unknown generated tool mapping: ${desc.maps_to}`);
