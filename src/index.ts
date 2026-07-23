@@ -14,6 +14,8 @@ import { TOOLS, handleTool } from "./tools.js";
 import { getGeneratedTools, handleGeneratedTool } from "./generated-tools.js";
 import { checkMcpGovernance } from "./governance.js";
 
+declare const __PACKAGE_VERSION__: string;
+
 // ── Configuration ─────────────────────────────────────────────────────
 
 const API_KEY = process.env.MINDGRAPH_API_KEY;
@@ -126,7 +128,7 @@ Capture knowledge when the user shares something worth remembering:
 const server = new Server(
   {
     name: "mindgraph",
-    version: "0.13.0",
+    version: __PACKAGE_VERSION__,
   },
   {
     capabilities: {

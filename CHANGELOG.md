@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.13.1 (2026-07-23)
+
+### Fixed
+
+- Reports version 0.13.1 in the MCP server handshake. The 0.13.0 package
+  metadata was correct, but its runtime handshake still reported 0.12.0.
+
 ## 0.13.0 (2026-07-23)
 
 Requires `mindgraph` (TS SDK) >= 0.13.0 and server >= 1.10.0. The dependency pin
