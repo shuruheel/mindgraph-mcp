@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 0.13.0 (2026-07-23)
+
+Requires `mindgraph` (TS SDK) >= 0.13.0 and server >= 1.10.0. The dependency pin
+moves `^0.12.0` → `^0.13.0`; release only after the SDK's 0.13.0 is on npm.
+
+### Added
+
+- **Generated ontology tools now dispatch.** Tools generated from a Layer 7 schema
+  route to the SDK's structured surface — `queryDomainStructured`,
+  `queryRelatedDomainObjects`, `getDomainObject`, and `getDomainObjectContext` —
+  so an MCP client asks a typed, validated question of the schema instead of
+  ranking text. Generated tool names are always schema-qualified, and a duplicate
+  name is rejected at generation time rather than silently shadowing.
+
+### Changed
+
+- **Compatibility with an older SDK fails closed and legibly.** The structured
+  query methods are treated as optional on the injected client; if the installed
+  SDK predates 0.13.0 the affected tool reports that it is unavailable instead of
+  throwing an opaque `undefined is not a function`. The static tool surface is
+  unchanged in that case.
+
 ## 0.12.0 (2026-07-22)
 
 ### Added
