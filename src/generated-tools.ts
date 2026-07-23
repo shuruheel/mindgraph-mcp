@@ -116,8 +116,8 @@ export async function handleGeneratedTool(
         depth: number | undefined,
         binding: Record<string, unknown>,
       ) => Promise<unknown>;
-      queryDomainStructured: (request: Record<string, unknown>) => Promise<unknown>;
-      queryRelatedDomainObjects: (request: Record<string, unknown>) => Promise<unknown>;
+      queryDomainStructured?: (request: Record<string, unknown>) => Promise<unknown>;
+      queryRelatedDomainObjects?: (request: Record<string, unknown>) => Promise<unknown>;
     };
     switch (desc.maps_to) {
       case "search": {
@@ -163,6 +163,11 @@ export async function handleGeneratedTool(
         if (!desc.relation || !desc.entry_role || !desc.far_type) {
           return err(`invalid related descriptor: ${desc.name}`);
         }
+        if (!ontologyClient.queryRelatedDomainObjects) {
+          return err(
+            "related ontology tools require a graph-aware version of the mindgraph SDK",
+          );
+        }
         return ok(await ontologyClient.queryRelatedDomainObjects({
           schema_id: desc.schema_id,
           entry_type: desc.object_type,
@@ -185,6 +190,11 @@ export async function handleGeneratedTool(
       case "structured_query": {
         const select = args.select as string | undefined;
         if (!select) return err(`select is required for ${desc.name}`);
+        if (!ontologyClient.queryDomainStructured) {
+          return err(
+            "structured ontology tools require a graph-aware version of the mindgraph SDK",
+          );
+        }
         return ok(await ontologyClient.queryDomainStructured({
           ...args,
           schema_id: desc.schema_id,

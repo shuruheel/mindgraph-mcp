@@ -117,6 +117,33 @@ describe("generated ontology tools", () => {
     expect(payload(result)).toMatchObject({ schema_id: "schema-a" });
   });
 
+  it("reports an actionable SDK compatibility error for graph-aware tools", async () => {
+    const client = {} as MindGraph;
+    const related = await handleGeneratedTool(
+      client,
+      descriptor("related", {
+        relation: "REQUESTED_BY",
+        entry_role: "target",
+        far_type: "Requirement",
+      }),
+      { uid: "customer-1" },
+    );
+    const structured = await handleGeneratedTool(
+      client,
+      descriptor("structured_query", { object_type: "" }),
+      { select: "Requirement" },
+    );
+
+    expect(related.isError).toBe(true);
+    expect(payload(related)).toMatchObject({
+      error: expect.stringContaining("graph-aware version"),
+    });
+    expect(structured.isError).toBe(true);
+    expect(payload(structured)).toMatchObject({
+      error: expect.stringContaining("graph-aware version"),
+    });
+  });
+
   it("rejects duplicate manifest names instead of overwriting dispatch", async () => {
     const duplicate = descriptor("search");
     const client = {
