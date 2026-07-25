@@ -524,12 +524,20 @@ export const TOOLS: Tool[] = [
           description: "chunk action: 0-based index of this chunk within its document.",
         },
         chunk_size: {
-          type: "number",
-          description: "Characters per chunk for document ingestion (default: 4000)",
+          type: "integer",
+          minimum: 50,
+          maximum: 32000,
+          default: 2000,
+          description:
+            "Maximum tokens per chunk for document or session ingestion (default: 2000)",
         },
         chunk_overlap: {
           type: "number",
-          description: "Overlap between chunks (default: 200)",
+          minimum: 0,
+          maximum: 0.9,
+          default: 0.1,
+          description:
+            "Fractional overlap between adjacent chunks for document or session ingestion (default: 0.1; maximum: 0.9)",
         },
         job_id: {
           type: "string",
