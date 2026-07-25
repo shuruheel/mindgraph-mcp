@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.13.2 (2026-07-25)
+
+### Fixed
+
+- **`mindgraph_ingest` published the wrong units for chunking.** `chunk_size` was
+  described as characters with a default of 4000 and `chunk_overlap` as an
+  absolute overlap with a default of 200. The server reads `chunk_size` as
+  **tokens** (default 2000, valid 50–32,000) and `chunk_overlap` as a
+  **fraction** of the chunk (default 0.1, maximum 0.9). A model following the
+  published schema sent an overlap two orders of magnitude out of range on every
+  call. Both parameters now declare the server's real units, defaults, and
+  bounds, and `chunk_size` is typed `integer`.
+
+  The server clamps out-of-range values rather than rejecting them, so clients on
+  0.13.1 and earlier keep working — but they are steering the chunker with values
+  that get silently corrected. Upgrade to send what you mean.
+
 ## 0.13.1 (2026-07-23)
 
 ### Fixed
