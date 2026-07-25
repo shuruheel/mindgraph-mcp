@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+## 0.13.3 (2026-07-25)
+
+### Security
+
+- **`mindgraph_plan` no longer exposes governance writes to the model.** The
+  action enum offered `create_policy`, `request_approval`, and
+  `resolve_approval` with a free-form props bag and no role gate — letting a
+  model author the policy it is judged by, and raise *and then clear* its own
+  approval gate. An agent blocked by "requires approval" could simply resolve
+  it. All three are removed from the enum **and** from dispatch, so an invented
+  action name is refused too.
+
+  `get_pending` is unchanged: reading the approval queue is safe, and is what an
+  agent needs in order to wait correctly. Approvals are granted by a person in
+  the MindGraph dashboard.
+
+  `resolve_approval` was removed rather than repaired because the obvious fix is
+  worse than the bug. It sent `task_uid` where the server requires
+  `approval_uid`, and never sent `approved` at all, which the server reads as
+  false — so today it fails with a hard 400. Correcting only the field name
+  would have converted that safe failure into a silent auto-deny of every
+  approval an agent tried to resolve.
+
+### Fixed
+
+- **`mindgraph_ingest` forwarded `"ontology"` as if it were a cognitive layer.**
+  It is a targeting flag. The server strips it from the cognitive list and
+  returns an empty extraction once that list empties, so two silent failures
+  followed: `["reality","epistemic","ontology"]` with no schema id ran cognitive
+  extraction and performed **zero** domain-object extraction, and `["ontology"]`
+  alone produced no extraction of any kind while the job reported success with
+  `nodes_created: 0`. A green job over an empty graph, with no error.
+
+  `"ontology"` is now stripped from the cognitive list, a bare `["ontology"]`
+  maps to ontology-only mode so the server does not fall back to
+  per-document-type defaults, and a request targeting ontology without an
+  `ontology_schema_id` is refused rather than accepted when it could only
+  extract nothing. Both schema descriptions now state that `ontology_schema_id`
+  is what drives Layer-7 extraction.
+
+  Under-extraction, not data loss — chunks are always embedded and
+  `/ingest/resume` re-extracts.
+
 ## 0.13.2 (2026-07-25)
 
 ### Fixed
