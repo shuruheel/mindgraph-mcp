@@ -1,6 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { MindGraph } from "mindgraph";
-import { handleTool } from "../src/tools.js";
+import { handleTool, TOOLS } from "../src/tools.js";
+
+/** The action enum a tool advertises to the model. */
+function actionEnum(name: string): string[] {
+  const tool = TOOLS.find((t) => t.name === name);
+  if (!tool) throw new Error(`tool not found: ${name}`);
+  const enumVals = (
+    tool.inputSchema as { properties?: { action?: { enum?: unknown[] } } }
+  ).properties?.action?.enum;
+  if (!Array.isArray(enumVals)) throw new Error(`${name} has no action enum`);
+  return enumVals as string[];
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // Core dispatch test: mock the underlying `mindgraph` TS client and assert
@@ -332,18 +343,40 @@ describe("mindgraph_plan dispatch (agent plan + procedure + risk + governance)",
     }
   });
 
-  it("governance actions -> governance() with canonical action", async () => {
-    const remap: Array<[string, string]> = [
-      ["create_policy", "create_policy"],
-      ["request_approval", "request_approval"],
-      ["resolve_approval", "resolve_approval"],
-      ["get_pending", "get_pending"],
-    ];
-    for (const [toolAction, serverAction] of remap) {
+  it("governance read -> governance() with canonical action", async () => {
+    const c = makeClient();
+    await handleTool(c, "mindgraph_plan", { action: "get_pending", label: "L", task_uid: "t1" });
+    expect(c.governance).toHaveBeenCalledTimes(1);
+    expect(c.governance.mock.calls[0][0]).toMatchObject({ action: "get_pending" });
+  });
+
+  // C33 — a model must not be able to author the policy it is judged by, nor
+  // raise and then clear its own approval gate. These reach the server only
+  // from the dashboard, driven by a person.
+  it("does not expose governance writes to the model", async () => {
+    const enumVals = new Set(actionEnum("mindgraph_plan"));
+    for (const forbidden of ["create_policy", "request_approval", "resolve_approval"]) {
+      expect(
+        enumVals.has(forbidden),
+        `mindgraph_plan must not offer governance write "${forbidden}"`,
+      ).toBe(false);
+    }
+  });
+
+  it("refuses a governance write even if a model invents the action name", async () => {
+    // The enum is advisory to the model; dispatch is the actual boundary.
+    for (const forbidden of ["create_policy", "request_approval", "resolve_approval"]) {
       const c = makeClient();
-      await handleTool(c, "mindgraph_plan", { action: toolAction, label: "L", task_uid: "t1" });
-      expect(c.governance).toHaveBeenCalledTimes(1);
-      expect(c.governance.mock.calls[0][0]).toMatchObject({ action: serverAction });
+      await handleTool(c, "mindgraph_plan", {
+        action: forbidden,
+        label: "L",
+        task_uid: "t1",
+        props: { approved: true },
+      });
+      expect(
+        c.governance,
+        `dispatch reached governance() for removed action "${forbidden}"`,
+      ).not.toHaveBeenCalled();
     }
   });
 

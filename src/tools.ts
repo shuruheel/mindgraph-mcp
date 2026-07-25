@@ -248,7 +248,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_plan",
     description:
-      "Agent-level task management, governance, and procedural knowledge. Use 'create_plan'/'create_task'/'add_step' for task breakdowns, 'update_status' for progress, 'get_plan' to review. Use 'create_flow'/'add_procedure_step'/'add_affordance'/'add_control' for workflows and procedures. Use 'assess_risk'/'get_assessments' for risk analysis. Use 'create_policy'/'request_approval'/'resolve_approval'/'get_pending' for governance. Prefer mindgraph_commit for user goals/projects; use this for agent-managed execution.",
+      "Agent-level task management, governance, and procedural knowledge. Use 'create_plan'/'create_task'/'add_step' for task breakdowns, 'update_status' for progress, 'get_plan' to review. Use 'create_flow'/'add_procedure_step'/'add_affordance'/'add_control' for workflows and procedures. Use 'assess_risk'/'get_assessments' for risk analysis. Use 'get_pending' to read the governance approval queue — approvals are granted by a person in the MindGraph dashboard, never from here, so wait for one rather than trying to clear it. Prefer mindgraph_commit for user goals/projects; use this for agent-managed execution.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -263,9 +263,13 @@ export const TOOLS: Tool[] = [
             "start_execution",
             "complete_execution",
             "fail_execution",
-            "create_policy",
-            "request_approval",
-            "resolve_approval",
+            // C33: governance WRITES are deliberately not exposed here.
+            // `create_policy` let a model author the rules it is judged by;
+            // `request_approval` + `resolve_approval` let it raise and then
+            // clear its own gate, which defeats the human-in-the-loop control
+            // entirely. Authoring and resolving happen in the dashboard, by a
+            // person. `get_pending` stays — reading the queue is safe and is
+            // what an agent needs in order to wait correctly.
             "get_pending",
             "create_flow",
             "add_procedure_step",
@@ -290,7 +294,7 @@ export const TOOLS: Tool[] = [
         },
         task_uid: {
           type: "string",
-          description: "Task/step UID (for update_status, execution actions, resolve_approval)",
+          description: "Task/step UID (for update_status, execution actions)",
         },
         target_uid: {
           type: "string",
@@ -1090,19 +1094,12 @@ async function handlePlan(
     case "fail_execution":
       return ok(await client.execution({ action: "fail", task_uid, agent_id } as any));
 
-    // Governance
-    case "create_policy":
-      return ok(
-        await client.governance({ action: "create_policy", label, summary, props, agent_id } as any)
-      );
-    case "request_approval":
-      return ok(
-        await client.governance({ action: "request_approval", label, summary, props, agent_id } as any)
-      );
-    case "resolve_approval":
-      return ok(
-        await client.governance({ action: "resolve_approval", task_uid, props, agent_id } as any)
-      );
+    // Governance — read-only from MCP by design (C33). The write actions were
+    // removed rather than repaired: `resolve_approval` here also sent
+    // `task_uid` where the server requires `approval_uid`, and never sent
+    // `approved` at all, so the server's `unwrap_or(false)` would have silently
+    // DENIED every approval an agent tried to resolve. Wiring that correctly
+    // would have meant building a working self-approval path — the hole itself.
     case "get_pending":
       return ok(await client.governance({ action: "get_pending", agent_id } as any));
 
