@@ -25,6 +25,10 @@ type JsonSchema = {
   items?: JsonSchema;
   enum?: unknown[];
   required?: string[];
+  minimum?: number;
+  maximum?: number;
+  default?: unknown;
+  description?: string;
 };
 
 function toolByName(name: string) {
@@ -57,6 +61,24 @@ describe("generated tool schemas — structural sanity", () => {
   it("tool names are unique", () => {
     const names = TOOLS.map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("publishes ingest chunk controls in server units and bounds", () => {
+    const props = (toolByName("mindgraph_ingest").inputSchema as JsonSchema)
+      .properties!;
+    expect(props.chunk_size).toMatchObject({
+      type: "integer",
+      minimum: 50,
+      maximum: 32_000,
+      default: 2_000,
+    });
+    expect(props.chunk_overlap).toMatchObject({
+      minimum: 0,
+      maximum: 0.9,
+      default: 0.1,
+    });
+    expect(props.chunk_size.description).toContain("tokens");
+    expect(props.chunk_overlap.description).toContain("Fractional");
   });
 
   it("exposes the expected 8 static cognitive tools", () => {
