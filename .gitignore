@@ -3,3 +3,6 @@ dist/
 *.tgz
 .env
 .env.local
+
+# CodeGraph index (local, per-machine)
+.codegraph/
