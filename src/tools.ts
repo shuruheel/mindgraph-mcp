@@ -485,12 +485,13 @@ export const TOOLS: Tool[] = [
               "ontology",
             ],
           },
-          description: "Cognitive layers to extract (defaults vary by action)",
+          description:
+            "Cognitive layers to extract (defaults vary by action). 'ontology' is a targeting flag rather than a cognitive layer: include it only alongside ontology_schema_id, and list it alone to extract domain objects without any cognitive extraction.",
         },
         ontology_schema_id: {
           type: "string",
           description:
-            "When set, run typed Layer-7 (domain-object) extraction against this schema in addition to the cognitive layers.",
+            "When set, run typed Layer-7 (domain-object) extraction against this schema in addition to the cognitive layers. This field alone drives domain-object extraction — listing 'ontology' in layers without it extracts nothing.",
         },
         participants: {
           type: "array",
@@ -1448,6 +1449,34 @@ async function handleIngest(
 
   const src = source_uri ?? source;
 
+  // C15: "ontology" is a targeting flag, not a cognitive layer. The server's
+  // `cognitive_pass_layers` strips it and returns an empty extraction when the
+  // list empties, so forwarding it raw produced a green job over an empty graph:
+  // `["reality", "epistemic", "ontology"]` ran cognitive extraction but zero
+  // domain-object extraction, and `["ontology"]` alone chunked, embedded, billed
+  // and reported `nodes_created: 0` with no error at all. The dashboard already
+  // performs this translation (ingest/layer-selection.ts); MCP was the only
+  // client forwarding it unchanged.
+  const targetsOntology = Array.isArray(layers) && layers.includes("ontology");
+  const cognitiveLayers = targetsOntology
+    ? (layers as string[]).filter((layer) => layer !== "ontology")
+    : layers;
+  if (targetsOntology && !ontology_schema_id) {
+    return err(
+      "layers included 'ontology' but no ontology_schema_id was supplied. " +
+        "Typed Layer-7 extraction is driven by ontology_schema_id, not by the " +
+        "layers list — pass the schema id, or drop 'ontology' from layers."
+    );
+  }
+  // Only cognitive layers reach the server. Omit the list entirely when the
+  // caller asked for domain objects alone, and say so with ontology_only, so
+  // the server does not fall back to its per-document-type defaults.
+  const forwardedLayers =
+    Array.isArray(cognitiveLayers) && cognitiveLayers.length === 0
+      ? undefined
+      : cognitiveLayers;
+  const ontologyOnly = targetsOntology && forwardedLayers === undefined;
+
   switch (action) {
     case "chunk":
       if (!content) return err("content is required for chunk ingestion");
@@ -1457,7 +1486,9 @@ async function handleIngest(
           label: title,
           document_uid,
           chunk_index,
-          layers,
+          // `/ingest/chunk` runs its ontology pass inline from
+          // ontology_schema_id alone and has no ontology_only switch.
+          layers: forwardedLayers,
           agent_id,
           ontology_schema_id,
         } as any)
@@ -1472,8 +1503,9 @@ async function handleIngest(
           source_uri: src,
           content_type,
           document_type,
-          layers,
+          layers: forwardedLayers,
           ontology_schema_id,
+          ...(ontologyOnly ? { ontology_only: true } : {}),
           participants,
           occurred_at,
           context,
@@ -1489,8 +1521,9 @@ async function handleIngest(
         await client.ingestSession({
           content,
           title,
-          layers,
+          layers: forwardedLayers,
           ontology_schema_id,
+          ...(ontologyOnly ? { ontology_only: true } : {}),
           participants,
           occurred_at,
           context,

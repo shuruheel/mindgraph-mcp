@@ -507,6 +507,68 @@ describe("mindgraph_ingest dispatch", () => {
     }
   });
 
+  // C15 — "ontology" was advertised in the layers enum and forwarded raw. The
+  // server's cognitive_pass_layers strips it and returns an empty extraction
+  // when the list empties, so the document was chunked, embedded, billed and
+  // reported successful with nothing extracted. The dashboard already performed
+  // this translation; MCP was the only client sending it through unchanged.
+  it("strips 'ontology' from layers and drives Layer-7 off ontology_schema_id", async () => {
+    const c = makeClient();
+    await handleTool(c, "mindgraph_ingest", {
+      action: "document",
+      content: "text",
+      layers: ["reality", "epistemic", "ontology"],
+      ontology_schema_id: "schema-a",
+    });
+    const sent = c.ingestDocument.mock.calls[0][0] as Record<string, unknown>;
+    expect(sent.layers).toEqual(["reality", "epistemic"]);
+    expect(sent.ontology_schema_id).toBe("schema-a");
+    expect(sent.ontology_only).toBeUndefined();
+  });
+
+  it("'ontology' alone means domain objects only, not zero extraction", async () => {
+    const c = makeClient();
+    await handleTool(c, "mindgraph_ingest", {
+      action: "document",
+      content: "text",
+      layers: ["ontology"],
+      ontology_schema_id: "schema-a",
+    });
+    const sent = c.ingestDocument.mock.calls[0][0] as Record<string, unknown>;
+    // Omitted rather than [] so the server does not fall back to its
+    // per-document-type cognitive defaults.
+    expect(sent.layers).toBeUndefined();
+    expect(sent.ontology_only).toBe(true);
+    expect(sent.ontology_schema_id).toBe("schema-a");
+  });
+
+  it("rejects 'ontology' with no schema id instead of silently extracting nothing", async () => {
+    for (const action of ["document", "session", "chunk"]) {
+      const c = makeClient();
+      const r = await handleTool(c, "mindgraph_ingest", {
+        action,
+        content: "text",
+        layers: ["ontology"],
+      });
+      expect(r.isError).toBe(true);
+      expect(c.ingestDocument).not.toHaveBeenCalled();
+      expect(c.ingestSession).not.toHaveBeenCalled();
+      expect(c.ingestChunk).not.toHaveBeenCalled();
+    }
+  });
+
+  it("leaves a request that never mentions ontology untouched", async () => {
+    const c = makeClient();
+    await handleTool(c, "mindgraph_ingest", {
+      action: "session",
+      content: "text",
+      layers: ["reality", "memory"],
+    });
+    const sent = c.ingestSession.mock.calls[0][0] as Record<string, unknown>;
+    expect(sent.layers).toEqual(["reality", "memory"]);
+    expect(sent.ontology_only).toBeUndefined();
+  });
+
   it("job_status with job_id -> getJob(id); without -> listJobs()", async () => {
     await handleTool(client, "mindgraph_ingest", { action: "job_status", job_id: "j1" });
     expect(client.getJob).toHaveBeenCalledWith("j1");
