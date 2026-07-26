@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as crypto from "crypto";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 
 // ── Config Paths ──────────────────────────────────────────────────────
 
@@ -97,9 +97,21 @@ function installClaudeCode(apiKey: string, baseUrl?: string): void {
   }
 
   try {
-    execSync(
+    // C44: this used to `.join(" ")` the argv into one string and hand it to
+    // `execSync`, which runs it through `/bin/sh -c`. The API key and base URL
+    // were interpolated unquoted, so either containing `;`, backticks or
+    // `$(…)` executed arbitrary commands — on the onboarding path, with a
+    // value the user pastes from elsewhere.
+    //
+    // `execFileSync` takes argv directly and spawns no shell, so no character
+    // in either value can be read as syntax.
+    //
+    // Note this does NOT hide the key from `ps`: `claude mcp add --env K=V`
+    // puts it in the child's argv either way, which is that CLI's interface.
+    // What is fixed is shell interpretation and the `sh -c` layer.
+    execFileSync(
+      "claude",
       [
-        "claude",
         "mcp",
         "add",
         "mindgraph",
@@ -108,7 +120,7 @@ function installClaudeCode(apiKey: string, baseUrl?: string): void {
         "npx",
         "-y",
         "mindgraph-mcp@latest",
-      ].join(" "),
+      ],
       { stdio: "inherit" }
     );
     console.log("Added MindGraph MCP server to Claude Code.");
@@ -143,7 +155,11 @@ function uninstallClaudeDesktop(): void {
 
 function uninstallClaudeCode(): void {
   try {
-    execSync("claude mcp remove mindgraph", { stdio: "inherit" });
+    // Static string, so this was never injectable — converted so the file
+    // spawns no shell at all and the `execSync` import can go.
+    execFileSync("claude", ["mcp", "remove", "mindgraph"], {
+      stdio: "inherit",
+    });
     console.log("Removed MindGraph MCP server from Claude Code.");
   } catch {
     console.error("Failed to run 'claude mcp remove'.");
@@ -252,16 +268,23 @@ function generateCode(): string {
 }
 
 function openBrowser(url: string): void {
+  // C44 (same class): the URL was interpolated into a shell string, and it
+  // derives from MINDGRAPH_DASHBOARD_URL. Lower severity than the API-key path
+  // since the operator sets their own env, but it is the same one-line fix, so
+  // there is no reason to leave a second shell-interpolation site behind.
   try {
     switch (process.platform) {
       case "darwin":
-        execSync(`open "${url}"`);
+        execFileSync("open", [url]);
         break;
       case "win32":
-        execSync(`start "" "${url}"`);
+        // `start` is a cmd builtin, so cmd is unavoidable — but passing argv
+        // keeps the URL out of the command STRING. The empty argument is
+        // start's title placeholder.
+        execFileSync("cmd", ["/c", "start", "", url]);
         break;
       case "linux":
-        execSync(`xdg-open "${url}"`);
+        execFileSync("xdg-open", [url]);
         break;
     }
   } catch {
