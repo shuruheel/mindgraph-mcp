@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+## 0.13.5 (2026-07-27)
+
+### Fixed
+
+- **Every generated `structured_query` ontology tool was returning an error.**
+  The adapter injects a default `agent_id` into each tool call, and the
+  schema-qualified composite forwarded its arguments verbatim. The server's
+  structured-query request rejects unknown fields, and the tool's own
+  published input schema declares `additionalProperties: false` — so that one
+  injected key failed every call, on the tools built for exactly the question
+  these schemas exist to answer ("which customers asked for X?").
+
+  Generated ontology tools now receive the arguments as sent, and the
+  composite forwards only the fields it publishes.
+
+- **One failed manifest fetch blanked the ontology tools for five minutes.**
+  A transient error was cached as an authoritative empty tool set for the full
+  cache lifetime. Failures now take a short cooldown and never overwrite a
+  good manifest — a stale manifest is served instead, since a stale tool that
+  no longer exists fails at dispatch, which beats having no ontology tools.
+
+### Security
+
+- **The governance checkpoint failed open permanently after one 404.** A
+  single "this server has no governance endpoint" response latched the adapter
+  into an ungoverned mode for the life of the process, with no re-probe and no
+  log — so a server that later gained governance was never gated again. The
+  latch is now a five-minute lease that re-probes on expiry and logs once when
+  it engages.
+
+- **A network blip took down the whole tool surface.** Any transport error on
+  the governance probe was returned as a refusal, so a momentary failure
+  refused every tool call. Transient conditions are retried before the gate
+  decides. It still fails closed once retries are exhausted — an unevaluated
+  policy is not a permit — but a rejected credential is now distinguished from
+  a server without governance, and says what to do about it.
+
+- **`resources/read` was not governed at all.** It returns the same graph data
+  as the governance-gated tools, and was the one request type that reached the
+  graph with no check. The resource surface now reads through the same
+  checkpoint under `mindgraph_retrieve`, so a policy denying retrieval cannot
+  be walked around by asking for the same rows as a resource. The resource URI
+  travels as audit context.
+
 ## 0.13.4 (2026-07-26)
 
 ### Security
