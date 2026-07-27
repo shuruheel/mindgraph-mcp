@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## 0.13.4 (2026-07-26)
+
+### Security
+
+- **The installer ran its subprocesses through a shell.** `install-code` built
+  its argument list, joined it with spaces, and passed the string to
+  `execSync`, which executes via `/bin/sh -c`. The API key and base URL were
+  interpolated unquoted, so either one containing `;`, backticks or `$(…)`
+  executed arbitrary commands — during onboarding, with a value the user pastes
+  in from elsewhere.
+
+  Subprocesses now spawn with `execFileSync`, which takes an argument array and
+  starts no shell, so no character in either value can be read as syntax.
+
+  This does **not** hide the key from process listings: `claude mcp add --env
+  KEY=value` places it in the child's arguments either way, which is that CLI's
+  interface. What is fixed is shell interpretation.
+
+  The browser-opening helper had the same shape (URL interpolated into a shell
+  string, sourced from `MINDGRAPH_DASHBOARD_URL`) and is fixed the same way.
+  The uninstall path used a fixed string and was never injectable; it was
+  converted anyway so the CLI starts no shell at all.
+
 ## 0.13.3 (2026-07-25)
 
 ### Security
