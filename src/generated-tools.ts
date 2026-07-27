@@ -35,29 +35,50 @@ const err = (message: string): ToolResult => ({
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
+// A failed manifest fetch is not an answer about which tools exist. Caching it
+// as one blanks the ontology tool surface for a full TTL on a single blip, so
+// failures get a short cooldown instead — and never overwrite a good manifest.
+const FAILURE_COOLDOWN_MS = 15 * 1000;
+
 interface Cache {
   tools: Tool[];
   byName: Map<string, GeneratedToolDescriptor>;
   fetchedAt: number;
 }
+/** Last manifest the server actually answered with. */
 let cache: Cache | null = null;
+let retryNotBefore = 0;
+
+const EMPTY = {
+  tools: [] as Tool[],
+  byName: new Map<string, GeneratedToolDescriptor>(),
+};
 
 class DuplicateGeneratedToolError extends Error {}
 
 export function clearGeneratedToolCache(): void {
   cache = null;
+  retryNotBefore = 0;
 }
 
 /**
- * Fetch (and cache) the generated tools for the active ontology. Never throws:
- * an old server without the endpoint, or any error, yields an empty set so the
- * static tools still list.
+ * Fetch (and cache) the generated tools for the active ontology. Never throws
+ * on transport failure: an old server without the endpoint yields an empty set
+ * so the static tools still list. A *transient* failure keeps serving the last
+ * known-good manifest rather than asserting the ontology has no tools.
  */
 export async function getGeneratedTools(
   client: MindGraph,
 ): Promise<{ tools: Tool[]; byName: Map<string, GeneratedToolDescriptor> }> {
-  if (cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
+  const now = Date.now();
+  if (cache && now - cache.fetchedAt < CACHE_TTL_MS) {
     return { tools: cache.tools, byName: cache.byName };
+  }
+  if (now < retryNotBefore) {
+    // Recently failed. Serve the stale manifest if we have one — a stale tool
+    // that no longer exists fails at dispatch, which is a better answer than
+    // silently having no ontology tools at all.
+    return cache ? { tools: cache.tools, byName: cache.byName } : EMPTY;
   }
   try {
     // Access defensively so the MCP typechecks/runs against any SDK version —
@@ -86,14 +107,29 @@ export async function getGeneratedTools(
       });
     }
     cache = { tools, byName, fetchedAt: Date.now() };
+    retryNotBefore = 0;
     return { tools, byName };
   } catch (error) {
     if (error instanceof DuplicateGeneratedToolError) throw error;
-    // Endpoint absent or unreachable — degrade to no generated tools.
-    cache = { tools: [], byName: new Map(), fetchedAt: Date.now() };
-    return { tools: cache.tools, byName: cache.byName };
+    // Unreachable or erroring. Back off briefly, but do not record an empty
+    // manifest as if the server had answered with one.
+    retryNotBefore = Date.now() + FAILURE_COOLDOWN_MS;
+    return cache ? { tools: cache.tools, byName: cache.byName } : EMPTY;
   }
 }
+
+// Exactly the properties the server publishes on the structured composite's
+// input schema, minus the two the descriptor itself supplies (schema_id,
+// select). Keep in sync with `structured_query_schema()` in
+// mindgraph-cloud/src/ontology/tools.rs.
+const STRUCTURED_QUERY_PASSTHROUGH = [
+  "anchor",
+  "path",
+  "where",
+  "include",
+  "page",
+  "aggregate",
+] as const;
 
 /** Dispatch a generated tool call into the appropriate /ontology read endpoint. */
 export async function handleGeneratedTool(
@@ -195,11 +231,19 @@ export async function handleGeneratedTool(
             "structured ontology tools require a graph-aware version of the mindgraph SDK",
           );
         }
-        return ok(await ontologyClient.queryDomainStructured({
-          ...args,
+        // Forward only what the composite tool publishes. The server's
+        // StructuredQueryRequest is deny_unknown_fields and the generated
+        // input schema is additionalProperties:false, so spreading the raw
+        // args 400s the entire call the moment anything else rides along —
+        // which is what the adapter's own injected agent_id did.
+        const request: Record<string, unknown> = {
           schema_id: desc.schema_id,
           select,
-        }));
+        };
+        for (const field of STRUCTURED_QUERY_PASSTHROUGH) {
+          if (args[field] !== undefined) request[field] = args[field];
+        }
+        return ok(await ontologyClient.queryDomainStructured(request));
       }
       default:
         return err(`unknown generated tool mapping: ${desc.maps_to}`);
