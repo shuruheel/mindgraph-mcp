@@ -66,6 +66,100 @@ describe("MCP governance checkpoint", () => {
     });
   });
 
+  // P44: "unsupported" is a fail-open. It used to latch for the life of the
+  // process, so a server that gained governance — or a probe answered by a
+  // broken deployment — was never gated again.
+  it("re-probes after the unsupported lease expires instead of latching forever", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("unknown action", { status: 400 }))
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ decision: "deny", obligations: [], fired_policies: [] }),
+          { status: 200 }
+        )
+      );
+
+    expect(
+      await checkMcpGovernance("mindgraph_retrieve", {}, { ...config, fetchImpl })
+    ).toEqual({ allowed: true });
+    expect(
+      await checkMcpGovernance("mindgraph_retrieve", {}, { ...config, fetchImpl })
+    ).toEqual({ allowed: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.now() + 6 * 60 * 1000);
+      const afterLease = await checkMcpGovernance(
+        "mindgraph_retrieve",
+        {},
+        { ...config, fetchImpl }
+      );
+      expect(afterLease.allowed).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  // P7: a blip on the probe is not a policy verdict.
+  it("retries a transient failure before deciding, and permits once it clears", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("upstream", { status: 503 }))
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ decision: "permit", obligations: [], fired_policies: [] }),
+          { status: 200 }
+        )
+      );
+
+    const result = await checkMcpGovernance("mindgraph_retrieve", {}, {
+      ...config,
+      fetchImpl,
+      retryDelaysMs: [0, 0],
+    });
+
+    expect(result).toEqual({ allowed: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed with an actionable message once the retries are exhausted", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("ECONNRESET");
+    });
+
+    const result = await checkMcpGovernance("mindgraph_retrieve", {}, {
+      ...config,
+      fetchImpl,
+      retryDelaysMs: [0, 0],
+    });
+
+    expect(result.allowed).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(result).toMatchObject({
+      message: expect.stringContaining("MINDGRAPH_GOVERNANCE=off"),
+    });
+  });
+
+  it("does not mistake a refused credential for a server without governance", async () => {
+    const fetchImpl = vi.fn(async () => new Response("forbidden", { status: 403 }));
+
+    const result = await checkMcpGovernance("mindgraph_retrieve", {}, {
+      ...config,
+      fetchImpl,
+    });
+
+    expect(result.allowed).toBe(false);
+    expect(result).toMatchObject({
+      message: expect.stringContaining("not permitted to evaluate"),
+    });
+    // Must not have latched: the next call probes again.
+    await checkMcpGovernance("mindgraph_retrieve", {}, { ...config, fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it.each(["notify", "redact"])(
     "fails closed on a %s obligation the adapter cannot enforce",
     async (duty) => {

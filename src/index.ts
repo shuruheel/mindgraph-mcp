@@ -13,6 +13,11 @@ import { MindGraph } from "mindgraph";
 import { TOOLS, handleTool } from "./tools.js";
 import { getGeneratedTools, handleGeneratedTool } from "./generated-tools.js";
 import { checkMcpGovernance } from "./governance.js";
+import {
+  RESOURCES,
+  RESOURCE_TEMPLATES,
+  readGovernedResource,
+} from "./resources.js";
 
 declare const __PACKAGE_VERSION__: string;
 
@@ -149,22 +154,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools: [...TOOLS, ...generated.tools] };
 });
 
+const GOVERNANCE_CONFIG = {
+  baseUrl: BASE_URL,
+  apiKey: API_KEY,
+  orgId: ORG_ID,
+  agentId: AGENT_ID,
+  get disabled() {
+    return process.env.MINDGRAPH_GOVERNANCE === "off";
+  },
+};
+
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
-  // Inject default agent_id if not provided
-  const toolArgs = { ...((args as Record<string, unknown>) || {}) };
+  const rawArgs = { ...((args as Record<string, unknown>) || {}) };
+  // Inject default agent_id if not provided. Static tools declare agent_id;
+  // generated ontology tools do not, and their schemas reject it — so the
+  // injected copy is kept separate from the args they receive.
+  const toolArgs = { ...rawArgs };
   if (!toolArgs.agent_id) {
     toolArgs.agent_id = AGENT_ID;
   }
 
-  const governance = await checkMcpGovernance(name, toolArgs, {
-    baseUrl: BASE_URL,
-    apiKey: API_KEY,
-    orgId: ORG_ID,
-    agentId: AGENT_ID,
-    disabled: process.env.MINDGRAPH_GOVERNANCE === "off",
-  });
+  const governance = await checkMcpGovernance(name, toolArgs, GOVERNANCE_CONFIG);
   if (!governance.allowed) {
     return {
       content: [{ type: "text", text: JSON.stringify({ error: governance.message, ...governance }) }],
@@ -177,7 +189,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const generated = await getGeneratedTools(client);
   const desc = generated.byName.get(name);
   if (desc) {
-    return handleGeneratedTool(client, desc, toolArgs);
+    return handleGeneratedTool(client, desc, rawArgs);
   }
 
   return handleTool(client, name, toolArgs);
@@ -353,197 +365,19 @@ server.setRequestHandler(GetPromptRequestSchema, async (request) => {
 // ── Static Resources ──────────────────────────────────────────────────
 
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
-  return {
-    resources: [
-      {
-        uri: "mindgraph://stats",
-        name: "Graph Statistics",
-        description:
-          "Current knowledge graph statistics: node counts, edge counts, and layer distribution",
-        mimeType: "application/json",
-      },
-      {
-        uri: "mindgraph://goals",
-        name: "Active Goals",
-        description: "All active goals in the knowledge graph",
-        mimeType: "application/json",
-      },
-      {
-        uri: "mindgraph://questions",
-        name: "Open Questions",
-        description: "All open questions in the knowledge graph",
-        mimeType: "application/json",
-      },
-      {
-        uri: "mindgraph://contradictions",
-        name: "Contradictions",
-        description: "Contradictory claims in the knowledge graph",
-        mimeType: "application/json",
-      },
-      {
-        uri: "mindgraph://decisions",
-        name: "Open Decisions",
-        description: "Unresolved decisions awaiting resolution",
-        mimeType: "application/json",
-      },
-    ],
-  };
+  return { resources: RESOURCES };
 });
 
 // ── Resource Templates ────────────────────────────────────────────────
 
 server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
-  return {
-    resourceTemplates: [
-      {
-        uriTemplate: "mindgraph://node/{uid}",
-        name: "Graph Node",
-        description:
-          "Retrieve a specific node by its UID, including all properties, edges, and version history",
-        mimeType: "application/json",
-      },
-      {
-        uriTemplate: "mindgraph://search/{query}",
-        name: "Search Results",
-        description:
-          "BM25 keyword search across all nodes — pass 1–3 discriminating terms (e.g. 'Kissinger NATO'), not natural language sentences",
-        mimeType: "application/json",
-      },
-      {
-        uriTemplate: "mindgraph://layer/{layer}",
-        name: "Layer Nodes",
-        description:
-          "List all nodes in a specific cognitive layer (reality, epistemic, intent, action, memory, agent)",
-        mimeType: "application/json",
-      },
-    ],
-  };
+  return { resourceTemplates: RESOURCE_TEMPLATES };
 });
 
 // ── Resource Reader (static + dynamic) ────────────────────────────────
 
 server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-  const { uri } = request.params;
-
-  // Static resources
-  switch (uri) {
-    case "mindgraph://stats": {
-      const stats = await client.stats();
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: "application/json",
-            text: JSON.stringify(stats, null, 2),
-          },
-        ],
-      };
-    }
-    case "mindgraph://goals": {
-      const goals = await client.getGoals();
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: "application/json",
-            text: JSON.stringify(goals, null, 2),
-          },
-        ],
-      };
-    }
-    case "mindgraph://questions": {
-      const questions = await client.getOpenQuestions();
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: "application/json",
-            text: JSON.stringify(questions, null, 2),
-          },
-        ],
-      };
-    }
-    case "mindgraph://contradictions": {
-      const contradictions = await client.getContradictions();
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: "application/json",
-            text: JSON.stringify(contradictions, null, 2),
-          },
-        ],
-      };
-    }
-    case "mindgraph://decisions": {
-      const decisions = await client.getOpenDecisions();
-      return {
-        contents: [
-          {
-            uri,
-            mimeType: "application/json",
-            text: JSON.stringify(decisions, null, 2),
-          },
-        ],
-      };
-    }
-  }
-
-  // Dynamic resources: mindgraph://node/{uid}
-  const nodeMatch = uri.match(/^mindgraph:\/\/node\/(.+)$/);
-  if (nodeMatch) {
-    const uid = decodeURIComponent(nodeMatch[1]);
-    const node = await client.getNode(uid);
-    const edges = await client.getEdges({ from_uid: uid });
-    const inEdges = await client.getEdges({ to_uid: uid });
-    return {
-      contents: [
-        {
-          uri,
-          mimeType: "application/json",
-          text: JSON.stringify(
-            { node, outgoing_edges: edges, incoming_edges: inEdges },
-            null,
-            2
-          ),
-        },
-      ],
-    };
-  }
-
-  // Dynamic resources: mindgraph://search/{query}
-  const searchMatch = uri.match(/^mindgraph:\/\/search\/(.+)$/);
-  if (searchMatch) {
-    const query = decodeURIComponent(searchMatch[1]);
-    const results = await client.search(query, { limit: 20 });
-    return {
-      contents: [
-        {
-          uri,
-          mimeType: "application/json",
-          text: JSON.stringify(results, null, 2),
-        },
-      ],
-    };
-  }
-
-  // Dynamic resources: mindgraph://layer/{layer}
-  const layerMatch = uri.match(/^mindgraph:\/\/layer\/(.+)$/);
-  if (layerMatch) {
-    const layer = decodeURIComponent(layerMatch[1]);
-    const nodes = await client.getNodes({ layer, limit: 50 });
-    return {
-      contents: [
-        {
-          uri,
-          mimeType: "application/json",
-          text: JSON.stringify(nodes, null, 2),
-        },
-      ],
-    };
-  }
-
-  throw new Error(`Unknown resource: ${uri}`);
+  return readGovernedResource(client, request.params.uri, GOVERNANCE_CONFIG);
 });
 
 // ── Start ─────────────────────────────────────────────────────────────

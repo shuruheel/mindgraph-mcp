@@ -117,6 +117,106 @@ describe("generated ontology tools", () => {
     expect(payload(result)).toMatchObject({ schema_id: "schema-a" });
   });
 
+  // P6: the adapter injects a default agent_id into every tool call, and the
+  // composite forwarded the raw args verbatim. The server's request type is
+  // deny_unknown_fields and the published input schema is
+  // additionalProperties:false, so that one extra key 400'd every structured
+  // query. The pre-existing test above passed only because its args happened
+  // to contain nothing but keys the dispatcher overwrote.
+  it("drops the injected agent_id instead of 400ing the whole structured query", async () => {
+    const queryDomainStructured = vi.fn(async (request) => request);
+    const client = { queryDomainStructured } as unknown as MindGraph;
+
+    await handleGeneratedTool(
+      client,
+      descriptor("structured_query", { object_type: "" }),
+      { select: "Requirement", agent_id: "mcp" },
+    );
+
+    const request = queryDomainStructured.mock.calls[0][0];
+    expect(request).not.toHaveProperty("agent_id");
+    expect(request).toEqual({ schema_id: "schema-a", select: "Requirement" });
+  });
+
+  it("forwards every field the composite tool publishes", async () => {
+    const queryDomainStructured = vi.fn(async (request) => request);
+    const client = { queryDomainStructured } as unknown as MindGraph;
+    const args = {
+      select: "Requirement",
+      anchor: { type: "Customer", uid: "customer-1" },
+      path: [{ relation: "REQUESTED_BY", entry_role: "target" }],
+      where: [{ field: "status", op: "eq", value: "open" }],
+      include: { provenance: true },
+      page: { limit: 25, offset: 50 },
+      aggregate: { op: "count", group_by: "status" },
+      agent_id: "mcp",
+      unexpected: "dropped",
+    };
+
+    await handleGeneratedTool(
+      client,
+      descriptor("structured_query", { object_type: "" }),
+      args,
+    );
+
+    expect(queryDomainStructured).toHaveBeenCalledWith({
+      schema_id: "schema-a",
+      select: "Requirement",
+      anchor: args.anchor,
+      path: args.path,
+      where: args.where,
+      include: args.include,
+      page: args.page,
+      aggregate: args.aggregate,
+    });
+  });
+
+  // P31: one transient manifest failure used to be cached as an authoritative
+  // empty tool set for the full 5-minute TTL.
+  it("keeps serving the last good manifest when the manifest fetch fails", async () => {
+    const listOntologyTools = vi
+      .fn()
+      .mockResolvedValueOnce({ tools: [descriptor("search")] })
+      .mockRejectedValue(new Error("ECONNRESET"));
+    const client = { listOntologyTools } as unknown as MindGraph;
+
+    const first = await getGeneratedTools(client);
+    expect(first.tools).toHaveLength(1);
+
+    // Expire the success TTL so the next call refetches and fails.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.now() + 6 * 60 * 1000);
+      const afterFailure = await getGeneratedTools(client);
+      expect(afterFailure.tools).toHaveLength(1);
+      expect(afterFailure.byName.size).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries after the failure cooldown rather than caching the failure", async () => {
+    const listOntologyTools = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("ECONNRESET"))
+      .mockResolvedValue({ tools: [descriptor("search")] });
+    const client = { listOntologyTools } as unknown as MindGraph;
+
+    expect((await getGeneratedTools(client)).tools).toHaveLength(0);
+    // Inside the cooldown: no second request.
+    expect((await getGeneratedTools(client)).tools).toHaveLength(0);
+    expect(listOntologyTools).toHaveBeenCalledTimes(1);
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.now() + 20 * 1000);
+      expect((await getGeneratedTools(client)).tools).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(listOntologyTools).toHaveBeenCalledTimes(2);
+  });
+
   it("reports an actionable SDK compatibility error for graph-aware tools", async () => {
     const client = {} as MindGraph;
     const related = await handleGeneratedTool(
