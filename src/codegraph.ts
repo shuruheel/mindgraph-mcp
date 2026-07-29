@@ -55,6 +55,24 @@ export type CodegraphUnavailableReason =
   | "index_incomplete"
   | "command_failed";
 
+/** Caveat lines for an unavailable index. Strangers hit "absent" on their
+ * first anchor; the model relays hints verbatim, so the install line is the
+ * self-serve onboarding path. */
+export function unavailabilityCaveats(
+  reason: CodegraphUnavailableReason,
+  message?: string
+): string[] {
+  const caveats = [message || "codegraph status failed"];
+  if (reason === "absent") {
+    caveats.push(
+      "Optional: install codegraph (https://github.com/colbymchenry/codegraph) " +
+        "and run `codegraph init` in this repository to enable code anchoring " +
+        "and structural recall. Memory and work tools are unaffected."
+    );
+  }
+  return caveats;
+}
+
 export type CodegraphAvailability = {
   available: boolean;
   reason?: CodegraphUnavailableReason;
@@ -538,11 +556,12 @@ export class CodegraphAdapter {
       return availability;
     } catch (cause) {
       const failure = cause as CommandFailure;
+      const reason = failure.kind ?? "command_failed";
       return {
         available: false,
-        reason: failure.kind ?? "command_failed",
+        reason,
         stale: false,
-        caveats: [failure.message || "codegraph status failed"],
+        caveats: unavailabilityCaveats(reason, failure.message),
       };
     }
   }
