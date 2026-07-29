@@ -4,6 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 
 export type HookScope = "user" | "project";
+export type HookHarness = "claude-code" | "codex";
 
 const OWNER_MARKER = "--owner mindgraph";
 // The hook invokes a pinned copy of the self-contained CLI bundle, installed
@@ -13,7 +14,14 @@ const OWNER_MARKER = "--owner mindgraph";
 // test). A copied bundle starts in ~100ms and pins the version the user
 // actually installed.
 const RUNNER_RELATIVE = ".mindgraph/bin/mindgraph-hook.cjs";
-const COMMAND = `node "$HOME/${RUNNER_RELATIVE}" hook --harness claude-code --owner mindgraph`;
+
+function command(harness: HookHarness): string {
+  return `node "$HOME/${RUNNER_RELATIVE}" hook --harness ${harness} --owner mindgraph`;
+}
+
+function windowsCommand(harness: HookHarness): string {
+  return `node "%USERPROFILE%\\.mindgraph\\bin\\mindgraph-hook.cjs" hook --harness ${harness} --owner mindgraph`;
+}
 
 /** Copy the executing CLI bundle to the stable runner path hooks invoke. */
 export function installHookRunner(sourceFile: string, homeDir?: string): string {
@@ -33,7 +41,18 @@ export function uninstallHookRunner(homeDir?: string): void {
 
 type JsonObject = Record<string, unknown>;
 
-function settingsPath(scope: HookScope, projectDir = process.cwd()): string {
+function settingsPath(
+  harness: HookHarness,
+  scope: HookScope,
+  projectDir = process.cwd(),
+  codexHomeDir = process.env.CODEX_HOME ||
+    path.join(os.homedir(), ".codex"),
+): string {
+  if (harness === "codex") {
+    return scope === "user"
+      ? path.join(codexHomeDir, "hooks.json")
+      : path.join(projectDir, ".codex", "hooks.json");
+  }
   return scope === "user"
     ? path.join(os.homedir(), ".claude", "settings.json")
     : path.join(projectDir, ".claude", "settings.json");
@@ -44,35 +63,65 @@ function readSettings(file: string): JsonObject {
   return JSON.parse(fs.readFileSync(file, "utf8")) as JsonObject;
 }
 
-function ownedHook(timeout: number) {
+function ownedHook(
+  harness: HookHarness,
+  timeout: number,
+  additionalContextLimit?: number,
+) {
   return {
     type: "command",
-    command: COMMAND,
+    command: command(harness),
+    ...(harness === "codex"
+      ? { commandWindows: windowsCommand(harness) }
+      : {}),
     timeout,
     statusMessage: "Syncing MindGraph session context",
+    ...(additionalContextLimit === undefined
+      ? {}
+      : { additionalContextLimit }),
   };
 }
 
-function desiredEntries(): Record<string, JsonObject[]> {
-  return {
+function desiredEntries(harness: HookHarness): Record<string, JsonObject[]> {
+  const common = {
     SessionStart: [
       {
-        matcher: "startup|resume|clear|compact|fork",
-        hooks: [ownedHook(20)],
+        matcher:
+          harness === "claude-code"
+            ? "startup|resume|clear|compact|fork"
+            : "startup|resume|clear|compact",
+        // B7 live acceptance caught cold SessionStart calls crossing the
+        // inherited 20s edge in both harnesses: the hooks correctly failed
+        // open, but no brief reached the model. The same installed runner
+        // completed in 16.84s once warm. Keep a 30s cold-tenant margin.
+        hooks: [
+          ownedHook(
+            harness,
+            30,
+            harness === "codex" ? 3_000 : undefined,
+          ),
+        ],
       },
     ],
     PreToolUse: [
       {
         matcher: "mcp__mindgraph__.*",
-        hooks: [ownedHook(3)],
+        hooks: [ownedHook(harness, 3)],
       },
     ],
-    PostToolUse: [{ matcher: ".*", hooks: [ownedHook(5)] }],
-    TaskCreated: [{ hooks: [ownedHook(3)] }],
-    TaskCompleted: [{ hooks: [ownedHook(3)] }],
-    Stop: [{ hooks: [ownedHook(5)] }],
-    SessionEnd: [{ hooks: [ownedHook(8)] }],
+    PostToolUse: [{ matcher: ".*", hooks: [ownedHook(harness, 5)] }],
+    Stop: [{ hooks: [ownedHook(harness, 5)] }],
+    SessionEnd: [
+      { hooks: [ownedHook(harness, harness === "codex" ? 3 : 8)] },
+    ],
   };
+  return harness === "claude-code"
+    ? {
+        ...common,
+        TaskCreated: [{ hooks: [ownedHook(harness, 3)] }],
+        TaskCompleted: [{ hooks: [ownedHook(harness, 3)] }],
+      }
+    : common;
 }
 
 function hookCommand(value: unknown): string | undefined {
@@ -99,11 +148,13 @@ function writeSettings(file: string, settings: JsonObject): void {
   fs.renameSync(temporary, file);
 }
 
-export function installClaudeHooks(
+function installHooks(
+  harness: HookHarness,
   scope: HookScope,
   projectDir = process.cwd(),
+  codexHomeDir?: string,
 ): { path: string; added: number; updated: number } {
-  const file = settingsPath(scope, projectDir);
+  const file = settingsPath(harness, scope, projectDir, codexHomeDir);
   const settings = readSettings(file);
   const hooks =
     settings.hooks &&
@@ -113,7 +164,7 @@ export function installClaudeHooks(
       : {};
   let added = 0;
   let updated = 0;
-  for (const [event, wanted] of Object.entries(desiredEntries())) {
+  for (const [event, wanted] of Object.entries(desiredEntries(harness))) {
     const current = Array.isArray(hooks[event])
       ? ([...(hooks[event] as unknown[])] as unknown[])
       : [];
@@ -135,11 +186,13 @@ export function installClaudeHooks(
   return { path: file, added, updated };
 }
 
-export function uninstallClaudeHooks(
+function uninstallHooks(
+  harness: HookHarness,
   scope: HookScope,
   projectDir = process.cwd(),
+  codexHomeDir?: string,
 ): { path: string; removed: number } {
-  const file = settingsPath(scope, projectDir);
+  const file = settingsPath(harness, scope, projectDir, codexHomeDir);
   if (!fs.existsSync(file)) return { path: file, removed: 0 };
   const settings = readSettings(file);
   const hooks =
@@ -178,4 +231,34 @@ export function uninstallClaudeHooks(
   settings.hooks = hooks;
   writeSettings(file, settings);
   return { path: file, removed };
+}
+
+export function installClaudeHooks(
+  scope: HookScope,
+  projectDir = process.cwd(),
+): { path: string; added: number; updated: number } {
+  return installHooks("claude-code", scope, projectDir);
+}
+
+export function uninstallClaudeHooks(
+  scope: HookScope,
+  projectDir = process.cwd(),
+): { path: string; removed: number } {
+  return uninstallHooks("claude-code", scope, projectDir);
+}
+
+export function installCodexHooks(
+  scope: HookScope,
+  projectDir = process.cwd(),
+  codexHomeDir?: string,
+): { path: string; added: number; updated: number } {
+  return installHooks("codex", scope, projectDir, codexHomeDir);
+}
+
+export function uninstallCodexHooks(
+  scope: HookScope,
+  projectDir = process.cwd(),
+  codexHomeDir?: string,
+): { path: string; removed: number } {
+  return uninstallHooks("codex", scope, projectDir, codexHomeDir);
 }

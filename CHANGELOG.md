@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Added
+
+- **Codex hooks adapter (B7, targeted for 0.15.0).** `install-hooks --harness
+  codex` merge-safely writes `$CODEX_HOME/hooks.json` or a project
+  `.codex/hooks.json`, installs the same pinned self-contained runner used by
+  Claude Code, and maps Codex `SessionStart`, `PreToolUse`, `PostToolUse`,
+  `Stop`, and advisory `SessionEnd` events onto the shared lifecycle core.
+  Session context uses Codex `additionalContext`; tool rewrites use its required
+  `permissionDecision: "allow"` plus `updatedInput`; SessionEnd respects
+  Codex's three-second cap, while SessionStart gets a bounded 30-second cold
+  tenant window in both harnesses after live testing crossed the old 20-second
+  edge. All hooks fail open and preserve foreign entries.
+- **Harness-neutral hook core.** Session/lease recovery, bounded brief
+  generation, verified InvocationContext, fill-only work targeting, disposable
+  ledger counters, reflection once-guard, and cleanup are shared by thin Claude
+  Code and Codex wire codecs. No graph semantics, server endpoints, identity
+  keys, or MCP tool contracts changed.
+
 ## 0.14.7 (2026-07-29)
 
 ### Changed

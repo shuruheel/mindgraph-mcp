@@ -15,12 +15,14 @@ import {
   runClaudeHook,
   type HookClient,
 } from "./claude-hooks.js";
+import { runCodexHook } from "./codex-hooks.js";
 import {
   installClaudeHooks,
+  installCodexHooks,
   installHookRunner,
   type HookScope,
   uninstallClaudeHooks,
-  uninstallHookRunner,
+  uninstallCodexHooks,
 } from "./hook-installer.js";
 
 // ── Config Paths ──────────────────────────────────────────────────────
@@ -304,8 +306,8 @@ USAGE:
   mindgraph-mcp install-code     Install into Claude Code (--hooks: + session hooks)
   mindgraph-mcp uninstall        Remove from Claude Desktop config
   mindgraph-mcp uninstall-code   Remove from Claude Code
-  mindgraph-mcp install-hooks --harness claude-code [--scope user|project]
-  mindgraph-mcp uninstall-hooks --harness claude-code [--scope user|project]
+  mindgraph-mcp install-hooks --harness claude-code|codex [--scope user|project]
+  mindgraph-mcp uninstall-hooks --harness claude-code|codex [--scope user|project]
   mindgraph-mcp status           Show installation status
 
 OPTIONS:
@@ -313,7 +315,7 @@ OPTIONS:
   --base-url <url>    Custom API base URL (default: https://api.mindgraph.cloud)
   --scope <scope>     Hook settings scope: project (default) or user
   --project-dir <dir> Project root for project-scoped hooks
-  --harness <name>    Hook harness (currently claude-code)
+  --harness <name>    Hook harness (claude-code or codex)
   --help, -h          Show this help message
 
 EXAMPLES:
@@ -528,14 +530,18 @@ async function main(): Promise<void> {
       break;
 
     case "install-hooks": {
-      if ((harness || "claude-code") !== "claude-code") {
-        throw new Error("only --harness claude-code is available in this release");
+      const hookHarness = harness || "claude-code";
+      if (hookHarness !== "claude-code" && hookHarness !== "codex") {
+        throw new Error("--harness must be claude-code or codex");
       }
       const runner = installHookRunner(__filename);
       console.log(`Installed pinned hook runner at ${runner}`);
-      const result = installClaudeHooks(scope, projectDir);
+      const result =
+        hookHarness === "codex"
+          ? installCodexHooks(scope, projectDir)
+          : installClaudeHooks(scope, projectDir);
       console.log(
-        `Installed ${result.added} and refreshed ${result.updated} MindGraph Claude Code hook entries in ${result.path}`
+        `Installed ${result.added} and refreshed ${result.updated} MindGraph ${hookHarness === "codex" ? "Codex" : "Claude Code"} hook entries in ${result.path}`
       );
       printCodegraphStatus();
       // Hooks run with the harness's environment, which rarely carries the
@@ -555,13 +561,19 @@ async function main(): Promise<void> {
     }
 
     case "uninstall-hooks": {
-      if ((harness || "claude-code") !== "claude-code") {
-        throw new Error("only --harness claude-code is available in this release");
+      const hookHarness = harness || "claude-code";
+      if (hookHarness !== "claude-code" && hookHarness !== "codex") {
+        throw new Error("--harness must be claude-code or codex");
       }
-      uninstallHookRunner();
-      const result = uninstallClaudeHooks(scope, projectDir);
+      // The pinned runner is shared by all harness adapters. Leave it in place
+      // when removing one hook configuration; deleting it would break hooks
+      // installed for the other harness (or a project outside this cwd).
+      const result =
+        hookHarness === "codex"
+          ? uninstallCodexHooks(scope, projectDir)
+          : uninstallClaudeHooks(scope, projectDir);
       console.log(
-        `Removed ${result.removed} MindGraph Claude Code hooks from ${result.path}`
+        `Removed ${result.removed} MindGraph ${hookHarness === "codex" ? "Codex" : "Claude Code"} hooks from ${result.path}`
       );
       break;
     }
@@ -571,6 +583,10 @@ async function main(): Promise<void> {
       // disables context/checkpoint nudges but never blocks Claude Code.
       // Resolution order: process env / flags, then ~/.mindgraph/hooks.json.
       const stored = loadHookEnv();
+      const hookHarness = harness || "claude-code";
+      if (hookHarness !== "claude-code" && hookHarness !== "codex") {
+        throw new Error("--harness must be claude-code or codex");
+      }
       const hookApiKey = apiKey ?? stored.apiKey;
       const hookBaseUrl = baseUrl ?? stored.baseUrl;
       if (!hookApiKey) {
@@ -586,10 +602,24 @@ async function main(): Promise<void> {
           maxRetries: 0,
           telemetrySurface: "mcp",
         });
-        const output = await runClaudeHook(input, client as unknown as HookClient, {
+        const hookOptions = {
           agentId:
-            process.env.MINDGRAPH_AGENT_ID || stored.agentId || "claude-code",
-        });
+            process.env.MINDGRAPH_AGENT_ID ||
+            stored.agentId ||
+            hookHarness,
+        };
+        const output =
+          hookHarness === "codex"
+            ? await runCodexHook(
+                input,
+                client as unknown as HookClient,
+                hookOptions
+              )
+            : await runClaudeHook(
+                input,
+                client as unknown as HookClient,
+                hookOptions
+              );
         process.stdout.write(`${JSON.stringify(output)}\n`);
       } catch {
         process.stdout.write("{}\n");
