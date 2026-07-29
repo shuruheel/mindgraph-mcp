@@ -151,8 +151,14 @@ mindgraph-mcp uninstall-hooks  Remove MindGraph-owned hook entries
 mindgraph-mcp status           Show installation status
 ```
 
-Options: `--api-key <key>`, `--base-url <url>`, `--scope user|project`,
-`--project-dir <dir>`, `--harness <name>`, `--help`.
+Options: `--api-key <key>`, `--base-url <url>`, `--agent-id <id>`,
+`--scope user|project`, `--project-dir <dir>`, `--harness <name>`, `--help`.
+
+**Teams**: when several people share one org graph, give each member a
+distinct identity — `--agent-id claude-code:<name>` on `install-code` /
+`install-hooks`. Anchored knowledge is shared automatically; distinct agent
+ids keep task leases and resume briefs per-person (identical ids make
+teammates one logical agent, which claims each other's work).
 
 ## Environment
 

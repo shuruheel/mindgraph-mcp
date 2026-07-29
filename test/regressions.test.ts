@@ -411,3 +411,23 @@ describe("R11 — install-hooks upserts owned entries", () => {
     expect(foreign).toHaveLength(1);
   });
 });
+
+describe("R12 — per-member agent identity", () => {
+  it("parses --agent-id and persists it for hooks", () => {
+    // Two teammates defaulting to agent_id "claude-code" are ONE logical
+    // agent: resume selection and lease recovery cross-claim each other's
+    // tasks (the L4 same-agent takeover, but between humans). --agent-id
+    // gives each member a distinct identity, persisted where hooks read it.
+    const parsed = parseArgs([
+      "node", "cli.js", "install-code",
+      "--api-key", "mg_k", "--hooks", "--agent-id", "claude-code:shan",
+    ]);
+    expect(parsed.agentId).toBe("claude-code:shan");
+    const dir = tempDir("mindgraph-r12-");
+    saveHookEnv({ apiKey: "k", agentId: "claude-code:shan" }, dir);
+    expect(loadHookEnv(dir).agentId).toBe("claude-code:shan");
+    // Partial re-save preserves it.
+    saveHookEnv({ baseUrl: "http://x" }, dir);
+    expect(loadHookEnv(dir).agentId).toBe("claude-code:shan");
+  });
+});
