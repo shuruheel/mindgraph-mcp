@@ -79,6 +79,128 @@ export interface GovernanceConfig {
   retryDelaysMs?: number[];
 }
 
+export type ToolMutability = "read" | "write";
+
+const PLAN_READ_ACTIONS = new Set([
+  "get_plan",
+  "get_executions",
+  "get_pending",
+  "get_assessments",
+  "resume_work",
+]);
+const ONTOLOGY_READ_ACTIONS = new Set([
+  "list_schemas",
+  "get_schema",
+  "query",
+  "search_objects",
+  "list_objects",
+  "get_object",
+  "get_context",
+  "list_proposals",
+  "get_proposal",
+]);
+
+/** Conservative action-aware mutability for governance checks. */
+export function toolMutability(
+  toolName: string,
+  action: string | undefined,
+): ToolMutability {
+  if (toolName === "mindgraph_retrieve") return "read";
+  if (toolName === "mindgraph_plan") {
+    return action && PLAN_READ_ACTIONS.has(action) ? "read" : "write";
+  }
+  if (toolName === "mindgraph_ingest") {
+    return action === "job_status" ? "read" : "write";
+  }
+  if (toolName === "mindgraph_synthesize") {
+    return action === "signals" ? "read" : "write";
+  }
+  if (toolName === "mindgraph_code") {
+    return action === "anchor" ? "write" : "read";
+  }
+  if (toolName === "mindgraph_sync") {
+    return action === "scan" || action === "status" ? "read" : "write";
+  }
+  if (toolName === "mindgraph_ontology") {
+    return action && ONTOLOGY_READ_ACTIONS.has(action) ? "read" : "write";
+  }
+  // Generated ontology tools are reads, but their names are deployment-defined.
+  // They carry one of these stable read suffixes from the manifest generator.
+  if (
+    /_(search|get|context|related|query)$/.test(toolName)
+    && toolName !== "mindgraph_capture"
+  ) {
+    return "read";
+  }
+  return "write";
+}
+
+const UID_FIELDS = [
+  "uid",
+  "source_uid",
+  "session_uid",
+  "work_uid",
+  "goal_uid",
+  "project_uid",
+  "task_uid",
+  "plan_uid",
+  "step_uid",
+  "target_uid",
+  "execution_uid",
+  "executor_uid",
+  "affordance_uid",
+  "produces_node_uid",
+  "filter_plan_uid",
+  "parent_uid",
+  "decision_uid",
+  "chosen_option_uid",
+  "governed_uid",
+  "approval_uid",
+  "requires_plan_uid",
+  "start_uid",
+  "end_uid",
+] as const;
+const UID_ARRAY_FIELDS = [
+  "related_uids",
+  "depends_on_uids",
+  "summarizes_uids",
+  "informs_uid",
+  "target_uids",
+  "anchor_uids",
+  "scope_uids",
+  "produces_node_uids",
+] as const;
+
+export function governanceTarget(
+  toolName: string,
+  args: Record<string, unknown>,
+): {
+  tool_name: string;
+  action?: string;
+  mutability: ToolMutability;
+  target_uids: string[];
+} {
+  const action = typeof args.action === "string" ? args.action : undefined;
+  const targetUids = new Set<string>();
+  for (const field of UID_FIELDS) {
+    const value = args[field];
+    if (typeof value === "string" && value.length > 0) targetUids.add(value);
+  }
+  for (const field of UID_ARRAY_FIELDS) {
+    const value = args[field];
+    if (!Array.isArray(value)) continue;
+    for (const uid of value) {
+      if (typeof uid === "string" && uid.length > 0) targetUids.add(uid);
+    }
+  }
+  return {
+    tool_name: toolName,
+    ...(action ? { action } : {}),
+    mutability: toolMutability(toolName, action),
+    target_uids: [...targetUids],
+  };
+}
+
 export async function checkMcpGovernance(
   toolName: string,
   args: Record<string, unknown>,
@@ -107,7 +229,7 @@ export async function checkMcpGovernance(
             action: "check",
             act: "tool_invoke",
             agent_id: String(args.agent_id || config.agentId),
-            target: { tool_name: toolName },
+            target: governanceTarget(toolName, args),
             context: { adapter: "mindgraph-mcp", ...config.context },
             tier: "checkpoint",
           }),

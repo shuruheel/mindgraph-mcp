@@ -4,6 +4,8 @@ import {
   RETRIEVE_ACTIONS,
   ENDPOINT_ACTIONS,
   FIELD_NAME_CONVENTIONS,
+  LESSON_CAPTURE_CONTRACT,
+  WORK_ACTION_CONTRACT,
 } from "./contract.fixture.js";
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -81,7 +83,7 @@ describe("generated tool schemas — structural sanity", () => {
     expect(props.chunk_overlap.description).toContain("Fractional");
   });
 
-  it("exposes the expected 8 static cognitive tools", () => {
+  it("exposes the expected 9 static cognitive tools", () => {
     const names = new Set(TOOLS.map((t) => t.name));
     for (const expected of [
       "mindgraph_capture",
@@ -92,6 +94,7 @@ describe("generated tool schemas — structural sanity", () => {
       "mindgraph_ingest",
       "mindgraph_synthesize",
       "mindgraph_ontology",
+      "mindgraph_code",
     ]) {
       expect(names.has(expected)).toBe(true);
     }
@@ -159,6 +162,54 @@ describe("field-name conventions (CLAUDE.md SDK-Server)", () => {
     expect(props.claim?.type).toBe("object");
     expect(props.warrant?.type).toBe("object");
     expect(props.argument?.type).toBe("object");
+  });
+});
+
+describe("coding-agent work contract parity", () => {
+  it("covers every advertised mindgraph_plan action exactly once", () => {
+    const advertised = actionEnum("mindgraph_plan").sort();
+    const contracted = WORK_ACTION_CONTRACT.map((entry) => entry.toolAction).sort();
+    expect(contracted).toEqual(advertised);
+    expect(new Set(contracted).size).toBe(contracted.length);
+  });
+
+  it("maps every MCP work action to a canonical server action", () => {
+    for (const entry of WORK_ACTION_CONTRACT) {
+      expect(
+        ENDPOINT_ACTIONS[entry.endpoint].includes(entry.serverAction),
+        `${entry.toolAction} maps to unknown ${entry.endpoint} action ${entry.serverAction}`,
+      ).toBe(true);
+    }
+  });
+
+  it("advertises every action-specific field required by the work fixture", () => {
+    const properties = (toolByName("mindgraph_plan").inputSchema as JsonSchema)
+      .properties!;
+    for (const entry of WORK_ACTION_CONTRACT) {
+      for (const field of entry.schemaFields) {
+        expect(
+          properties[field],
+          `mindgraph_plan action ${entry.toolAction} is missing schema field ${field}`,
+        ).toBeTruthy();
+      }
+    }
+  });
+
+  it("exposes Lesson as an action-less /memory/distill mapping", () => {
+    expect(actionEnum("mindgraph_capture")).toContain("lesson");
+    const properties = (toolByName("mindgraph_capture").inputSchema as JsonSchema)
+      .properties!;
+    for (const field of LESSON_CAPTURE_CONTRACT.schemaFields) {
+      expect(
+        properties[field],
+        `mindgraph_capture lesson is missing schema field ${field}`,
+      ).toBeTruthy();
+    }
+  });
+
+  it("marks the mixed read/write plan tool conservatively write-capable", () => {
+    const annotations = toolByName("mindgraph_plan").annotations;
+    expect(annotations?.readOnlyHint).toBe(false);
   });
 });
 

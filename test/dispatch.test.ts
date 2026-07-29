@@ -32,6 +32,7 @@ function makeClient() {
   const methods = [
     "capture",
     "journal",
+    "distill",
     "structure",
     "findOrCreatePerson",
     "findOrCreateOrganization",
@@ -169,6 +170,31 @@ describe("mindgraph_capture dispatch", () => {
     });
     expect(r.isError).toBe(true);
     expect(client.journal).not.toHaveBeenCalled();
+  });
+
+  it("lesson -> distill() with the monolithic Lesson contract", async () => {
+    await handleTool(client, "mindgraph_capture", {
+      action: "lesson",
+      label: "Retry the parser after normalizing input",
+      summary: "Normalization fixed the failing parse.",
+      session_uid: "session-1",
+      summarizes_uids: ["execution-1", "task-1"],
+      confidence: 0.9,
+      agent_id: "mcp",
+    });
+    expect(client.distill).toHaveBeenCalledTimes(1);
+    expect(client.distill.mock.calls[0][0]).toEqual({
+      label: "Retry the parser after normalizing input",
+      output_type: "lesson",
+      summary: "Normalization fixed the failing parse.",
+      confidence: 0.9,
+      salience: undefined,
+      session_uid: "session-1",
+      summarizes_uids: ["execution-1", "task-1"],
+      props: undefined,
+      agent_id: "mcp",
+    });
+    expect(client.distill.mock.calls[0][0]).not.toHaveProperty("action");
   });
 
   it("observation -> capture({action:'observation', ...})", async () => {
@@ -320,27 +346,117 @@ describe("mindgraph_commit dispatch", () => {
 });
 
 describe("mindgraph_plan dispatch (agent plan + procedure + risk + governance)", () => {
-  it("plan actions -> plan() with action passed through", async () => {
+  it("plan actions forward every server contract field without renaming", async () => {
+    const args = {
+      label: "L",
+      summary: "S",
+      confidence: 0.8,
+      salience: 0.7,
+      goal_uid: "goal-1",
+      task_uid: "task-1",
+      plan_uid: "plan-1",
+      target_uid: "target-1",
+      depends_on_uids: ["step-0"],
+      related_uids: ["code-1"],
+      status: "in_progress",
+      props: { order: 1 },
+      agent_id: "mcp",
+    };
     for (const action of ["create_task", "create_plan", "add_step", "update_status", "get_plan"]) {
       const c = makeClient();
-      await handleTool(c, "mindgraph_plan", { action, label: "L" });
+      await handleTool(c, "mindgraph_plan", { action, ...args });
       expect(c.plan).toHaveBeenCalledTimes(1);
-      expect(c.plan.mock.calls[0][0]).toMatchObject({ action });
+      expect(c.plan.mock.calls[0][0]).toEqual({ action, ...args });
     }
   });
 
-  it("execution actions remap to canonical /agent/execution actions", async () => {
-    const remap: Array<[string, string]> = [
-      ["start_execution", "start"],
-      ["complete_execution", "complete"],
-      ["fail_execution", "fail"],
-    ];
-    for (const [toolAction, serverAction] of remap) {
-      const c = makeClient();
-      await handleTool(c, "mindgraph_plan", { action: toolAction, task_uid: "t1" });
-      expect(c.execution).toHaveBeenCalledTimes(1);
-      expect(c.execution.mock.calls[0][0]).toMatchObject({ action: serverAction, task_uid: "t1" });
-    }
+  it("start_execution uses plan_uid and forwards inputs/targets", async () => {
+    await handleTool(client, "mindgraph_plan", {
+      action: "start_execution",
+      label: "Attempt 1",
+      summary: "Run the focused test",
+      plan_uid: "plan-1",
+      executor_uid: "agent-node-1",
+      affordance_uid: "affordance-1",
+      related_uids: ["task-1", "symbol-1"],
+      input_snapshot: { command: "npm test" },
+      props: { branch: "feature" },
+      agent_id: "mcp",
+    });
+    expect(client.execution).toHaveBeenCalledTimes(1);
+    expect(client.execution.mock.calls[0][0]).toMatchObject({
+      action: "start",
+      plan_uid: "plan-1",
+      executor_uid: "agent-node-1",
+      affordance_uid: "affordance-1",
+      related_uids: ["task-1", "symbol-1"],
+      input_snapshot: { command: "npm test" },
+    });
+    expect(client.execution.mock.calls[0][0]).not.toHaveProperty("task_uid");
+  });
+
+  it("complete_execution uses execution_uid and forwards terminal evidence", async () => {
+    await handleTool(client, "mindgraph_plan", {
+      action: "complete_execution",
+      execution_uid: "execution-1",
+      produces_node_uid: "lesson-1",
+      output_snapshot: { exit_code: 0 },
+      side_effects: ["updated src/tools.ts"],
+      outcome: "tests passed",
+      agent_id: "mcp",
+    });
+    expect(client.execution.mock.calls[0][0]).toMatchObject({
+      action: "complete",
+      execution_uid: "execution-1",
+      produces_node_uid: "lesson-1",
+      output_snapshot: { exit_code: 0 },
+      side_effects: ["updated src/tools.ts"],
+      outcome: "tests passed",
+    });
+    expect(client.execution.mock.calls[0][0]).not.toHaveProperty("task_uid");
+  });
+
+  it("fail_execution uses execution_uid and forwards error evidence", async () => {
+    await handleTool(client, "mindgraph_plan", {
+      action: "fail_execution",
+      execution_uid: "execution-1",
+      output_snapshot: { exit_code: 1 },
+      side_effects: ["none"],
+      outcome: "failed",
+      error: "assertion mismatch",
+      agent_id: "mcp",
+    });
+    expect(client.execution.mock.calls[0][0]).toMatchObject({
+      action: "fail",
+      execution_uid: "execution-1",
+      output_snapshot: { exit_code: 1 },
+      side_effects: ["none"],
+      outcome: "failed",
+      error: "assertion mismatch",
+    });
+  });
+
+  it("register_agent/get_executions expose the remaining execution reads and writes", async () => {
+    await handleTool(client, "mindgraph_plan", {
+      action: "register_agent",
+      label: "Claude Code",
+      props: { model: "claude" },
+    });
+    expect(client.execution.mock.calls[0][0]).toMatchObject({
+      action: "register_agent",
+      label: "Claude Code",
+    });
+
+    const c2 = makeClient();
+    await handleTool(c2, "mindgraph_plan", {
+      action: "get_executions",
+      filter_plan_uid: "plan-1",
+    });
+    expect(c2.execution.mock.calls[0][0]).toEqual({
+      action: "get_executions",
+      filter_plan_uid: "plan-1",
+      agent_id: undefined,
+    });
   });
 
   it("governance read -> governance() with canonical action", async () => {

@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { checkMcpGovernance, resetGovernanceCapability } from "../src/governance.js";
+import {
+  checkMcpGovernance,
+  governanceTarget,
+  resetGovernanceCapability,
+  toolMutability,
+} from "../src/governance.js";
 
 const config = {
   baseUrl: "https://api.example.test",
@@ -9,6 +14,56 @@ const config = {
 
 describe("MCP governance checkpoint", () => {
   beforeEach(resetGovernanceCapability);
+
+  it("classifies mixed-tool actions conservatively", () => {
+    expect(toolMutability("mindgraph_plan", "get_plan")).toBe("read");
+    expect(toolMutability("mindgraph_plan", "get_executions")).toBe("read");
+    expect(toolMutability("mindgraph_plan", "create_task")).toBe("write");
+    expect(toolMutability("mindgraph_plan", undefined)).toBe("write");
+    expect(toolMutability("mindgraph_retrieve", "context")).toBe("read");
+  });
+
+  it("builds an action-aware target with deduplicated graph UIDs", () => {
+    expect(
+      governanceTarget("mindgraph_plan", {
+        action: "checkpoint_iteration",
+        task_uid: "task-1",
+        execution_uid: "execution-1",
+        related_uids: ["task-1", "symbol-1"],
+      }),
+    ).toEqual({
+      tool_name: "mindgraph_plan",
+      action: "checkpoint_iteration",
+      mutability: "write",
+      target_uids: ["task-1", "execution-1", "symbol-1"],
+    });
+  });
+
+  it("sends action, mutability, and target_uids to the governance checkpoint", async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ decision: "permit", obligations: [], fired_policies: [] }),
+        { status: 200 },
+      ),
+    );
+    await checkMcpGovernance(
+      "mindgraph_plan",
+      {
+        action: "complete_execution",
+        execution_uid: "execution-1",
+        produces_node_uid: "lesson-1",
+      },
+      { ...config, fetchImpl },
+    );
+    const init = fetchImpl.mock.calls[0][1] as RequestInit;
+    const body = JSON.parse(String(init.body));
+    expect(body.target).toEqual({
+      tool_name: "mindgraph_plan",
+      action: "complete_execution",
+      mutability: "write",
+      target_uids: ["execution-1", "lesson-1"],
+    });
+  });
 
   it("preserves behavior against a governance-less server and caches the probe", async () => {
     const fetchImpl = vi.fn(async () => new Response("unknown action", { status: 400 }));
