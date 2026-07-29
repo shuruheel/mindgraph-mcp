@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.14.7 (2026-07-29)
+
+### Changed
+
+- **Coding-profile context retrieval scopes documents and wiki articles out by
+  default.** Engineering questions no longer surface unrelated ingested
+  content; pass `include_documents: true` when the question is genuinely about
+  a document, spec, or article. Deliberately scoped rather than walled:
+  creator-based hard limits were rejected because ingested specs and PRDs are
+  exactly what a coding agent should reach on purpose.
+
 ## 0.14.6 (2026-07-29)
 
 ### Fixed
