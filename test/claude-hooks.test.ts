@@ -103,6 +103,75 @@ describe("Claude Code normalized hook adapter", () => {
     });
   });
 
+  it("does not auto-claim backlog work the agent never owned", async () => {
+    const cwd = tempRoot();
+    const plans: Array<Record<string, unknown>> = [];
+    const client: HookClient = {
+      async session() {
+        return { uid: "session-graph" };
+      },
+      async plan(request) {
+        plans.push(request);
+        if (request.action === "resume_work") {
+          return {
+            selection_reason: "pending",
+            task: { uid: "task-backlog", version: 1 },
+            lease: null,
+          };
+        }
+        return {};
+      },
+    };
+    const out = await runClaudeHook(
+      { session_id: "s-backlog", cwd, hook_event_name: "SessionStart" },
+      client,
+      { runtimeDir: path.join(cwd, "runtime") },
+    );
+    expect(plans.filter((r) => r.action === "claim_task")).toHaveLength(0);
+    // No claim also means no redundant second resume_work round-trip.
+    expect(plans.filter((r) => r.action === "resume_work")).toHaveLength(1);
+    // The backlog task is still surfaced as orienting context.
+    expect(
+      (out.hookSpecificOutput as Record<string, unknown>).additionalContext,
+    ).toContain("task-backlog");
+  });
+
+  it("rebinds across an expired lease this agent owns", async () => {
+    const cwd = tempRoot();
+    const plans: Array<Record<string, unknown>> = [];
+    const client: HookClient = {
+      async session() {
+        return { uid: "session-graph" };
+      },
+      async plan(request) {
+        plans.push(request);
+        if (request.action === "claim_task") {
+          return { task_version: 3, lease_epoch: 5, lease_expires_at: 9e9 };
+        }
+        if (request.action === "resume_work") {
+          return {
+            selection_reason: "claimed",
+            task: { uid: "task-mine", version: 2 },
+            // Expired long ago — sessions are further apart than any lease
+            // TTL, so rebind must key off ownership, not liveness.
+            lease: {
+              lease_owner_agent_id: "claude-code",
+              lease_epoch: 4,
+              lease_expires_at: 1,
+            },
+          };
+        }
+        return {};
+      },
+    };
+    await runClaudeHook(
+      { session_id: "s-rebind", cwd, hook_event_name: "SessionStart" },
+      client,
+      { runtimeDir: path.join(cwd, "runtime") },
+    );
+    expect(plans.filter((r) => r.action === "claim_task")).toHaveLength(1);
+  });
+
   it("reinjects compact briefs and replaces forged invocation context", async () => {
     const cwd = tempRoot();
     const runtimeDir = path.join(cwd, "runtime");
