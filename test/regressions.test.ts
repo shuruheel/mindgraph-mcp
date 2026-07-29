@@ -8,6 +8,7 @@ import { handleTool, TOOLS } from "../src/tools.js";
 import { runClaudeHook, type HookClient } from "../src/claude-hooks.js";
 import {
   installClaudeHooks,
+  installCodexHooks,
   installHookRunner,
   uninstallHookRunner,
 } from "../src/hook-installer.js";
@@ -476,5 +477,123 @@ describe("R15 — coding profile scopes documents out of context by default", ()
     } finally {
       process.env.MINDGRAPH_PROFILE = prior;
     }
+  });
+});
+
+describe("R16 — the verbatim Codex hook command is self-contained", () => {
+  it("parses and executes every Codex event from an isolated directory", () => {
+    // Failure pinned: R1 and R7 each killed every installed Claude hook once.
+    // The Codex adapter must prove both properties on the exact command it
+    // writes: --owner is consumed, and the copied bundle needs no node_modules.
+    const bundle = path.join(__dirname, "..", "dist", "cli.js");
+    if (!fs.existsSync(bundle)) return; // exercised when the release build exists
+    const root = tempDir("mindgraph-r16-root-");
+    fs.mkdirSync(path.join(root, ".git"));
+    const home = tempDir("mindgraph-r16-home-");
+    const isolated = tempDir("mindgraph-r16-iso-");
+    installHookRunner(bundle, home);
+    installCodexHooks("project", root);
+    const settings = JSON.parse(
+      fs.readFileSync(path.join(root, ".codex", "hooks.json"), "utf8")
+    ) as {
+      hooks: Record<
+        string,
+        Array<{
+          hooks: Array<{ command: string; commandWindows?: string }>;
+        }>
+      >;
+    };
+
+    const events: Array<Record<string, unknown>> = [
+      {
+        hook_event_name: "SessionStart",
+        session_id: "r16",
+        cwd: isolated,
+        source: "startup",
+        model: "gpt-test",
+      },
+      {
+        hook_event_name: "PreToolUse",
+        session_id: "r16",
+        turn_id: "turn-1",
+        cwd: isolated,
+        tool_name: "mcp__mindgraph__mindgraph_plan",
+        tool_input: { action: "resume_work" },
+      },
+      {
+        hook_event_name: "PostToolUse",
+        session_id: "r16",
+        turn_id: "turn-1",
+        cwd: isolated,
+        tool_name: "mcp__mindgraph__mindgraph_plan",
+        tool_input: { action: "resume_work" },
+        tool_response: { ok: true },
+      },
+      {
+        hook_event_name: "Stop",
+        session_id: "r16",
+        turn_id: "turn-1",
+        cwd: isolated,
+        stop_hook_active: false,
+      },
+      {
+        hook_event_name: "SessionEnd",
+        session_id: "r16",
+        cwd: isolated,
+        reason: "other",
+      },
+    ];
+
+    for (const event of events) {
+      const configured =
+        settings.hooks[event.hook_event_name as string][0].hooks[0];
+      expect(configured.command).not.toContain("npx");
+      const tokens = configured.command.split(/\s+/);
+      const parsed = parseArgs(["node", "cli.js", ...tokens.slice(2)]);
+      expect(parsed).toMatchObject({ command: "hook", harness: "codex" });
+
+      const command =
+        process.platform === "win32"
+          ? configured.commandWindows!
+          : configured.command;
+      const executable = process.platform === "win32" ? "cmd" : "/bin/sh";
+      const args =
+        process.platform === "win32"
+          ? ["/d", "/s", "/c", command]
+          : ["-c", command];
+      const out = execFileSync(executable, args, {
+        cwd: isolated,
+        input: JSON.stringify(event),
+        env: {
+          ...process.env,
+          HOME: home,
+          USERPROFILE: home,
+          MINDGRAPH_API_KEY: "",
+          MINDGRAPH_RUNTIME_DIR: path.join(home, "runtime"),
+        },
+      });
+      // Missing connection settings are the harness no-op, never a crash.
+      expect(out.toString().trim()).toBe("{}");
+    }
+  });
+});
+
+describe("R17 — cold SessionStart has cross-harness cloud margin", () => {
+  it("gives both harnesses 30 seconds for the shared resume path", () => {
+    // Failure pinned: the canonical B7 live run crossed Claude's inherited
+    // 20-second edge at 20.034s. The hook correctly failed open, but Claude
+    // received no brief while Codex received one from the same shared runner.
+    const root = tempDir("mindgraph-r17-root-");
+    fs.mkdirSync(path.join(root, ".git"));
+    installClaudeHooks("project", root);
+    installCodexHooks("project", root);
+    const claude = JSON.parse(
+      fs.readFileSync(path.join(root, ".claude", "settings.json"), "utf8"),
+    );
+    const codex = JSON.parse(
+      fs.readFileSync(path.join(root, ".codex", "hooks.json"), "utf8"),
+    );
+    expect(claude.hooks.SessionStart[0].hooks[0].timeout).toBe(30);
+    expect(codex.hooks.SessionStart[0].hooks[0].timeout).toBe(30);
   });
 });

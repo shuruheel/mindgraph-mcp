@@ -87,18 +87,35 @@ project settings.
 
 ### Coding agents (Codex)
 
-The server is harness-neutral — Codex gets the full coding tool surface today:
+Codex gets the same durable work substrate through its native command hooks.
+Register the MCP server with a distinct agent identity, then install the hooks:
 
 ```bash
 codex mcp add mindgraph --env MINDGRAPH_API_KEY=mg_your_key_here \
   --env MINDGRAPH_PROFILE=coding --env MINDGRAPH_HARNESS=codex \
+  --env MINDGRAPH_AGENT_ID=codex:your-name \
   -- npx -y mindgraph-mcp@latest
+
+npx -y mindgraph-mcp install-hooks --harness codex --scope user \
+  --api-key mg_your_key_here --agent-id codex:your-name
 ```
 
 (or the equivalent `[mcp_servers.mindgraph]` block in Codex's `config.toml`).
-The hooks adapter for Codex — automatic session lifecycle and brief injection —
-is planned; until then, ask the agent to call `mindgraph_plan resume_work` at
-the start of a session.
+The installer copies the pinned self-contained runner to
+`~/.mindgraph/bin/mindgraph-hook.cjs`, merge-safely upserts only entries marked
+`--owner mindgraph`, and writes user hooks to `$CODEX_HOME/hooks.json`
+(`~/.codex/hooks.json` by default). Use `--scope project --project-dir …` for
+`<project>/.codex/hooks.json`. Re-run the install command to refresh owned
+entries; foreign hooks are never changed. Codex requires newly installed or
+changed command hooks to be reviewed with `/hooks` before they run.
+
+At SessionStart the adapter opens/rebinds the graph Session and injects one
+bounded work brief. PreToolUse replaces forged/absent invocation provenance
+while preserving model-selected work targets, PostToolUse updates only the
+disposable runtime ledger, Stop runs the once-per-session reflection
+checkpoint, and SessionEnd performs best-effort cleanup. All paths fail open:
+missing credentials or an unreachable MindGraph return Codex's no-op response
+and never block the coding session.
 
 ## What You Get
 
@@ -146,7 +163,7 @@ mindgraph-mcp install          Install into Claude Desktop config
 mindgraph-mcp install-code     Install into Claude Code (--hooks: also install session hooks)
 mindgraph-mcp uninstall        Remove from Claude Desktop config
 mindgraph-mcp uninstall-code   Remove from Claude Code
-mindgraph-mcp install-hooks    Install Claude Code hooks (--harness claude-code)
+mindgraph-mcp install-hooks    Install coding hooks (--harness claude-code|codex)
 mindgraph-mcp uninstall-hooks  Remove MindGraph-owned hook entries
 mindgraph-mcp status           Show installation status
 ```
