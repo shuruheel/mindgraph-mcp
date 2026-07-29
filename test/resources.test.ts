@@ -96,7 +96,11 @@ describe("MCP resource surface", () => {
 
     expect(JSON.parse(result.contents[0].text)).toEqual({ nodes: 7 });
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body as string);
-    expect(body.target).toEqual({ tool_name: "mindgraph_retrieve" });
+    expect(body.target).toEqual({
+      tool_name: "mindgraph_retrieve",
+      mutability: "read",
+      target_uids: [],
+    });
     expect(body.context).toMatchObject({
       adapter: "mindgraph-mcp",
       resource_uri: "mindgraph://stats",

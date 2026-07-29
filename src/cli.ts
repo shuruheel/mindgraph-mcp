@@ -3,6 +3,19 @@ import * as path from "path";
 import * as os from "os";
 import * as crypto from "crypto";
 import { execFileSync } from "child_process";
+import { MindGraph } from "mindgraph";
+import { loadHookEnv, saveHookEnv } from "./hook-env.js";
+import { parseArgs } from "./cli-args.js";
+import {
+  readHookInput,
+  runClaudeHook,
+  type HookClient,
+} from "./claude-hooks.js";
+import {
+  installClaudeHooks,
+  type HookScope,
+  uninstallClaudeHooks,
+} from "./hook-installer.js";
 
 // ── Config Paths ──────────────────────────────────────────────────────
 
@@ -91,7 +104,16 @@ function installClaudeDesktop(apiKey: string, baseUrl?: string): void {
 }
 
 function installClaudeCode(apiKey: string, baseUrl?: string): void {
-  const envArgs = [`--env`, `MINDGRAPH_API_KEY=${apiKey}`];
+  const envArgs = [
+    `--env`,
+    `MINDGRAPH_API_KEY=${apiKey}`,
+    "--env",
+    "MINDGRAPH_PROFILE=coding",
+    "--env",
+    "MINDGRAPH_HARNESS=claude-code",
+    "--env",
+    "MINDGRAPH_AGENT_ID=claude-code",
+  ];
   if (baseUrl) {
     envArgs.push("--env", `MINDGRAPH_BASE_URL=${baseUrl}`);
   }
@@ -203,11 +225,16 @@ USAGE:
   mindgraph-mcp install-code     Install into Claude Code
   mindgraph-mcp uninstall        Remove from Claude Desktop config
   mindgraph-mcp uninstall-code   Remove from Claude Code
+  mindgraph-mcp install-hooks --harness claude-code [--scope user|project]
+  mindgraph-mcp uninstall-hooks --harness claude-code [--scope user|project]
   mindgraph-mcp status           Show installation status
 
 OPTIONS:
   --api-key <key>     MindGraph API key (or set MINDGRAPH_API_KEY env var)
   --base-url <url>    Custom API base URL (default: https://api.mindgraph.cloud)
+  --scope <scope>     Hook settings scope: project (default) or user
+  --project-dir <dir> Project root for project-scoped hooks
+  --harness <name>    Hook harness (currently claude-code)
   --help, -h          Show this help message
 
 EXAMPLES:
@@ -224,39 +251,6 @@ Get your API key at: https://mindgraph.cloud/dashboard/keys
 `);
 }
 
-function parseArgs(argv: string[]): {
-  command: string;
-  apiKey?: string;
-  baseUrl?: string;
-} {
-  const args = argv.slice(2);
-  let command = "serve";
-  let apiKey = process.env.MINDGRAPH_API_KEY;
-  let baseUrl: string | undefined = process.env.MINDGRAPH_BASE_URL;
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    switch (arg) {
-      case "--api-key":
-        apiKey = args[++i];
-        break;
-      case "--base-url":
-        baseUrl = args[++i];
-        break;
-      case "--help":
-      case "-h":
-        command = "help";
-        break;
-      default:
-        if (!arg.startsWith("-")) {
-          command = arg;
-        }
-        break;
-    }
-  }
-
-  return { command, apiKey, baseUrl };
-}
 
 const DASHBOARD_URL =
   process.env.MINDGRAPH_DASHBOARD_URL || "https://mindgraph.cloud";
@@ -401,7 +395,8 @@ async function interactiveInit(baseUrl?: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const { command, apiKey, baseUrl } = parseArgs(process.argv);
+  const { command, apiKey, baseUrl, scope, projectDir, harness } =
+    parseArgs(process.argv);
 
   switch (command) {
     case "help":
@@ -439,6 +434,71 @@ async function main(): Promise<void> {
     case "uninstall-code":
       uninstallClaudeCode();
       break;
+
+    case "install-hooks": {
+      if ((harness || "claude-code") !== "claude-code") {
+        throw new Error("only --harness claude-code is available in this release");
+      }
+      const result = installClaudeHooks(scope, projectDir);
+      console.log(
+        `Installed ${result.added} MindGraph Claude Code hook entries in ${result.path}`
+      );
+      // Hooks run with the harness's environment, which rarely carries the
+      // MindGraph connection settings — persist them user-level (0600; never
+      // into project settings, which get committed).
+      if (apiKey || baseUrl) {
+        const envPath = saveHookEnv({ apiKey, baseUrl });
+        console.log(`Saved hook connection settings to ${envPath} (mode 600)`);
+      } else {
+        console.log(
+          "Note: hooks resolve MINDGRAPH_API_KEY/MINDGRAPH_BASE_URL from the " +
+            "environment or ~/.mindgraph/hooks.json — pass --api-key/--base-url " +
+            "to persist them now."
+        );
+      }
+      break;
+    }
+
+    case "uninstall-hooks": {
+      if ((harness || "claude-code") !== "claude-code") {
+        throw new Error("only --harness claude-code is available in this release");
+      }
+      const result = uninstallClaudeHooks(scope, projectDir);
+      console.log(
+        `Removed ${result.removed} MindGraph Claude Code hooks from ${result.path}`
+      );
+      break;
+    }
+
+    case "hook": {
+      // Command hooks must fail open. A missing key or transient API failure
+      // disables context/checkpoint nudges but never blocks Claude Code.
+      // Resolution order: process env / flags, then ~/.mindgraph/hooks.json.
+      const stored = loadHookEnv();
+      const hookApiKey = apiKey ?? stored.apiKey;
+      const hookBaseUrl = baseUrl ?? stored.baseUrl;
+      if (!hookApiKey) {
+        process.stdout.write("{}\n");
+        break;
+      }
+      try {
+        const input = await readHookInput();
+        const client = new MindGraph({
+          baseUrl: hookBaseUrl || "https://api.mindgraph.cloud",
+          apiKey: hookApiKey,
+          orgId: process.env.MINDGRAPH_ORG_ID,
+          maxRetries: 0,
+          telemetrySurface: "mcp",
+        });
+        const output = await runClaudeHook(input, client as unknown as HookClient, {
+          agentId: process.env.MINDGRAPH_AGENT_ID || "claude-code",
+        });
+        process.stdout.write(`${JSON.stringify(output)}\n`);
+      } catch {
+        process.stdout.write("{}\n");
+      }
+      break;
+    }
 
     case "status":
       printStatus();

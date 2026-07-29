@@ -1,5 +1,11 @@
-import { MindGraph } from "mindgraph";
+import { MindGraph, MindGraphError } from "mindgraph";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import {
+  CODE_TOOL,
+  attachCodeRefsToToolResult,
+  handleCodeTool,
+} from "./code-tool.js";
+import { handleSyncTool, SYNC_TOOL } from "./sync-tool.js";
 
 // ── Tool Definitions ──────────────────────────────────────────────────
 
@@ -7,13 +13,21 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_capture",
     description:
-      "Capture knowledge into the graph. Use 'entity' for people/orgs/places/events/nations/concepts (auto-deduplicates — safe to call even if already exists), 'observation' for factual statements, 'source' for documents/URLs, 'snippet' for quotes from a source, 'concept' for abstract ideas. Use 'journal' for quick personal notes, preferences, reflections, moods — anything subjective or informal. Prefer 'entity'/'observation' for objective facts, 'journal' for personal notes.",
+      "Capture knowledge into the graph. Use 'entity' for people/orgs/places/events/nations/concepts (auto-deduplicates — safe to call even if already exists), 'observation' for factual statements, 'source' for documents/URLs, 'snippet' for quotes from a source, and 'concept' for abstract ideas. Use 'journal' for quick personal notes and 'lesson' for a durable learning attributable to a session or source nodes. Prefer 'entity'/'observation' for objective facts, 'journal' for informal notes, and 'lesson' only for reusable knowledge.",
     inputSchema: {
       type: "object" as const,
       properties: {
         action: {
           type: "string",
-          enum: ["entity", "observation", "source", "snippet", "concept", "journal"],
+          enum: [
+            "entity",
+            "observation",
+            "source",
+            "snippet",
+            "concept",
+            "journal",
+            "lesson",
+          ],
           description: "Type of knowledge to capture",
         },
         label: {
@@ -27,6 +41,32 @@ export const TOOLS: Tool[] = [
         content: {
           type: "string",
           description: "Journal content/body text (for action=journal)",
+        },
+        session_uid: {
+          type: "string",
+          description: "Session UID that produced a lesson (for action=lesson)",
+        },
+        work_uid: {
+          type: "string",
+          description: "Durable Task/work UID this capture is relevant to",
+        },
+        execution_uid: {
+          type: "string",
+          description: "Material Execution that produced the lesson",
+        },
+        idempotency_key: {
+          type: "string",
+          description: "Stable retry key for an intentional capture",
+        },
+        supersedes_uid: {
+          type: "string",
+          description: "Earlier capture corrected or superseded by this one",
+        },
+        summarizes_uids: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Source node UIDs the lesson was learned from (for action=lesson)",
         },
         entity_type: {
           type: "string",
@@ -61,6 +101,32 @@ export const TOOLS: Tool[] = [
         props: {
           type: "object",
           description: "Type-specific properties (e.g. birth_date for person, coordinates for place)",
+        },
+        code_refs: {
+          type: "array",
+          items: {
+            oneOf: [
+              { type: "string" },
+              {
+                type: "object",
+                properties: {
+                  repo: { type: "string" },
+                  path: { type: "string" },
+                  line: { type: "integer", minimum: 1 },
+                  symbol: { type: "string" },
+                  kind: { type: "string" },
+                  language: { type: "string" },
+                  signature: { type: "string" },
+                },
+              },
+            ],
+          },
+          description: "Typed code targets to anchor and attach to the captured node",
+        },
+        repo: { type: "string", description: "Configured repository id or root" },
+        repo_space_uid: {
+          type: "string",
+          description: "Writable shared repository/Project Space for new code anchors",
         },
         agent_id: {
           type: "string",
@@ -237,6 +303,16 @@ export const TOOLS: Tool[] = [
           type: "object",
           description: "Type-specific properties (e.g. status, priority, deadline, horizon for goals)",
         },
+        code_refs: {
+          type: "array",
+          items: { oneOf: [{ type: "string" }, { type: "object" }] },
+          description: "Typed code targets to anchor and attach to the created commitment",
+        },
+        repo: { type: "string", description: "Configured repository id or root" },
+        repo_space_uid: {
+          type: "string",
+          description: "Writable shared repository/Project Space for new code anchors",
+        },
         agent_id: {
           type: "string",
           description: "Agent identity",
@@ -248,7 +324,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_plan",
     description:
-      "Agent-level task management, governance, and procedural knowledge. Use 'create_plan'/'create_task'/'add_step' for task breakdowns, 'update_status' for progress, 'get_plan' to review. Use 'create_flow'/'add_procedure_step'/'add_affordance'/'add_control' for workflows and procedures. Use 'assess_risk'/'get_assessments' for risk analysis. Use 'get_pending' to read the governance approval queue — approvals are granted by a person in the MindGraph dashboard, never from here, so wait for one rather than trying to clear it. Prefer mindgraph_commit for user goals/projects; use this for agent-managed execution.",
+      "Authoritative durable engineering work and execution evidence. Use create_task/create_plan/add_step for work that must survive sessions; resume_work for the deterministic bounded brief; claim_task + heartbeat for the fenced lease; and start_iteration/checkpoint_iteration/block_task/complete_task/abandon_iteration for idempotent material attempts. Every composite write needs task version, Session, lease epoch, and an idempotency key. Use the harness-native todo list only for local coordination; never maintain the same authoritative Task in both systems.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -260,9 +336,19 @@ export const TOOLS: Tool[] = [
             "add_step",
             "update_status",
             "get_plan",
+            "resume_work",
+            "claim_task",
+            "heartbeat",
+            "start_iteration",
+            "checkpoint_iteration",
+            "block_task",
+            "complete_task",
+            "abandon_iteration",
             "start_execution",
             "complete_execution",
             "fail_execution",
+            "register_agent",
+            "get_executions",
             // C33: governance WRITES are deliberately not exposed here.
             // `create_policy` let a model author the rules it is judged by;
             // `request_approval` + `resolve_approval` let it raise and then
@@ -290,23 +376,177 @@ export const TOOLS: Tool[] = [
         },
         plan_uid: {
           type: "string",
-          description: "Plan UID (for add_step, get_plan)",
+          description: "Plan UID (for create_plan execution link, add_step, get_plan)",
         },
         task_uid: {
           type: "string",
-          description: "Task/step UID (for update_status, execution actions)",
+          description: "Task UID (for create_plan and graph-managed work actions)",
+        },
+        step_uid: {
+          type: "string",
+          description: "PlanStep UID for an iteration/checkpoint",
+        },
+        session_uid: {
+          type: "string",
+          description: "Durable Session UID that owns the task lease",
+        },
+        goal_uid: {
+          type: "string",
+          description: "Goal UID targeted by a task or plan",
         },
         target_uid: {
           type: "string",
-          description: "Parent flow/step UID or target node (for procedure/risk actions)",
+          description:
+            "Task/plan/step UID for update_status, or parent/target node for procedure and risk actions",
+        },
+        execution_uid: {
+          type: "string",
+          description: "Execution UID (required for complete_execution/fail_execution)",
+        },
+        executor_uid: {
+          type: "string",
+          description: "Agent node UID that executed the work",
+        },
+        affordance_uid: {
+          type: "string",
+          description: "Affordance invoked by start_execution",
+        },
+        produces_node_uid: {
+          type: "string",
+          description: "Node produced by a completed execution",
+        },
+        filter_plan_uid: {
+          type: "string",
+          description: "Restrict get_executions to one plan",
+        },
+        depends_on_uids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Plan-step UIDs that an added step depends on",
+        },
+        related_uids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Target node UIDs to link to created work or an execution",
         },
         status: {
           type: "string",
           description: "New status value (for update_status)",
         },
+        task_status: {
+          type: "string",
+          description: "Task status requested by a checkpoint or abandon action",
+        },
+        step_status: {
+          type: "string",
+          description: "PlanStep status requested by a checkpoint",
+        },
+        execution_status: {
+          type: "string",
+          enum: ["completed", "failed", "abandoned"],
+          description: "Terminal Execution status for checkpoint_iteration",
+        },
+        expected_version: {
+          type: "number",
+          description: "Current Task node version used as the optimistic fence",
+        },
+        lease_epoch: {
+          type: "number",
+          description: "Current monotonic task-lease epoch",
+        },
+        lease_ttl_secs: {
+          type: "number",
+          minimum: 1,
+          description: "Requested server-time lease lifetime (default 300s)",
+        },
+        idempotency_key: {
+          type: "string",
+          description: "Caller-stable key required for every composite work mutation",
+        },
+        allow_takeover: {
+          type: "boolean",
+          description: "Governed claim override for a live lease owned by another agent",
+        },
+        release_lease: {
+          type: "boolean",
+          description: "Explicitly release or retain the lease after block/abandon/checkpoint",
+        },
+        override_reason: {
+          type: "string",
+          description: "Explicit completion reason when no terminal Execution evidence exists",
+        },
+        scope_uids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Ordinary target UIDs that bound deterministic resume selection",
+        },
+        limit: {
+          type: "number",
+          minimum: 1,
+          maximum: 1,
+          description: "Resume returns one authoritative Task",
+        },
+        input_snapshot: {
+          type: "object",
+          description: "Structured inputs captured when an execution starts",
+        },
+        output_snapshot: {
+          type: "object",
+          description: "Structured outputs captured when an execution completes or fails",
+        },
+        outcome: {
+          type: "string",
+          description: "Execution outcome",
+        },
+        error: {
+          type: "string",
+          description: "Execution error detail (for fail_execution)",
+        },
+        side_effects: {
+          type: "array",
+          items: { type: "string" },
+          description: "Observable side effects of the execution",
+        },
+        next_action: {
+          type: "string",
+          description: "Recommended next action retained on terminal Execution evidence",
+        },
+        checkpoint_summary: {
+          type: "string",
+          description: "Bounded material-attempt checkpoint summary",
+        },
+        test_summary: {
+          type: "string",
+          description: "Test commands/results retained on the Execution",
+        },
+        produces_node_uids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Nodes produced by checkpoint_iteration",
+        },
+        confidence: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+        },
+        salience: {
+          type: "number",
+          minimum: 0,
+          maximum: 1,
+        },
         props: {
           type: "object",
           description: "Additional properties (e.g. likelihood, impact, mitigation for risks)",
+        },
+        code_refs: {
+          type: "array",
+          items: { oneOf: [{ type: "string" }, { type: "object" }] },
+          description: "Typed code targets to anchor and attach to created work or execution",
+        },
+        repo: { type: "string", description: "Configured repository id or root" },
+        repo_space_uid: {
+          type: "string",
+          description: "Writable shared repository/Project Space for new code anchors",
         },
         agent_id: {
           type: "string",
@@ -314,6 +554,12 @@ export const TOOLS: Tool[] = [
         },
       },
       required: ["action"],
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
     },
   },
   {
@@ -704,7 +950,46 @@ export const TOOLS: Tool[] = [
       required: ["action"],
     },
   },
+  SYNC_TOOL,
+  CODE_TOOL,
 ];
+
+const INVOCATION_CONTEXT_SCHEMA = {
+  type: "object",
+  description:
+    "Adapter-owned invocation context. Models should omit it; compatible hooks replace forged or absent values. cwd is consumed locally and never sent to the API.",
+  properties: {
+    harness: { type: "string", enum: ["claude-code", "codex", "generic"] },
+    harnessSessionId: { type: "string" },
+    harnessTurnId: { type: "string" },
+    cwd: { type: "string" },
+    repoId: { type: "string" },
+    branch: { type: "string" },
+    commit: { type: "string" },
+    worktreeState: { type: "string", enum: ["clean", "dirty"] },
+    model: { type: "string" },
+    injectedBy: { type: "string", enum: ["hook", "mcp-process", "caller"] },
+  },
+};
+
+for (const tool of TOOLS) {
+  if (tool.name === "mindgraph_retrieve") continue;
+  const schema = tool.inputSchema as {
+    properties?: Record<string, unknown>;
+  };
+  if (schema.properties && !schema.properties.invocation_context) {
+    schema.properties.invocation_context = INVOCATION_CONTEXT_SCHEMA;
+  }
+}
+
+export function toolsForProfile(
+  profile = process.env.MINDGRAPH_PROFILE || "general",
+): Tool[] {
+  if (profile === "coding") return TOOLS;
+  return TOOLS.filter(
+    (tool) => tool.name !== "mindgraph_code" && tool.name !== "mindgraph_sync",
+  );
+}
 
 // ── Tool Handlers ─────────────────────────────────────────────────────
 
@@ -732,27 +1017,65 @@ export async function handleTool(
   args: Record<string, unknown>
 ): Promise<ToolResult> {
   try {
+    let result: ToolResult;
     switch (name) {
       case "mindgraph_capture":
-        return await handleCapture(client, args);
+        result = await handleCapture(client, args);
+        break;
       case "mindgraph_reason":
-        return await handleReason(client, args);
+        result = await handleReason(client, args);
+        break;
       case "mindgraph_commit":
-        return await handleCommit(client, args);
+        result = await handleCommit(client, args);
+        break;
       case "mindgraph_plan":
-        return await handlePlan(client, args);
+        result = await handlePlan(client, args);
+        break;
       case "mindgraph_retrieve":
-        return await handleRetrieve(client, args);
+        result = await handleRetrieve(client, args);
+        break;
       case "mindgraph_ingest":
-        return await handleIngest(client, args);
+        result = await handleIngest(client, args);
+        break;
       case "mindgraph_synthesize":
-        return await handleSynthesize(client, args);
+        result = await handleSynthesize(client, args);
+        break;
       case "mindgraph_ontology":
-        return await handleOntology(client, args);
+        result = await handleOntology(client, args);
+        break;
+      case "mindgraph_code":
+        result = await handleCodeTool(client, args);
+        break;
+      case "mindgraph_sync":
+        result = await handleSyncTool(client, args);
+        break;
       default:
-        return err(`Unknown tool: ${name}`);
+        result = err(`Unknown tool: ${name}`);
     }
+    const action = typeof args.action === "string" ? args.action : "";
+    const attach =
+      name === "mindgraph_capture" ||
+      (name === "mindgraph_commit" && action !== "get_open_decisions") ||
+      (name === "mindgraph_plan" &&
+        ![
+          "get_plan",
+          "get_executions",
+          "get_pending",
+          "get_assessments",
+          "resume_work",
+          "heartbeat",
+        ].includes(action));
+    return attach
+      ? await attachCodeRefsToToolResult(client, result, args)
+      : result;
   } catch (e: unknown) {
+    // Propagate the server's typed error body (code, missing field, conflict
+    // details) — the agent can only self-correct on errors it can see.
+    if (e instanceof MindGraphError && e.body !== undefined) {
+      const detail =
+        typeof e.body === "string" ? e.body : JSON.stringify(e.body);
+      return err(`${e.message} — ${detail}`);
+    }
     const message = e instanceof Error ? e.message : String(e);
     return err(message);
   }
@@ -769,6 +1092,12 @@ async function handleCapture(
     label,
     summary,
     content,
+    session_uid,
+    work_uid,
+    execution_uid,
+    idempotency_key,
+    supersedes_uid,
+    summarizes_uids,
     entity_type,
     source_uid,
     mood,
@@ -782,6 +1111,12 @@ async function handleCapture(
     label: string;
     summary?: string;
     content?: string;
+    session_uid?: string;
+    work_uid?: string;
+    execution_uid?: string;
+    idempotency_key?: string;
+    supersedes_uid?: string;
+    summarizes_uids?: string[];
     entity_type?: string;
     source_uid?: string;
     mood?: string;
@@ -793,6 +1128,24 @@ async function handleCapture(
   };
 
   switch (action) {
+    case "lesson":
+      return ok(
+        await client.distill({
+          label,
+          output_type: "lesson",
+          summary,
+          confidence,
+          salience,
+          session_uid,
+          work_uid,
+          execution_uid,
+          idempotency_key,
+          supersedes_uid,
+          summarizes_uids,
+          props,
+          agent_id,
+        } as any)
+      );
     case "journal": {
       if (!content) return err("content is required for action=journal");
       const journalProps: Record<string, unknown> = { content };
@@ -1050,8 +1403,41 @@ async function handlePlan(
     summary,
     plan_uid,
     task_uid,
+    step_uid,
+    session_uid,
+    goal_uid,
     target_uid,
+    execution_uid,
+    executor_uid,
+    affordance_uid,
+    produces_node_uid,
+    filter_plan_uid,
+    depends_on_uids,
+    related_uids,
     status,
+    task_status,
+    step_status,
+    execution_status,
+    expected_version,
+    lease_epoch,
+    lease_ttl_secs,
+    idempotency_key,
+    allow_takeover,
+    release_lease,
+    override_reason,
+    scope_uids,
+    limit,
+    confidence,
+    salience,
+    input_snapshot,
+    output_snapshot,
+    side_effects,
+    outcome,
+    error,
+    next_action,
+    checkpoint_summary,
+    test_summary,
+    produces_node_uids,
     props,
     agent_id,
   } = args as {
@@ -1060,8 +1446,41 @@ async function handlePlan(
     summary?: string;
     plan_uid?: string;
     task_uid?: string;
+    step_uid?: string;
+    session_uid?: string;
+    goal_uid?: string;
     target_uid?: string;
+    execution_uid?: string;
+    executor_uid?: string;
+    affordance_uid?: string;
+    produces_node_uid?: string;
+    filter_plan_uid?: string;
+    depends_on_uids?: string[];
+    related_uids?: string[];
     status?: string;
+    task_status?: string;
+    step_status?: string;
+    execution_status?: string;
+    expected_version?: number;
+    lease_epoch?: number;
+    lease_ttl_secs?: number;
+    idempotency_key?: string;
+    allow_takeover?: boolean;
+    release_lease?: boolean;
+    override_reason?: string;
+    scope_uids?: string[];
+    limit?: number;
+    confidence?: number;
+    salience?: number;
+    input_snapshot?: Record<string, unknown>;
+    output_snapshot?: Record<string, unknown>;
+    side_effects?: string[];
+    outcome?: string;
+    error?: string;
+    next_action?: string;
+    checkpoint_summary?: string;
+    test_summary?: string;
+    produces_node_uids?: string[];
     props?: Record<string, unknown>;
     agent_id?: string;
   };
@@ -1073,14 +1492,52 @@ async function handlePlan(
     case "add_step":
     case "update_status":
     case "get_plan":
+    case "resume_work":
+    case "claim_task":
+    case "heartbeat":
+    case "start_iteration":
+    case "checkpoint_iteration":
+    case "block_task":
+    case "complete_task":
+    case "abandon_iteration":
       return ok(
         await client.plan({
           action: action as any,
           label,
           summary,
+          confidence,
+          salience,
+          goal_uid,
           plan_uid,
           task_uid,
+          step_uid,
+          session_uid,
+          target_uid,
+          depends_on_uids,
+          related_uids,
           status,
+          task_status,
+          step_status,
+          execution_status,
+          execution_uid,
+          expected_version,
+          lease_epoch,
+          lease_ttl_secs,
+          idempotency_key,
+          allow_takeover,
+          release_lease,
+          override_reason,
+          scope_uids,
+          limit,
+          input_snapshot,
+          output_snapshot,
+          side_effects,
+          outcome,
+          error,
+          next_action,
+          checkpoint_summary,
+          test_summary,
+          produces_node_uids,
           props,
           agent_id,
         } as any)
@@ -1088,11 +1545,68 @@ async function handlePlan(
 
     // Execution tracking
     case "start_execution":
-      return ok(await client.execution({ action: "start", task_uid, agent_id } as any));
+      return ok(
+        await client.execution({
+          action: "start",
+          label,
+          summary,
+          confidence,
+          salience,
+          plan_uid,
+          executor_uid,
+          affordance_uid,
+          related_uids,
+          input_snapshot,
+          props,
+          agent_id,
+        } as any)
+      );
     case "complete_execution":
-      return ok(await client.execution({ action: "complete", task_uid, agent_id } as any));
+      return ok(
+        await client.execution({
+          action: "complete",
+          execution_uid,
+          produces_node_uid,
+          output_snapshot,
+          side_effects,
+          outcome,
+          props,
+          agent_id,
+        } as any)
+      );
     case "fail_execution":
-      return ok(await client.execution({ action: "fail", task_uid, agent_id } as any));
+      return ok(
+        await client.execution({
+          action: "fail",
+          execution_uid,
+          output_snapshot,
+          side_effects,
+          outcome,
+          error,
+          props,
+          agent_id,
+        } as any)
+      );
+    case "register_agent":
+      return ok(
+        await client.execution({
+          action: "register_agent",
+          label,
+          summary,
+          confidence,
+          salience,
+          props,
+          agent_id,
+        } as any)
+      );
+    case "get_executions":
+      return ok(
+        await client.execution({
+          action: "get_executions",
+          filter_plan_uid,
+          agent_id,
+        } as any)
+      );
 
     // Governance — read-only from MCP by design (C33). The write actions were
     // removed rather than repaired: `resolve_approval` here also sent
