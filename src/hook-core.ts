@@ -310,6 +310,27 @@ async function repositoryScopeUids(
   ];
 }
 
+// SessionStart may only RE-claim this agent's own durable work. The lease
+// record names its owner even after the TTL lapsed (sessions are usually
+// further apart than any lease lifetime), so cross-session rebind works on
+// expired leases too. A task with no lease history for this agent belongs to
+// the global backlog: the brief still surfaces it as context, but claiming it
+// is a deliberate act the model takes when it starts the work. Unconditional
+// auto-claim converted one bad selection into sticky owned_live_lease state
+// that every subsequent session re-selected (live incident 2026-07-29: a Task
+// extracted from an ingested document, priority "critical", was auto-claimed
+// by each new session on two harnesses).
+function isOwnPriorWork(
+  brief: Record<string, unknown> | undefined,
+  agentId: string,
+): boolean {
+  const reason = string(brief?.selection_reason);
+  if (reason === "owned_live_lease" || reason === "same_agent_session_rebind") {
+    return true;
+  }
+  return string(object(brief?.lease)?.lease_owner_agent_id) === agentId;
+}
+
 async function sessionStart(
   input: HookInput,
   client: HookClient,
@@ -340,7 +361,12 @@ async function sessionStart(
   );
   const task = object(brief?.task);
   const lease = object(brief?.lease);
-  if (sessionUid && string(task?.uid) && number(task?.version)) {
+  if (
+    sessionUid &&
+    string(task?.uid) &&
+    number(task?.version) &&
+    isOwnPriorWork(brief, agentId)
+  ) {
     try {
       const claimed = object(
         await client.plan({

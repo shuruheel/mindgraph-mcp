@@ -136,8 +136,15 @@ describe("R4 — the ledger fills, never overwrites, model work-targeting args",
           const version = request.task_uid ? 2 : 1;
           return {
             task: { uid: "ledger-task", version },
-            lease: null,
-            selection_reason: "pending",
+            // This agent's own prior lease, long expired — the sanctioned
+            // SessionStart re-claim path. A backlog brief (selection_reason
+            // "pending", no lease) would no longer be claimed at all.
+            lease: {
+              lease_owner_agent_id: "r4-agent",
+              lease_epoch: 3,
+              lease_expires_at: 1,
+            },
+            selection_reason: "claimed",
           };
         }
         return {};
