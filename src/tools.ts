@@ -1,4 +1,5 @@
-import { MindGraph, MindGraphError } from "mindgraph";
+import { MindGraph } from "mindgraph";
+import { errorDetail } from "./error-detail.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
   CODE_TOOL,
@@ -1071,13 +1072,7 @@ export async function handleTool(
   } catch (e: unknown) {
     // Propagate the server's typed error body (code, missing field, conflict
     // details) — the agent can only self-correct on errors it can see.
-    if (e instanceof MindGraphError && e.body !== undefined) {
-      const detail =
-        typeof e.body === "string" ? e.body : JSON.stringify(e.body);
-      return err(`${e.message} — ${detail}`);
-    }
-    const message = e instanceof Error ? e.message : String(e);
-    return err(message);
+    return err(errorDetail(e));
   }
 }
 
@@ -1261,14 +1256,34 @@ async function handleReason(
   };
 
   if (action === "claim") {
-    // Build claim object: prefer explicit claim, fall back to top-level label
-    const claimObj = claim || (label ? { label, confidence } : null);
+    // Build claim object: prefer explicit claim, fall back to top-level label.
+    // The server's ArgumentRequest carries prose in props ({label, confidence,
+    // props}) — a top-level `content` key is silently dropped by serde, so
+    // map the schema's content/description fields into props here (claims
+    // landed with empty content in the 2026-07-29 live import).
+    const claimObj = claim
+      ? {
+          label: claim.label,
+          confidence: claim.confidence,
+          ...(claim.content ? { props: { content: claim.content } } : {}),
+        }
+      : label
+        ? { label, confidence }
+        : null;
     if (!claimObj) return err("claim object or label is required for action=claim");
     return ok(
       await client.argue({
         claim: claimObj,
-        evidence,
-        warrant,
+        evidence: evidence?.map((e) => ({
+          label: e.label,
+          ...(e.description ? { props: { description: e.description } } : {}),
+        })),
+        warrant: warrant
+          ? {
+              label: warrant.label,
+              ...(warrant.content ? { props: { content: warrant.content } } : {}),
+            }
+          : undefined,
         argument,
         agent_id,
       } as any)

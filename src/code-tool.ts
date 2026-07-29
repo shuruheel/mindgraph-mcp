@@ -1,5 +1,6 @@
 import { MindGraph } from "mindgraph";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { errorDetail } from "./error-detail.js";
 import {
   CodegraphAdapter,
   codeRefIdentityKey,
@@ -323,10 +324,7 @@ export async function handleCodeTool(
         return err("unknown_action", `unknown mindgraph_code action: ${action}`);
     }
   } catch (cause) {
-    return err(
-      "code_tool_failed",
-      cause instanceof Error ? cause.message : String(cause),
-    );
+    return err("code_tool_failed", errorDetail(cause));
   }
 }
 
