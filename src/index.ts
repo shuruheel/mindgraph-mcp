@@ -141,6 +141,11 @@ if (PROFILE === "coding") {
 
 ## Coding profile
 
+**Recall order (overrides the #1 rule above for work and code questions):**
+- "What was I working on?" / current work state / resuming anything: call \`mindgraph_plan\` action \`resume_work\` FIRST. Work state is structural; never answer it from keyword search ("recent work" famously retrieves people named Work).
+- Knowledge about specific code (a function, file, or route): \`mindgraph_code\` action \`recall\` — anchor-based, not keyword-based.
+- Broad knowledge searches: \`mindgraph_retrieve\` as usual, but when searching for work artifacts pass node_types filters (Task, Lesson, RiskAssessment, Claim) to keep personal-graph content out of engineering answers.
+
 - Use mindgraph_sync for explicit, one-way project memory-file imports. It discovers and hashes files, but you deliberately map durable assertions with record; it never writes graph state back to files.
 - Capture corrections, decisions with rationale, fixes that survived meaningful failed attempts, durable invariants/preferences, and blockers with evidence.
 - Do not capture routine mechanics, transient command output, facts cheaply derivable from code, unsupported speculation as high-confidence lessons, or completion without evidence.

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MindGraphError, type MindGraph } from "mindgraph";
-import { handleTool } from "../src/tools.js";
+import { handleTool, TOOLS } from "../src/tools.js";
 import { runClaudeHook, type HookClient } from "../src/claude-hooks.js";
 import {
   installClaudeHooks,
@@ -440,5 +440,13 @@ describe("R13 — absent codegraph carries a self-serve install hint", () => {
     expect(absent.join(" ")).toContain("Memory and work tools are unaffected");
     const timeout = unavailabilityCaveats("timeout", "timed out");
     expect(timeout.join(" ")).not.toContain("codegraph init");
+  });
+});
+
+describe("R14 — recall steering for work-state questions", () => {
+  it("the retrieve description redirects work-state questions to resume_work", () => {
+    const retrieve = TOOLS.find((t) => t.name === "mindgraph_retrieve");
+    expect(retrieve?.description).toContain("resume_work");
+    expect(retrieve?.description).toContain("NOT for work state");
   });
 });
