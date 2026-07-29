@@ -109,7 +109,11 @@ function installClaudeDesktop(apiKey: string, baseUrl?: string): void {
   console.log("Restart Claude Desktop to activate.");
 }
 
-function installClaudeCode(apiKey: string, baseUrl?: string): void {
+function installClaudeCode(
+  apiKey: string,
+  baseUrl?: string,
+  agentId?: string
+): void {
   const envArgs = [
     `--env`,
     `MINDGRAPH_API_KEY=${apiKey}`,
@@ -118,7 +122,7 @@ function installClaudeCode(apiKey: string, baseUrl?: string): void {
     "--env",
     "MINDGRAPH_HARNESS=claude-code",
     "--env",
-    "MINDGRAPH_AGENT_ID=claude-code",
+    `MINDGRAPH_AGENT_ID=${agentId || "claude-code"}`,
   ];
   if (baseUrl) {
     envArgs.push("--env", `MINDGRAPH_BASE_URL=${baseUrl}`);
@@ -248,7 +252,8 @@ function withHooksFlag(): boolean {
 function finishCodeInstall(
   apiKey: string,
   baseUrl: string | undefined,
-  withHooks: boolean
+  withHooks: boolean,
+  agentId?: string
 ): void {
   if (withHooks) {
     const runner = installHookRunner(__filename);
@@ -257,7 +262,7 @@ function finishCodeInstall(
     console.log(
       `Installed ${result.added} and refreshed ${result.updated} MindGraph Claude Code hook entries in ${result.path}`
     );
-    const envPath = saveHookEnv({ apiKey, baseUrl });
+    const envPath = saveHookEnv({ apiKey, baseUrl, agentId });
     console.log(`Saved hook connection settings to ${envPath} (mode 600)`);
   } else {
     console.log(
@@ -454,13 +459,23 @@ async function interactiveInit(baseUrl?: string): Promise<void> {
       installClaudeDesktop(apiKey, baseUrl);
       break;
     case "2":
-      installClaudeCode(apiKey, baseUrl);
-      finishCodeInstall(apiKey, baseUrl, withHooksFlag());
+      installClaudeCode(apiKey, baseUrl, process.env.MINDGRAPH_AGENT_ID);
+      finishCodeInstall(
+        apiKey,
+        baseUrl,
+        withHooksFlag(),
+        process.env.MINDGRAPH_AGENT_ID
+      );
       break;
     case "3":
       installClaudeDesktop(apiKey, baseUrl);
-      installClaudeCode(apiKey, baseUrl);
-      finishCodeInstall(apiKey, baseUrl, withHooksFlag());
+      installClaudeCode(apiKey, baseUrl, process.env.MINDGRAPH_AGENT_ID);
+      finishCodeInstall(
+        apiKey,
+        baseUrl,
+        withHooksFlag(),
+        process.env.MINDGRAPH_AGENT_ID
+      );
       break;
     default:
       console.error("Invalid choice.");
@@ -471,7 +486,7 @@ async function interactiveInit(baseUrl?: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const { command, apiKey, baseUrl, scope, projectDir, harness, hooks } =
+  const { command, apiKey, baseUrl, scope, projectDir, harness, hooks, agentId } =
     parseArgs(process.argv);
 
   switch (command) {
@@ -500,8 +515,8 @@ async function main(): Promise<void> {
         );
         process.exit(1);
       }
-      installClaudeCode(apiKey, baseUrl);
-      finishCodeInstall(apiKey, baseUrl, withHooksFlag());
+      installClaudeCode(apiKey, baseUrl, agentId);
+      finishCodeInstall(apiKey, baseUrl, withHooksFlag(), agentId);
       break;
 
     case "uninstall":
@@ -525,8 +540,8 @@ async function main(): Promise<void> {
       // Hooks run with the harness's environment, which rarely carries the
       // MindGraph connection settings — persist them user-level (0600; never
       // into project settings, which get committed).
-      if (apiKey || baseUrl) {
-        const envPath = saveHookEnv({ apiKey, baseUrl });
+      if (apiKey || baseUrl || agentId) {
+        const envPath = saveHookEnv({ apiKey, baseUrl, agentId });
         console.log(`Saved hook connection settings to ${envPath} (mode 600)`);
       } else {
         console.log(
@@ -571,7 +586,8 @@ async function main(): Promise<void> {
           telemetrySurface: "mcp",
         });
         const output = await runClaudeHook(input, client as unknown as HookClient, {
-          agentId: process.env.MINDGRAPH_AGENT_ID || "claude-code",
+          agentId:
+            process.env.MINDGRAPH_AGENT_ID || stored.agentId || "claude-code",
         });
         process.stdout.write(`${JSON.stringify(output)}\n`);
       } catch {

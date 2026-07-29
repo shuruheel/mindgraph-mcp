@@ -18,6 +18,9 @@ import path from "node:path";
 export interface HookEnv {
   baseUrl?: string;
   apiKey?: string;
+  /** Per-member agent identity — two teammates defaulting to the same
+   * agent_id become ONE logical agent to leases and resume selection. */
+  agentId?: string;
 }
 
 export function hookEnvPath(dir?: string): string {
@@ -31,6 +34,7 @@ export function loadHookEnv(dir?: string): HookEnv {
     return {
       baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : undefined,
       apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : undefined,
+      agentId: typeof parsed.agentId === "string" ? parsed.agentId : undefined,
     };
   } catch {
     return {};
@@ -44,6 +48,7 @@ export function saveHookEnv(env: HookEnv, dir?: string): string {
   const merged: HookEnv = {
     baseUrl: env.baseUrl ?? existing.baseUrl,
     apiKey: env.apiKey ?? existing.apiKey,
+    agentId: env.agentId ?? existing.agentId,
   };
   fs.writeFileSync(file, `${JSON.stringify(merged, null, 2)}\n`, {
     mode: 0o600,
