@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.9 (2026-07-29)
+
 ### Fixed
 
 - **Hooked `create_task` calls now carry durable repository scope.** The coding
