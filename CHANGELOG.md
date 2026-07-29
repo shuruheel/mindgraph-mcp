@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+## 0.14.0 (2026-07-29)
+
+The coding profile: MindGraph as a durable work substrate for coding agents.
+**Compatibility**: requires `mindgraph` (TS SDK) 0.14.0. The coding profile's
+work composites need a server newer than mindgraph 1.10.0 (local
+`mindgraph-server` from main today; MindGraph Cloud after the next server
+deploy). The default `general` profile is fully compatible with Cloud as-is.
+
+### Added
+
+- **Coding profile** (`MINDGRAPH_PROFILE=coding`, 10 tools): `mindgraph_code`
+  (identity-stable code anchors + live callers/impact federation over a local
+  codegraph index, with typed degradation — absent/timeout/wrong-index/stale
+  are distinct states) and `mindgraph_sync` (idempotent, resumable import of
+  markdown memory files with content-hash drift tracking and a retirement
+  report).
+- **Durable-work composites** on `mindgraph_plan`: `resume_work`, `claim_task`,
+  `heartbeat`, `start_iteration`, `checkpoint_iteration`, `block_task`,
+  `complete_task`, `abandon_iteration` — fenced leases, version conflicts, and
+  idempotent retries surfaced to the model.
+- **Claude Code hooks** + merge-safe installer (`install-hooks` /
+  `uninstall-hooks`; `install-code --hooks` for the one-command setup):
+  SessionStart opens/rebinds the session and injects the current work brief,
+  PreToolUse stamps verified session/repo/commit provenance, Stop runs a
+  once-per-session reflection checkpoint, SessionEnd cleans up. All hooks fail
+  open. Connection settings persist to `~/.mindgraph/hooks.json` (mode 600).
+- Action-aware governance targets (`action`, `mutability`, `target_uids` in the
+  checkpoint payload).
+- Install-time code-intelligence status: codegraph detected, or an explicit
+  optional install pointer instead of silent degradation.
+
+### Fixed
+
+Four defects found in the live two-session dogfood, each pinned by a
+regression test:
+
+- the installed hook command failed to parse its own `--owner` flag (every
+  installed hook died on first run);
+- server typed-error bodies were dropped from tool errors, leaving agents
+  unable to self-correct on `missing_field`/`version_conflict`;
+- composite actions did not forward `execution_uid`;
+- the PreToolUse ledger overwrote model-chosen `task_uid`/`expected_version`
+  (now fill-only-if-absent; session identity stays adapter-authoritative).
+
 ## 0.13.5 (2026-07-27)
 
 ### Fixed
