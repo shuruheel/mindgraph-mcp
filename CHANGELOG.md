@@ -2,23 +2,61 @@
 
 ## Unreleased
 
+## 0.14.8 (2026-07-29)
+
 ### Added
 
-- **Codex hooks adapter (B7, targeted for 0.15.0).** `install-hooks --harness
-  codex` merge-safely writes `$CODEX_HOME/hooks.json` or a project
-  `.codex/hooks.json`, installs the same pinned self-contained runner used by
-  Claude Code, and maps Codex `SessionStart`, `PreToolUse`, `PostToolUse`,
-  `Stop`, and advisory `SessionEnd` events onto the shared lifecycle core.
-  Session context uses Codex `additionalContext`; tool rewrites use its required
-  `permissionDecision: "allow"` plus `updatedInput`; SessionEnd respects
-  Codex's three-second cap, while SessionStart gets a bounded 30-second cold
-  tenant window in both harnesses after live testing crossed the old 20-second
-  edge. All hooks fail open and preserve foreign entries.
-- **Harness-neutral hook core.** Session/lease recovery, bounded brief
-  generation, verified InvocationContext, fill-only work targeting, disposable
-  ledger counters, reflection once-guard, and cleanup are shared by thin Claude
-  Code and Codex wire codecs. No graph semantics, server endpoints, identity
-  keys, or MCP tool contracts changed.
+- **Codex hooks adapter.** `install-hooks --harness codex` merge-safely writes
+  `$CODEX_HOME/hooks.json` (or `<project>/.codex/hooks.json` with `--scope
+  project`), installs the same pinned self-contained runner Claude Code uses,
+  and maps Codex's `SessionStart`, `PreToolUse`, `PostToolUse`, `Stop`, and
+  advisory `SessionEnd` events onto the same session lifecycle Claude Code
+  gets: session open/rebind with one bounded work brief, verified invocation
+  provenance stamped on MindGraph tool calls, and a once-per-session
+  reflection checkpoint. Session context is delivered as Codex
+  `additionalContext`; tool rewrites use its required `permissionDecision:
+  "allow"` plus `updatedInput`; `SessionEnd` respects Codex's three-second
+  cap and stays cleanup-only. Codex has no equivalent of Claude Code's
+  `TaskCreated`/`TaskCompleted` events, so those advisory counters remain
+  Claude Code-only. Every hook fails open, and foreign entries in the
+  settings file are never modified. Note that Codex requires newly installed
+  or changed command hooks to be reviewed with `/hooks` before they run.
+  Both harnesses now run one shared lifecycle core behind thin wire codecs;
+  Claude Code behavior, graph semantics, server endpoints, identity keys, and
+  MCP tool contracts are unchanged.
+
+### Changed
+
+- **The SessionStart hook timeout is now 30 seconds, up from 20, in both
+  harnesses.** Cold-tenant session starts crossed the old edge in live
+  testing: the hook failed open as designed, but no work brief reached the
+  model. The same installed runner completes in 16.84s once warm, so 30s
+  keeps a cold-start margin. Existing installs keep the old 20-second value
+  until you re-run `install-hooks` (or `install-code --hooks`), which
+  refreshes MindGraph-owned entries in place.
+- **`uninstall-hooks` no longer deletes the pinned runner** at
+  `~/.mindgraph/bin/mindgraph-hook.cjs`. The runner is shared by every
+  harness adapter, so removing one harness's configuration used to break
+  hooks still installed for the other (or for a project outside the current
+  directory). It now removes only the MindGraph-owned hook entries for the
+  harness you name.
+
+### Fixed
+
+- **SessionStart no longer auto-claims work this agent never touched.** The
+  hook claimed whatever `resume_work` selected, so one bad selection became
+  sticky owned-lease state that every subsequent session re-selected and
+  re-claimed — in a live case, a Task extracted from an ingested document,
+  priority `critical`, with no agent history, was claimed by each new
+  session, mutating extracted knowledge and burying real pending work.
+  SessionStart now claims only the agent's own prior work: an owned live
+  lease, a same-agent session rebind, or a lease this agent owns whose TTL
+  has since lapsed (cross-session rebind keys off ownership rather than
+  liveness, because sessions are usually further apart than any lease
+  lifetime). Backlog tasks still surface in the injected brief as context —
+  claiming one is now a deliberate `claim_task` the agent makes when it
+  actually starts that work. Backlog session starts also drop two API
+  round-trips.
 
 ## 0.14.7 (2026-07-29)
 
