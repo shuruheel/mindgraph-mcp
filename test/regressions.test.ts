@@ -5,7 +5,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MindGraphError, type MindGraph } from "mindgraph";
 import { handleTool } from "../src/tools.js";
 import { runClaudeHook, type HookClient } from "../src/claude-hooks.js";
-import { installClaudeHooks } from "../src/hook-installer.js";
+import {
+  installClaudeHooks,
+  installHookRunner,
+  uninstallHookRunner,
+} from "../src/hook-installer.js";
+import { errorDetail } from "../src/error-detail.js";
+import { handleSyncTool } from "../src/sync-tool.js";
 import { parseArgs } from "../src/cli-args.js";
 import { loadHookEnv, saveHookEnv } from "../src/hook-env.js";
 
@@ -46,9 +52,12 @@ describe("R1 — the installed hook command line parses (owner-flag drift)", () 
       .flatMap((entry) => entry.hooks.map((h) => h.command));
     expect(commands.length).toBeGreaterThan(0);
     for (const command of commands) {
-      // Strip the launcher (`npx -y mindgraph-mcp@latest`); parseArgs sees
-      // argv[2:], i.e. everything after the executable.
-      const argv = ["node", "cli.js", ...command.split(/\s+/).slice(3)];
+      // Command form: node "$HOME/.mindgraph/bin/mindgraph-hook.cjs" hook …
+      // parseArgs sees argv[2:], i.e. everything after the runner path.
+      expect(command).toContain('node "$HOME/.mindgraph/bin/mindgraph-hook.cjs"');
+      expect(command).not.toContain("npx");
+      const tokens = command.split(/\s+/);
+      const argv = ["node", "cli.js", ...tokens.slice(2)];
       const parsed = parseArgs(argv);
       expect(parsed.command).toBe("hook");
     }
@@ -247,5 +256,80 @@ describe("R6 — install-code --hooks single-command path", () => {
   });
   it("defaults hooks to false", () => {
     expect(parseArgs(["node", "cli.js", "install-code"]).hooks).toBe(false);
+  });
+});
+
+describe("R7 — pinned hook runner replaces per-invocation npx", () => {
+  it("copies the executing bundle to ~/.mindgraph/bin and raises SessionStart timeout", () => {
+    // Failure pinned: `npx -y mindgraph-mcp@latest` per hook invocation cost
+    // ~10s of package re-resolution; SessionStart produced a correct brief in
+    // 12.7s against an 8s timeout and was silently killed in both live-test
+    // sessions.
+    const home = tempDir("mindgraph-r7-home-");
+    const source = path.join(home, "fake-cli.cjs");
+    fs.writeFileSync(source, "// bundle");
+    const target = installHookRunner(source, home);
+    expect(fs.readFileSync(target, "utf8")).toBe("// bundle");
+    expect(target).toContain(".mindgraph/bin/mindgraph-hook.cjs");
+    uninstallHookRunner(home);
+    expect(fs.existsSync(target)).toBe(false);
+
+    const root = tempDir("mindgraph-r7-root-");
+    fs.mkdirSync(path.join(root, ".git"));
+    installClaudeHooks("project", root);
+    const settings = JSON.parse(
+      fs.readFileSync(path.join(root, ".claude", "settings.json"), "utf8")
+    ) as {
+      hooks: Record<string, Array<{ hooks: Array<{ timeout: number }> }>>;
+    };
+    const sessionStart = settings.hooks.SessionStart[0].hooks[0];
+    expect(sessionStart.timeout).toBeGreaterThanOrEqual(20);
+  });
+});
+
+describe("R8 — sync tool surfaces server error bodies", () => {
+  it("includes the typed body in sync_failed errors", async () => {
+    // Failure pinned: the live import saw bare "failed: 403" and had to curl
+    // to discover identity_namespace_forbidden.
+    const boom = new MindGraphError("POST /memory/sync failed: 403", 403, {
+      error: "missing capability identity:write:coding.memory-file",
+      code: "identity_namespace_forbidden",
+    });
+    expect(errorDetail(boom)).toContain("identity_namespace_forbidden");
+    const client = {
+      memorySync: vi.fn().mockRejectedValue(boom),
+    } as unknown as MindGraph;
+    const root = tempDir("mindgraph-r8-root-");
+    fs.mkdirSync(path.join(root, ".git"));
+    const result = await handleSyncTool(client, {
+      action: "status",
+      repo: root,
+    });
+    const text = result.content[0].text;
+    expect(result.isError).toBe(true);
+    expect(text).toContain("identity_namespace_forbidden");
+  });
+});
+
+describe("R9 — reason maps prose into props (server wire contract)", () => {
+  it("forwards claim.content, warrant.content, evidence.description via props", async () => {
+    // Failure pinned: ArgumentRequest carries prose in props; a top-level
+    // `content` key is silently dropped by serde — the live import's claims
+    // landed with empty content and were backfilled by hand.
+    const argue = vi.fn().mockResolvedValue({ ok: true });
+    const client = { argue } as unknown as MindGraph;
+    await handleTool(client, "mindgraph_reason", {
+      action: "claim",
+      claim: { label: "L7 resolver is fragile", content: "detailed prose", confidence: 0.9 },
+      evidence: [{ label: "audit", description: "seen in prod" }],
+      warrant: { label: "warrant", content: "because" },
+    });
+    expect(argue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        claim: expect.objectContaining({ props: { content: "detailed prose" } }),
+        evidence: [expect.objectContaining({ props: { description: "seen in prod" } })],
+        warrant: expect.objectContaining({ props: { content: "because" } }),
+      })
+    );
   });
 });

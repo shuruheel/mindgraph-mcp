@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## 0.14.1 (2026-07-29)
+
+Patch release from the first production live test — four fixes, each pinned by
+a regression test. Re-run `install-code --hooks` (or `install-hooks`) after
+updating: the hook entries themselves changed.
+
+### Fixed
+
+- **Hooks now invoke a pinned local runner instead of `npx -y
+  mindgraph-mcp@latest`.** Per-invocation npx re-resolution cost ~10s;
+  SessionStart produced a correct work brief in 12.7s against its 8s timeout
+  and was silently killed — no brief, no session, no provenance, in every real
+  session. The installer now copies the self-contained CLI bundle to
+  `~/.mindgraph/bin/mindgraph-hook.cjs` (version-pinned, ~100ms startup) and
+  the SessionStart timeout is 20s for cold cloud tenant loads.
+- **`mindgraph_sync` and `mindgraph_code` surface server error bodies** —
+  previously a bare "failed: 403" with the typed code
+  (`identity_namespace_forbidden`) discarded, leaving agents unable to
+  self-correct or report.
+- **`mindgraph_reason` prose reaches the server** — `claim.content`,
+  `warrant.content`, and `evidence.description` are now mapped into `props`
+  per the server's ArgumentRequest contract; previously serde silently dropped
+  them and claims landed with empty content.
+
+### Notes
+
+Pairs with mindgraph-server ≥ 1.11.1 (identity-namespace access for plain org
+credentials); against older servers the coding profile's anchor/sync actions
+return the server's typed 403 — now visibly.
+
 ## 0.14.0 (2026-07-29)
 
 The coding profile: MindGraph as a durable work substrate for coding agents.

@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { MindGraph } from "mindgraph";
 import { CodegraphAdapter, type RepositoryIdentity } from "./codegraph.js";
+import { errorDetail } from "./error-detail.js";
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -215,10 +216,7 @@ export async function handleSyncTool(
     }
     return ok(await remote.memorySync(request));
   } catch (error) {
-    return err(
-      "sync_failed",
-      error instanceof Error ? error.message : String(error),
-    );
+    return err("sync_failed", errorDetail(error));
   }
 }
 

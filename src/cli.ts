@@ -13,8 +13,10 @@ import {
 } from "./claude-hooks.js";
 import {
   installClaudeHooks,
+  installHookRunner,
   type HookScope,
   uninstallClaudeHooks,
+  uninstallHookRunner,
 } from "./hook-installer.js";
 
 // ── Config Paths ──────────────────────────────────────────────────────
@@ -225,6 +227,8 @@ function finishCodeInstall(
   withHooks: boolean
 ): void {
   if (withHooks) {
+    const runner = installHookRunner(__filename);
+    console.log(`Installed pinned hook runner at ${runner}`);
     const result = installClaudeHooks("user");
     console.log(
       `Installed ${result.added} MindGraph Claude Code hook entries in ${result.path}`
@@ -488,6 +492,8 @@ async function main(): Promise<void> {
       if ((harness || "claude-code") !== "claude-code") {
         throw new Error("only --harness claude-code is available in this release");
       }
+      const runner = installHookRunner(__filename);
+      console.log(`Installed pinned hook runner at ${runner}`);
       const result = installClaudeHooks(scope, projectDir);
       console.log(
         `Installed ${result.added} MindGraph Claude Code hook entries in ${result.path}`
@@ -512,6 +518,7 @@ async function main(): Promise<void> {
       if ((harness || "claude-code") !== "claude-code") {
         throw new Error("only --harness claude-code is available in this release");
       }
+      uninstallHookRunner();
       const result = uninstallClaudeHooks(scope, projectDir);
       console.log(
         `Removed ${result.removed} MindGraph Claude Code hooks from ${result.path}`

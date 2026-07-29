@@ -6,8 +6,30 @@ import crypto from "node:crypto";
 export type HookScope = "user" | "project";
 
 const OWNER_MARKER = "--owner mindgraph";
-const COMMAND =
-  "npx -y mindgraph-mcp@latest hook --harness claude-code --owner mindgraph";
+// The hook invokes a pinned copy of the self-contained CLI bundle, installed
+// by installHookRunner(). `npx -y mindgraph-mcp@latest` here cost ~10s of
+// re-resolution PER HOOK INVOCATION — SessionStart produced a perfect brief in
+// 12.7s against an 8s timeout and was killed every time (2026-07-29 live
+// test). A copied bundle starts in ~100ms and pins the version the user
+// actually installed.
+const RUNNER_RELATIVE = ".mindgraph/bin/mindgraph-hook.cjs";
+const COMMAND = `node "$HOME/${RUNNER_RELATIVE}" hook --harness claude-code --owner mindgraph`;
+
+/** Copy the executing CLI bundle to the stable runner path hooks invoke. */
+export function installHookRunner(sourceFile: string, homeDir?: string): string {
+  const target = path.join(homeDir || os.homedir(), RUNNER_RELATIVE);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.copyFileSync(sourceFile, target);
+  return target;
+}
+
+export function uninstallHookRunner(homeDir?: string): void {
+  try {
+    fs.rmSync(path.join(homeDir || os.homedir(), RUNNER_RELATIVE));
+  } catch {
+    // Best effort — absence is the goal.
+  }
+}
 
 type JsonObject = Record<string, unknown>;
 
@@ -36,7 +58,7 @@ function desiredEntries(): Record<string, JsonObject[]> {
     SessionStart: [
       {
         matcher: "startup|resume|clear|compact|fork",
-        hooks: [ownedHook(8)],
+        hooks: [ownedHook(20)],
       },
     ],
     PreToolUse: [
