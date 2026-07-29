@@ -431,3 +431,14 @@ describe("R12 — per-member agent identity", () => {
     expect(loadHookEnv(dir).agentId).toBe("claude-code:shan");
   });
 });
+
+describe("R13 — absent codegraph carries a self-serve install hint", () => {
+  it("the unavailable caveats tell the model how to enable code intelligence", async () => {
+    const { unavailabilityCaveats } = await import("../src/codegraph.js");
+    const absent = unavailabilityCaveats("absent", "codegraph executable not found");
+    expect(absent.join(" ")).toContain("codegraph init");
+    expect(absent.join(" ")).toContain("Memory and work tools are unaffected");
+    const timeout = unavailabilityCaveats("timeout", "timed out");
+    expect(timeout.join(" ")).not.toContain("codegraph init");
+  });
+});

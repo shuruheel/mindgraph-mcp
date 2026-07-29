@@ -537,6 +537,7 @@ async function main(): Promise<void> {
       console.log(
         `Installed ${result.added} and refreshed ${result.updated} MindGraph Claude Code hook entries in ${result.path}`
       );
+      printCodegraphStatus();
       // Hooks run with the harness's environment, which rarely carries the
       // MindGraph connection settings — persist them user-level (0600; never
       // into project settings, which get committed).
