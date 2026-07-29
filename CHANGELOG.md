@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.14.5 (2026-07-29)
+
+### Fixed
+
+- **Absent codegraph is now self-serve.** The runtime unavailable result
+  carries the optional-install hint (codegraph + `codegraph init`) so the
+  agent can tell the user how to enable code anchoring instead of relaying a
+  bare not-found; `install-hooks` prints the code-intelligence status line
+  that `install-code` already had. codegraph remains optional: memory and work
+  tools are unaffected without it.
+
 ## 0.14.4 (2026-07-29)
 
 ### Added
