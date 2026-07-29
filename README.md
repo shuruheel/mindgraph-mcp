@@ -56,15 +56,24 @@ tasks/plans/iterations with fenced leases, and a deterministic work brief that
 lets a fresh session resume exactly where the last one stopped — across
 sessions, crashes, and machines.
 
-Two commands:
+One command:
 
 ```bash
-# 1. Register the MCP server with the coding profile
-npx -y mindgraph-mcp install-code --api-key mg_your_key_here
-
-# 2. Install the Claude Code hooks (session lifecycle + work-brief injection)
-npx -y mindgraph-mcp install-hooks --harness claude-code --scope user --api-key mg_your_key_here
+npx -y mindgraph-mcp install-code --api-key mg_your_key_here --hooks
 ```
+
+This registers the MCP server with the coding profile AND installs the Claude
+Code hooks (session lifecycle + work-brief injection) with persisted connection
+settings. Prefer separate steps? `install-code` alone registers just the
+server, and `install-hooks --harness claude-code --scope user --api-key …`
+adds the hooks later.
+
+**Optional — enable code intelligence**: install
+[codegraph](https://github.com/colbymchenry/codegraph) and run `codegraph init`
+in your repositories. This powers `mindgraph_code`'s anchors and live
+callers/impact federation. Without it, memory and work tools function fully;
+code anchoring degrades to typed unavailable results (the installer tells you
+which state you're in).
 
 The hooks open/rebind a Session at start and inject the current work brief,
 stamp every MindGraph tool call with verified session/repo/commit provenance,
@@ -134,7 +143,7 @@ Plus **dynamically generated read tools**: when the tenant's active schema decla
 mindgraph-mcp                  Start the MCP server (stdio transport)
 mindgraph-mcp init             Interactive setup
 mindgraph-mcp install          Install into Claude Desktop config
-mindgraph-mcp install-code     Install into Claude Code
+mindgraph-mcp install-code     Install into Claude Code (--hooks: also install session hooks)
 mindgraph-mcp uninstall        Remove from Claude Desktop config
 mindgraph-mcp uninstall-code   Remove from Claude Code
 mindgraph-mcp install-hooks    Install Claude Code hooks (--harness claude-code)

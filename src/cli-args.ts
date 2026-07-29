@@ -12,6 +12,7 @@ export function parseArgs(argv: string[]): {
   scope: HookScope;
   projectDir?: string;
   harness?: string;
+  hooks: boolean;
 } {
   const args = argv.slice(2);
   let command = "serve";
@@ -20,6 +21,7 @@ export function parseArgs(argv: string[]): {
   let scope: HookScope = "project";
   let projectDir: string | undefined;
   let harness: string | undefined;
+  let hooks = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -44,6 +46,9 @@ export function parseArgs(argv: string[]): {
       case "--harness":
         harness = args[++i];
         break;
+      case "--hooks":
+        hooks = true;
+        break;
       case "--owner":
         // Ownership marker the installer embeds so uninstall can recognize
         // its own entries. The value must be consumed here or it is mistaken
@@ -63,5 +68,5 @@ export function parseArgs(argv: string[]): {
     }
   }
 
-  return { command, apiKey, baseUrl, scope, projectDir, harness };
+  return { command, apiKey, baseUrl, scope, projectDir, harness, hooks };
 }

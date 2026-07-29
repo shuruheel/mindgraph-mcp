@@ -234,3 +234,18 @@ describe("R5 — hook connection settings persist user-level, mode 600", () => {
     });
   });
 });
+
+describe("R6 — install-code --hooks single-command path", () => {
+  it("parseArgs accepts --hooks and keeps the command", () => {
+    const parsed = parseArgs([
+      "node", "cli.js", "install-code",
+      "--api-key", "mg_k", "--hooks", "--base-url", "http://x",
+    ]);
+    expect(parsed.command).toBe("install-code");
+    expect(parsed.hooks).toBe(true);
+    expect(parsed.apiKey).toBe("mg_k");
+  });
+  it("defaults hooks to false", () => {
+    expect(parseArgs(["node", "cli.js", "install-code"]).hooks).toBe(false);
+  });
+});
