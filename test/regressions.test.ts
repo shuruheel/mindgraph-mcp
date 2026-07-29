@@ -115,6 +115,79 @@ describe("R3 — composite actions forward execution_uid (field drift)", () => {
   );
 });
 
+describe("R18 — created Tasks carry the repository topology SessionStart filters on", () => {
+  it("materializes the hook-owned repository and adds its UID to create_task scope_uids", async () => {
+    // Failure pinned: create_task accepted repo/scope fields but persisted no
+    // Task→repository TARGETS edge. Unscoped resume_work found the handoff,
+    // while the next SessionStart correctly returned no eligible work.
+    const entity = vi.fn().mockResolvedValue({
+      uid: "repository-entity-1",
+      status: "created",
+    });
+    const plan = vi.fn().mockResolvedValue({ uid: "task-1" });
+    const client = { entity, plan } as unknown as MindGraph;
+
+    await handleTool(client, "mindgraph_plan", {
+      action: "create_task",
+      label: "Repository-scoped handoff",
+      scope_uids: ["explicit-target-1"],
+      agent_id: "codex-release-test",
+      invocation_context: {
+        cwd: process.cwd(),
+        repoId: "github.com/example/repository",
+        harness: "codex",
+        harnessSessionId: "session-1",
+        injectedBy: "hook",
+      },
+    });
+
+    expect(entity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "create",
+        label: "github.com/example/repository",
+        identity_space_uid: "space:agent:codex-release-test",
+        identity: {
+          namespace: "external.code",
+          key_version: 1,
+          key: {
+            v: 1,
+            kind: "repository",
+            repo_id: "github.com/example/repository",
+          },
+        },
+      }),
+    );
+    expect(plan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "create_task",
+        scope_uids: ["explicit-target-1", "repository-entity-1"],
+      }),
+    );
+  });
+
+  it("does not create an unscoped Task when the repository identity is inaccessible", async () => {
+    const entity = vi.fn().mockResolvedValue({
+      status: "exists_but_inaccessible",
+    });
+    const plan = vi.fn();
+    const client = { entity, plan } as unknown as MindGraph;
+
+    const result = await handleTool(client, "mindgraph_plan", {
+      action: "create_task",
+      label: "Must not become an invisible handoff",
+      invocation_context: {
+        cwd: process.cwd(),
+        repoId: "github.com/example/repository",
+        injectedBy: "hook",
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("exists_but_inaccessible");
+    expect(plan).not.toHaveBeenCalled();
+  });
+});
+
 describe("R4 — the ledger fills, never overwrites, model work-targeting args", () => {
   function client(): HookClient {
     return {

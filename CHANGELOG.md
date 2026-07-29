@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Hooked `create_task` calls now carry durable repository scope.** The coding
+  adapter materializes the repository Entity from verified invocation context
+  (or an explicit `repo`) and includes its UID in `scope_uids`, paired with the
+  server's atomic scoped-Task creation path. If that identity is inaccessible,
+  the MCP fails before creating an unscoped Task. This prevents a handoff from
+  appearing in direct `resume_work` while disappearing from the next
+  repository-filtered SessionStart brief.
+
 ## 0.14.8 (2026-07-29)
 
 ### Added
