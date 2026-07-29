@@ -70,3 +70,21 @@ export function parseArgs(argv: string[]): {
 
   return { command, apiKey, baseUrl, scope, projectDir, harness, hooks };
 }
+
+export type McpAddFailure = "already-exists" | "missing-cli" | "other";
+
+export function mcpAddFailureOutput(e: unknown): string {
+  const err = e as { stdout?: Buffer | string; stderr?: Buffer | string };
+  return `${err.stdout ?? ""}${err.stderr ?? ""}`.trim();
+}
+
+/** Distinguish "the CLI is missing" from "the registration already exists"
+ * from real failures — they need opposite handling. */
+export function classifyMcpAddFailure(e: unknown): McpAddFailure {
+  if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return "missing-cli";
+  if (mcpAddFailureOutput(e).toLowerCase().includes("already exists")) {
+    return "already-exists";
+  }
+  return "other";
+}
+

@@ -12,7 +12,7 @@ import {
 } from "../src/hook-installer.js";
 import { errorDetail } from "../src/error-detail.js";
 import { handleSyncTool } from "../src/sync-tool.js";
-import { parseArgs } from "../src/cli-args.js";
+import { classifyMcpAddFailure, parseArgs } from "../src/cli-args.js";
 import { loadHookEnv, saveHookEnv } from "../src/hook-env.js";
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -331,5 +331,27 @@ describe("R9 — reason maps prose into props (server wire contract)", () => {
         warrant: expect.objectContaining({ props: { content: "because" } }),
       })
     );
+  });
+});
+
+describe("R10 — re-install continues past an existing MCP registration", () => {
+  it("classifies already-exists, missing CLI, and real failures distinctly", () => {
+    // Failure pinned: on re-install, `claude mcp add` refuses the duplicate,
+    // the old catch printed "Is Claude Code CLI installed?" and exited BEFORE
+    // --hooks ran — upgrades never received new hook entries.
+    const exists = Object.assign(new Error("exit 1"), {
+      status: 1,
+      stderr: Buffer.from("MCP server mindgraph already exists in local config"),
+    });
+    expect(classifyMcpAddFailure(exists)).toBe("already-exists");
+    const enoent = Object.assign(new Error("spawn claude ENOENT"), {
+      code: "ENOENT",
+    });
+    expect(classifyMcpAddFailure(enoent)).toBe("missing-cli");
+    const real = Object.assign(new Error("exit 1"), {
+      status: 1,
+      stderr: Buffer.from("invalid flag"),
+    });
+    expect(classifyMcpAddFailure(real)).toBe("other");
   });
 });
