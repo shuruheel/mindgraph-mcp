@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.14.3 (2026-07-29)
+
+### Fixed
+
+- **The pinned hook runner is now truly self-contained.** The bundle copied to
+  `~/.mindgraph/bin/mindgraph-hook.cjs` still required the `mindgraph` SDK from
+  an adjacent `node_modules` (tsup externalizes dependencies by default), so
+  every hook crashed with a Node module-loader error. The SDK is now bundled
+  in; a regression test executes the copied runner from an isolated directory.
+  Re-run `install-hooks` (or `install-code --hooks`) once to refresh the
+  runner.
+
 ## 0.14.2 (2026-07-29)
 
 ### Fixed
