@@ -5,7 +5,11 @@ import * as crypto from "crypto";
 import { execFileSync } from "child_process";
 import { MindGraph } from "mindgraph";
 import { loadHookEnv, saveHookEnv } from "./hook-env.js";
-import { parseArgs } from "./cli-args.js";
+import {
+  classifyMcpAddFailure,
+  mcpAddFailureOutput,
+  parseArgs,
+} from "./cli-args.js";
 import {
   readHookInput,
   runClaudeHook,
@@ -133,7 +137,7 @@ function installClaudeCode(apiKey: string, baseUrl?: string): void {
     // Note this does NOT hide the key from `ps`: `claude mcp add --env K=V`
     // puts it in the child's argv either way, which is that CLI's interface.
     // What is fixed is shell interpretation and the `sh -c` layer.
-    execFileSync(
+    const out = execFileSync(
       "claude",
       [
         "mcp",
@@ -145,15 +149,35 @@ function installClaudeCode(apiKey: string, baseUrl?: string): void {
         "-y",
         "mindgraph-mcp@latest",
       ],
-      { stdio: "inherit" }
+      { stdio: ["inherit", "pipe", "pipe"] }
     );
+    if (out?.length) process.stdout.write(out);
     console.log("Added MindGraph MCP server to Claude Code.");
-  } catch {
-    console.error(
-      "Failed to run 'claude mcp add'. Is Claude Code CLI installed?"
-    );
-    console.error("Install it from: https://claude.ai/code");
-    process.exit(1);
+  } catch (e) {
+    switch (classifyMcpAddFailure(e)) {
+      case "already-exists":
+        // Re-install/upgrade path: the registration points at
+        // `npx mindgraph-mcp@latest`, so it upgrades itself — leaving it in
+        // place is correct. Exiting here used to abort BEFORE the --hooks
+        // step, so upgrades never received new hook entries (found on the
+        // first real re-install, 2026-07-29).
+        console.log(
+          "MindGraph MCP server already registered in Claude Code — leaving it in place."
+        );
+        break;
+      case "missing-cli":
+        console.error(
+          "Failed to run 'claude mcp add'. Is Claude Code CLI installed?"
+        );
+        console.error("Install it from: https://claude.ai/code");
+        process.exit(1);
+        break;
+      default: {
+        const detail = mcpAddFailureOutput(e);
+        console.error(detail || "'claude mcp add' failed.");
+        process.exit(1);
+      }
+    }
   }
 }
 
