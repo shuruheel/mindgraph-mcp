@@ -3,9 +3,12 @@ import { errorDetail } from "./error-detail.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
   CODE_TOOL,
+  anchorRepository,
   attachCodeRefsToToolResult,
   handleCodeTool,
+  type CodeClient,
 } from "./code-tool.js";
+import { CodegraphAdapter } from "./codegraph.js";
 import { handleSyncTool, SYNC_TOOL } from "./sync-tool.js";
 
 // ── Tool Definitions ──────────────────────────────────────────────────
@@ -479,7 +482,8 @@ export const TOOLS: Tool[] = [
         scope_uids: {
           type: "array",
           items: { type: "string" },
-          description: "Ordinary target UIDs that bound deterministic resume selection",
+          description:
+            "Required target UIDs for create_task and ordinary target UIDs that bound deterministic resume selection",
         },
         limit: {
           type: "number",
@@ -1413,6 +1417,49 @@ async function handleCommit(
 
 // ── Plan (+ Action/Procedure/Risk) ───────────────────────────────────
 
+async function repositoryScopeUidsForTask(
+  client: MindGraph,
+  options: {
+    scopeUids?: string[];
+    repo?: string;
+    repoSpaceUid?: string;
+    invocationContext?: { cwd?: string; repoId?: string };
+    agentId?: string;
+  },
+): Promise<string[] | undefined> {
+  const scopeUids = [...new Set(options.scopeUids ?? [])];
+  const cwd = options.invocationContext?.cwd;
+  const repoId = options.invocationContext?.repoId;
+  if (!options.repo && !cwd && !repoId) {
+    return options.scopeUids;
+  }
+
+  const agentId = options.agentId ?? process.env.MINDGRAPH_AGENT_ID ?? "mcp";
+  const fallbackSpaceUid = options.repoSpaceUid ?? `space:agent:${agentId}`;
+  const env = { ...process.env };
+  if (!options.repo && repoId) {
+    env.MINDGRAPH_REPO_ID = repoId;
+  }
+  const adapter = new CodegraphAdapter({
+    cwd: cwd ?? process.cwd(),
+    env,
+  });
+  const repository = await adapter.resolveRepository(options.repo, fallbackSpaceUid);
+  const anchored = await anchorRepository(
+    client as unknown as CodeClient,
+    repository,
+    repository.spaceUid ?? fallbackSpaceUid,
+    agentId,
+  );
+  if (!anchored.uid) {
+    throw new Error(
+      `repository scope ${repository.repoId} could not be materialized (${anchored.status ?? "missing uid"})`,
+    );
+  }
+  scopeUids.push(anchored.uid);
+  return [...new Set(scopeUids)];
+}
+
 async function handlePlan(
   client: MindGraph,
   args: Record<string, unknown>
@@ -1446,6 +1493,9 @@ async function handlePlan(
     release_lease,
     override_reason,
     scope_uids,
+    repo,
+    repo_space_uid,
+    invocation_context,
     limit,
     confidence,
     salience,
@@ -1489,6 +1539,12 @@ async function handlePlan(
     release_lease?: boolean;
     override_reason?: string;
     scope_uids?: string[];
+    repo?: string;
+    repo_space_uid?: string;
+    invocation_context?: {
+      cwd?: string;
+      repoId?: string;
+    };
     limit?: number;
     confidence?: number;
     salience?: number;
@@ -1519,7 +1575,17 @@ async function handlePlan(
     case "checkpoint_iteration":
     case "block_task":
     case "complete_task":
-    case "abandon_iteration":
+    case "abandon_iteration": {
+      const resolvedScopeUids =
+        action === "create_task"
+          ? await repositoryScopeUidsForTask(client, {
+              scopeUids: scope_uids,
+              repo,
+              repoSpaceUid: repo_space_uid,
+              invocationContext: invocation_context,
+              agentId: agent_id,
+            })
+          : scope_uids;
       return ok(
         await client.plan({
           action: action as any,
@@ -1547,7 +1613,7 @@ async function handlePlan(
           allow_takeover,
           release_lease,
           override_reason,
-          scope_uids,
+          scope_uids: resolvedScopeUids,
           limit,
           input_snapshot,
           output_snapshot,
@@ -1562,6 +1628,7 @@ async function handlePlan(
           agent_id,
         } as any)
       );
+    }
 
     // Execution tracking
     case "start_execution":

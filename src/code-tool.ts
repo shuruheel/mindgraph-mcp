@@ -15,7 +15,7 @@ export type ToolResult = {
   isError?: boolean;
 };
 
-type EntityResponse = {
+export type EntityResponse = {
   uid?: string;
   status?: "created" | "existing" | "absent" | "exists_but_inaccessible";
   created?: boolean;
@@ -23,7 +23,7 @@ type EntityResponse = {
 
 type StoredCodeRef = Omit<ResolvedCodeRef, "repoRoot">;
 
-type CodeClient = {
+export type CodeClient = {
   entity: (request: Record<string, unknown>) => Promise<EntityResponse>;
   traverse: (request: Record<string, unknown>) => Promise<unknown>;
   getNode: (uid: string) => Promise<{
@@ -385,7 +385,7 @@ export async function attachCodeRefsToToolResult(
   return ok({ result: original, code_anchors: anchors });
 }
 
-async function anchorRepository(
+export async function anchorRepository(
   client: CodeClient,
   repository: RepositoryIdentity,
   spaceUid: string,
