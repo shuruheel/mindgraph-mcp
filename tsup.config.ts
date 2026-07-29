@@ -18,6 +18,11 @@ export default defineConfig([
     target: "node18",
     banner: { js: "#!/usr/bin/env node" },
     define,
+    // The cli bundle is COPIED to ~/.mindgraph/bin/ as the pinned hook runner
+    // and must run with no adjacent node_modules — tsup externalizes
+    // `dependencies` by default, which left a bare require("mindgraph") in
+    // the copy (SessionStart "cjs/loader" crash, 2026-07-29, bug #7).
+    noExternal: ["mindgraph"],
   },
   {
     entry: { index: "src/index.ts" },

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -273,6 +274,25 @@ describe("R7 — pinned hook runner replaces per-invocation npx", () => {
     expect(target).toContain(".mindgraph/bin/mindgraph-hook.cjs");
     uninstallHookRunner(home);
     expect(fs.existsSync(target)).toBe(false);
+  });
+
+  it("the built bundle executes from an isolated directory (no node_modules)", () => {
+    // Failure pinned (bug #7): tsup externalizes `dependencies` by default, so
+    // the copied runner still required "mindgraph" from a node_modules that
+    // does not exist in ~/.mindgraph/bin — SessionStart crashed with a
+    // cjs/loader error. Every earlier test executed the bundle from the repo
+    // directory, where the require resolves; this one copies it away first.
+    const bundle = path.join(__dirname, "..", "dist", "cli.js");
+    if (!fs.existsSync(bundle)) return; // unit runs without a prior build
+    const iso = tempDir("mindgraph-r7-iso-");
+    const runner = path.join(iso, "runner.cjs");
+    fs.copyFileSync(bundle, runner);
+    const out = execFileSync("node", [runner, "hook", "--harness", "claude-code", "--owner", "mindgraph"], {
+      cwd: iso,
+      input: JSON.stringify({ hook_event_name: "Stop", session_id: "iso", cwd: iso, stop_hook_active: true }),
+      env: { ...process.env, MINDGRAPH_API_KEY: "", MINDGRAPH_RUNTIME_DIR: iso },
+    });
+    expect(out.toString().trim()).toBe("{}");
 
     const root = tempDir("mindgraph-r7-root-");
     fs.mkdirSync(path.join(root, ".git"));
