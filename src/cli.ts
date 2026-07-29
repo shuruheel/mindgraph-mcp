@@ -212,6 +212,52 @@ function printStatus(): void {
   );
 }
 
+function withHooksFlag(): boolean {
+  // Only the non-interactive `install-code` path reads --hooks; the
+  // interactive init flow always gets the tip (prompting mid-flow would
+  // complicate scripted use of init's stdin).
+  return process.argv.includes("--hooks");
+}
+
+function finishCodeInstall(
+  apiKey: string,
+  baseUrl: string | undefined,
+  withHooks: boolean
+): void {
+  if (withHooks) {
+    const result = installClaudeHooks("user");
+    console.log(
+      `Installed ${result.added} MindGraph Claude Code hook entries in ${result.path}`
+    );
+    const envPath = saveHookEnv({ apiKey, baseUrl });
+    console.log(`Saved hook connection settings to ${envPath} (mode 600)`);
+  } else {
+    console.log(
+      "Tip: run with --hooks (or run install-hooks) to add the Claude Code " +
+        "session hooks — work-brief injection, provenance, reflection checkpoint."
+    );
+  }
+  printCodegraphStatus();
+}
+
+function printCodegraphStatus(): void {
+  // codegraph is the optional "code intelligence" layer: without it,
+  // mindgraph_code anchor/expand degrade to typed unavailable results while
+  // memory and work tools keep working. Surface the choice at install time
+  // instead of degrading silently later.
+  try {
+    execFileSync("codegraph", ["--version"], { stdio: "pipe" });
+    console.log("Code intelligence: codegraph detected — anchors and structural recall are enabled.");
+  } catch {
+    console.log(
+      "Optional: enable code intelligence by installing codegraph " +
+        "(https://github.com/colbymchenry/codegraph) and running `codegraph init` " +
+        "in your repositories. Without it, memory and work tools still function; " +
+        "code anchoring degrades gracefully."
+    );
+  }
+}
+
 // ── CLI Entry Point ───────────────────────────────────────────────────
 
 function printUsage(): void {
@@ -222,7 +268,7 @@ USAGE:
   mindgraph-mcp                  Start the MCP server (stdio transport)
   mindgraph-mcp init             Interactive setup for Claude Desktop
   mindgraph-mcp install          Install into Claude Desktop config
-  mindgraph-mcp install-code     Install into Claude Code
+  mindgraph-mcp install-code     Install into Claude Code (--hooks: + session hooks)
   mindgraph-mcp uninstall        Remove from Claude Desktop config
   mindgraph-mcp uninstall-code   Remove from Claude Code
   mindgraph-mcp install-hooks --harness claude-code [--scope user|project]
@@ -381,10 +427,12 @@ async function interactiveInit(baseUrl?: string): Promise<void> {
       break;
     case "2":
       installClaudeCode(apiKey, baseUrl);
+      finishCodeInstall(apiKey, baseUrl, withHooksFlag());
       break;
     case "3":
       installClaudeDesktop(apiKey, baseUrl);
       installClaudeCode(apiKey, baseUrl);
+      finishCodeInstall(apiKey, baseUrl, withHooksFlag());
       break;
     default:
       console.error("Invalid choice.");
@@ -395,7 +443,7 @@ async function interactiveInit(baseUrl?: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const { command, apiKey, baseUrl, scope, projectDir, harness } =
+  const { command, apiKey, baseUrl, scope, projectDir, harness, hooks } =
     parseArgs(process.argv);
 
   switch (command) {
@@ -425,6 +473,7 @@ async function main(): Promise<void> {
         process.exit(1);
       }
       installClaudeCode(apiKey, baseUrl);
+      finishCodeInstall(apiKey, baseUrl, withHooksFlag());
       break;
 
     case "uninstall":
