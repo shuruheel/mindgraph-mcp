@@ -652,6 +652,11 @@ export const TOOLS: Tool[] = [
           type: "number",
           description: "Pagination offset (for stale_derivations)",
         },
+        include_documents: {
+          type: "boolean",
+          description:
+            "Include ingested documents and wiki articles in context results. The coding profile defaults these OFF so engineering questions aren't answered from unrelated ingested content; pass true when the question is about a document, spec, or article.",
+        },
         include_chunks: {
           type: "boolean",
           description: "Include source document chunks in context results (default: false — set true to fetch full chunk text for citations or deep reading)",
@@ -1706,6 +1711,7 @@ async function handleRetrieve(
     limit,
     offset,
     include_chunks,
+    include_documents,
     include_graph,
     graph_expansion_limit,
     graph_max_depth,
@@ -1728,6 +1734,7 @@ async function handleRetrieve(
     limit?: number;
     offset?: number;
     include_chunks?: boolean;
+    include_documents?: boolean;
     include_graph?: boolean;
     graph_expansion_limit?: number;
     graph_max_depth?: number;
@@ -1746,6 +1753,12 @@ async function handleRetrieve(
           node_types,
           layer,
           chunk_limit: include_chunks ? (limit ?? 5) : 0,
+          // Scoped by default, never walled: the coding profile drops the
+          // document/article leg (the "Bob Work" class of noise) unless the
+          // model opts in for a genuinely document-shaped question.
+          ...(process.env.MINDGRAPH_PROFILE === "coding" && !include_documents
+            ? { article_limit: 0 }
+            : {}),
           include_graph,
           graph_expansion_limit: graph_expansion_limit ?? 3,
           graph_max_depth: graph_max_depth ?? 2,
