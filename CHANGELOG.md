@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.14.2 (2026-07-29)
+
+### Fixed
+
+- **`install-code` no longer aborts on re-install.** An existing MCP
+  registration made `claude mcp add` exit non-zero; the installer printed a
+  misleading missing-CLI message and quit before the `--hooks` step — so
+  upgrades never received updated hook entries. Already-registered now
+  continues (the registration invokes `npx mindgraph-mcp@latest` and upgrades
+  itself); a genuinely missing CLI keeps its guidance; real failures print the
+  CLI's actual output.
+
 ## 0.14.1 (2026-07-29)
 
 Patch release from the first production live test — four fixes, each pinned by
