@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.14.6 (2026-07-29)
+
+### Fixed
+
+- **Work-state questions route to `resume_work`, not keyword search.** The
+  general profile's retrieve-first rule was served to coding sessions too, so
+  "what have we been working on" could answer from keyword recall over all
+  knowledge (in live testing: a wiki article about a person named Work). The
+  coding profile now carries an explicit recall order — `resume_work` for work
+  state, `mindgraph_code recall` for code knowledge, `node_types` filters for
+  work-artifact searches — and the retrieve description itself redirects
+  work-state questions.
+
 ## 0.14.5 (2026-07-29)
 
 ### Fixed
