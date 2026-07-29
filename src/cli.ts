@@ -255,7 +255,7 @@ function finishCodeInstall(
     console.log(`Installed pinned hook runner at ${runner}`);
     const result = installClaudeHooks("user");
     console.log(
-      `Installed ${result.added} MindGraph Claude Code hook entries in ${result.path}`
+      `Installed ${result.added} and refreshed ${result.updated} MindGraph Claude Code hook entries in ${result.path}`
     );
     const envPath = saveHookEnv({ apiKey, baseUrl });
     console.log(`Saved hook connection settings to ${envPath} (mode 600)`);
@@ -520,7 +520,7 @@ async function main(): Promise<void> {
       console.log(`Installed pinned hook runner at ${runner}`);
       const result = installClaudeHooks(scope, projectDir);
       console.log(
-        `Installed ${result.added} MindGraph Claude Code hook entries in ${result.path}`
+        `Installed ${result.added} and refreshed ${result.updated} MindGraph Claude Code hook entries in ${result.path}`
       );
       // Hooks run with the harness's environment, which rarely carries the
       // MindGraph connection settings — persist them user-level (0600; never

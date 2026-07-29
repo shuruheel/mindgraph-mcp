@@ -102,7 +102,7 @@ function writeSettings(file: string, settings: JsonObject): void {
 export function installClaudeHooks(
   scope: HookScope,
   projectDir = process.cwd(),
-): { path: string; added: number } {
+): { path: string; added: number; updated: number } {
   const file = settingsPath(scope, projectDir);
   const settings = readSettings(file);
   const hooks =
@@ -112,21 +112,27 @@ export function installClaudeHooks(
       ? (settings.hooks as JsonObject)
       : {};
   let added = 0;
+  let updated = 0;
   for (const [event, wanted] of Object.entries(desiredEntries())) {
     const current = Array.isArray(hooks[event])
       ? ([...(hooks[event] as unknown[])] as unknown[])
       : [];
+    // UPSERT, don't dedupe: an existing owned entry is replaced with the
+    // current definition. Skip-if-present left every 0.14.0 install running
+    // the old npx command against the old 8s timeout after upgrading —
+    // "Installed 0 hook entries" while nothing changed (2026-07-29).
+    const kept = current.filter((entry) => !entryHasOwnedHook(entry));
+    const hadOwned = kept.length !== current.length;
     for (const entry of wanted) {
-      if (!current.some(entryHasOwnedHook)) {
-        current.push(entry);
-        added += 1;
-      }
+      kept.push(entry);
+      if (hadOwned) updated += 1;
+      else added += 1;
     }
-    hooks[event] = current;
+    hooks[event] = kept;
   }
   settings.hooks = hooks;
   writeSettings(file, settings);
-  return { path: file, added };
+  return { path: file, added, updated };
 }
 
 export function uninstallClaudeHooks(

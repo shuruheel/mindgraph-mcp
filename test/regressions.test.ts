@@ -355,3 +355,39 @@ describe("R10 — re-install continues past an existing MCP registration", () =>
     expect(classifyMcpAddFailure(real)).toBe("other");
   });
 });
+
+describe("R11 — install-hooks upserts owned entries", () => {
+  it("refreshes stale owned entries and preserves foreign hooks", () => {
+    // Failure pinned: skip-if-present reported "Installed 0" on upgrade while
+    // leaving the old npx command and 8s timeout in place.
+    const root = tempDir("mindgraph-r11-");
+    fs.mkdirSync(path.join(root, ".git"));
+    const first = installClaudeHooks("project", root);
+    expect(first.added).toBeGreaterThan(0);
+    const file = path.join(root, ".claude", "settings.json");
+    const settings = JSON.parse(fs.readFileSync(file, "utf8"));
+    // Simulate a 0.14.0-era stale entry + a user's own hook alongside.
+    settings.hooks.SessionStart[0].hooks[0].command =
+      "npx -y mindgraph-mcp@latest hook --harness claude-code --owner mindgraph";
+    settings.hooks.SessionStart[0].hooks[0].timeout = 8;
+    settings.hooks.SessionStart.push({
+      matcher: "startup",
+      hooks: [{ type: "command", command: "echo user-hook", timeout: 5 }],
+    });
+    fs.writeFileSync(file, JSON.stringify(settings, null, 2));
+
+    const second = installClaudeHooks("project", root);
+    expect(second.updated).toBeGreaterThan(0);
+    const after = JSON.parse(fs.readFileSync(file, "utf8"));
+    const owned = after.hooks.SessionStart.filter((e: { hooks: Array<{ command: string }> }) =>
+      e.hooks.some((h) => h.command.includes("--owner mindgraph"))
+    );
+    expect(owned).toHaveLength(1);
+    expect(owned[0].hooks[0].command).toContain("$HOME/.mindgraph/bin/mindgraph-hook.cjs");
+    expect(owned[0].hooks[0].timeout).toBeGreaterThanOrEqual(20);
+    const foreign = after.hooks.SessionStart.filter((e: { hooks: Array<{ command: string }> }) =>
+      e.hooks.some((h) => h.command === "echo user-hook")
+    );
+    expect(foreign).toHaveLength(1);
+  });
+});
