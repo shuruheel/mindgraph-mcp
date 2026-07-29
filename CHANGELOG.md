@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.14.4 (2026-07-29)
+
+### Added
+
+- **`--agent-id` on `install-code` / `install-hooks`** — per-member agent
+  identity for teams sharing one org graph. Anchored knowledge is shared
+  automatically (identity keys off the git remote, so teammates' clones
+  converge on the same code entities); distinct agent ids keep task leases and
+  resume briefs per-person. With identical ids, a team is one logical agent
+  and members lease-recover each other's active tasks. Persisted to
+  `~/.mindgraph/hooks.json`; hooks resolve env → stored → default.
+
 ## 0.14.3 (2026-07-29)
 
 ### Fixed
