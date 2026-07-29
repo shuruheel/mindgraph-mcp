@@ -3,7 +3,7 @@
 [![npm](https://img.shields.io/npm/v/mindgraph-mcp)](https://www.npmjs.com/package/mindgraph-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Model Context Protocol server for [MindGraph](https://mindgraph.cloud) — plug your persistent, structured knowledge graph into Claude Desktop, Claude Code, and any MCP-compatible client.
+Model Context Protocol server for [MindGraph](https://mindgraph.cloud) — plug your persistent, structured knowledge graph into Claude Desktop, Claude Code, Codex, and any MCP-compatible client.
 
 ## Install
 
@@ -77,7 +77,10 @@ which state you're in).
 
 The hooks open/rebind a Session at start and inject the current work brief,
 stamp every MindGraph tool call with verified session/repo/commit provenance,
-and prompt one reflection checkpoint before a substantial session ends. They
+and prompt one reflection checkpoint before a substantial session ends. A
+session automatically re-claims only *this* agent's own prior work; other
+tasks appear in the brief as context, and the agent claims one deliberately
+when it starts that work. They
 **fail open** — if MindGraph is unreachable, your coding session is never
 blocked. `--scope project` (with `--project-dir`) installs into a single
 repository's `.claude/settings.json` instead; `uninstall-hooks` reverses either
@@ -110,7 +113,8 @@ entries; foreign hooks are never changed. Codex requires newly installed or
 changed command hooks to be reviewed with `/hooks` before they run.
 
 At SessionStart the adapter opens/rebinds the graph Session and injects one
-bounded work brief. PreToolUse replaces forged/absent invocation provenance
+bounded work brief, re-claiming only this agent's own prior work.
+PreToolUse replaces forged/absent invocation provenance
 while preserving model-selected work targets, PostToolUse updates only the
 disposable runtime ledger, Stop runs the once-per-session reflection
 checkpoint, and SessionEnd performs best-effort cleanup. All paths fail open:
