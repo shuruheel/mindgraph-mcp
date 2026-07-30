@@ -10,7 +10,15 @@ import {
 } from "./code-tool.js";
 import { CodegraphAdapter } from "./codegraph.js";
 import { handleSyncTool, SYNC_TOOL } from "./sync-tool.js";
-import { renderContext, renderNodeList, renderTraversal } from "./render.js";
+import {
+  renderContext,
+  renderJobs,
+  renderNodeList,
+  renderObjectList,
+  renderOntologyAnswer,
+  renderSignals,
+  renderTraversal,
+} from "./render.js";
 
 // ── Tool Definitions ──────────────────────────────────────────────────
 
@@ -990,6 +998,12 @@ export const TOOLS: Tool[] = [
           items: { type: "string" },
           description: "Chunk/document UIDs to extract from (for action=extract)",
         },
+        format: {
+          type: "string",
+          enum: ["text", "json"],
+          description:
+            "Output format for the read actions query/search/objects/object/object_context (default 'text'): a compact rendered block. Pass 'json' for the raw server response.",
+        },
         agent_id: {
           type: "string",
           description: "Agent identity",
@@ -1047,9 +1061,23 @@ type ToolResult = {
 };
 
 function ok(data: unknown): ToolResult {
+  // Compact on purpose: 2-space pretty-printing roughly doubled the token
+  // cost of every JSON response a model reads, for zero benefit.
   return {
-    content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify(data) }],
   };
+}
+
+// Rendered-by-default for read surfaces; `format: "json"` is the raw escape,
+// and any response shape the renderer doesn't recognize falls back to raw.
+function renderedResult(
+  format: string | undefined,
+  raw: unknown,
+  render: (value: unknown) => string | undefined,
+): ToolResult {
+  if (format === "json") return ok(raw);
+  const text = render(raw);
+  return text !== undefined ? { content: [{ type: "text", text }] } : ok(raw);
 }
 
 function err(message: string): ToolResult {
@@ -1883,13 +1911,7 @@ async function handleRetrieve(
   const rendered = (
     raw: unknown,
     render: (value: unknown) => string | undefined,
-  ): ToolResult => {
-    if (format === "json") return ok(raw);
-    const text = render(raw);
-    return text !== undefined
-      ? { content: [{ type: "text", text }] }
-      : ok(raw);
-  };
+  ): ToolResult => renderedResult(format, raw, render);
 
   switch (action) {
     case "context":
@@ -2161,6 +2183,7 @@ async function handleIngest(
     chunk_size,
     chunk_overlap,
     job_id,
+    format,
     agent_id,
   } = args as {
     action: string;
@@ -2180,6 +2203,7 @@ async function handleIngest(
     chunk_size?: number;
     chunk_overlap?: number;
     job_id?: string;
+    format?: string;
     agent_id?: string;
   };
 
@@ -2273,7 +2297,9 @@ async function handleIngest(
       if (job_id) {
         return ok(await client.getJob(job_id));
       }
-      return ok(await client.listJobs());
+      // The bare list was unbounded raw JSON of every job ever; render it
+      // newest-first and capped (format:"json" returns the full raw list).
+      return renderedResult(format, await client.listJobs(), renderJobs);
 
     default:
       return err(`Unknown ingest action: ${action}`);
@@ -2284,21 +2310,24 @@ async function handleSynthesize(
   client: MindGraph,
   args: Record<string, unknown>
 ): Promise<ToolResult> {
-  const { action, project_uid, signals, target_types, job_id } =
+  const { action, project_uid, signals, target_types, job_id, format } =
     args as {
       action: string;
       project_uid?: string;
       signals?: string;
       target_types?: string;
       job_id?: string;
+      format?: string;
     };
 
   switch (action) {
     case "signals":
       if (!project_uid)
         return err("project_uid is required for action='signals'");
-      return ok(
-        await client.signals(project_uid, { signals, target_types })
+      return renderedResult(
+        format,
+        await client.signals(project_uid, { signals, target_types }),
+        renderSignals,
       );
 
     case "run":
@@ -2341,6 +2370,7 @@ async function handleOntology(
     relation_type,
     fields,
     source_uids,
+    format,
     agent_id,
   } = args as {
     action: string;
@@ -2362,6 +2392,7 @@ async function handleOntology(
     relation_type?: string;
     fields?: Record<string, unknown>;
     source_uids?: string[];
+    format?: string;
     agent_id?: string;
   };
 
@@ -2380,7 +2411,8 @@ async function handleOntology(
           "schema_id is required for action='query' (use action='schemas' to find the active schema)"
         );
       }
-      return ok(
+      return renderedResult(
+        format,
         await client.queryOntology({
           query,
           schema_id,
@@ -2389,33 +2421,46 @@ async function handleOntology(
           include_sources: include_sources ?? true,
           depth,
           limit,
-        })
+        }),
+        renderOntologyAnswer,
       );
     }
 
     case "search":
       if (!query) return err("query is required for action='search'");
-      return ok(
+      return renderedResult(
+        format,
         await client.searchDomainObjects(query, {
           schema_id,
           object_types,
           limit,
-        })
+        }),
+        (raw) => renderObjectList(raw, `Domain search: ${query}`),
       );
 
     case "objects":
       if (!schema_id) return err("schema_id is required for action='objects'");
-      return ok(
-        await client.listDomainObjects({ schema_id, object_type, limit })
+      return renderedResult(
+        format,
+        await client.listDomainObjects({ schema_id, object_type, limit }),
+        (raw) => renderObjectList(raw, `Domain objects${object_type ? `: ${object_type}` : ""}`),
       );
 
     case "object":
       if (!uid) return err("uid is required for action='object'");
-      return ok(await client.getDomainObject(uid));
+      return renderedResult(
+        format,
+        await client.getDomainObject(uid),
+        (raw) => renderNodeList([raw], "Domain object"),
+      );
 
     case "object_context":
       if (!uid) return err("uid is required for action='object_context'");
-      return ok(await client.getDomainObjectContext(uid, depth));
+      return renderedResult(
+        format,
+        await client.getDomainObjectContext(uid, depth),
+        renderOntologyAnswer,
+      );
 
     case "proposals":
       return ok(

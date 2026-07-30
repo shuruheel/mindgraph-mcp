@@ -153,7 +153,8 @@ function nodeSummaryText(node: Rec, state: { bounded: boolean }): string | undef
 
 function nodeLines(node: Rec, state: { bounded: boolean }): string {
   const label = clip(node.label, LABEL_MAX, state) || "(unlabeled)";
-  const type = str(node.node_type) || "Node";
+  const props = obj(node.props);
+  const type = str(props?.object_type) ?? str(node.node_type) ?? "Node";
   const confidence = num(node.confidence);
   const score = num(node.retrieval_score);
   const parenthetical = [
@@ -194,7 +195,7 @@ function groupedNodeSections(
 ): Section[] {
   const groups = new Map<string, Rec[]>();
   for (const node of nodes) {
-    const type = str(node.node_type) || "Node";
+    const type = str(obj(node.props)?.object_type) ?? str(node.node_type) ?? "Node";
     const group = groups.get(type) ?? [];
     group.push(node);
     groups.set(type, group);
@@ -276,7 +277,9 @@ function assemble(header: string, sections: Section[], state: { bounded: boolean
     lines.push(
       section.items.length === 0
         ? section.heading
-        : `${section.heading}\n${kept.join("\n")}`,
+        : section.heading
+          ? `${section.heading}\n${kept.join("\n")}`
+          : kept.join("\n"),
     );
     used += headingCost + sectionUsed;
   }
@@ -487,4 +490,194 @@ export function renderTraversal(response: unknown): string | undefined {
     }
   }
   return assemble("# Graph traversal", sections, state);
+}
+
+// ── Ontology (Layer 7) rendering ─────────────────────────────────────
+//
+// Wire shapes verified against mindgraph-server ontology_handlers.rs
+// (QueryResponse) and a live /v1/ontology/schemas probe. `objects` are full
+// GraphNodes (Custom nodes carry object_type + fields in props);
+// cognitive_context is a category → NeighborNode[] map; provenance entries
+// distinguish `anchor` (a located quotation) from `chunk_head` (context that
+// MUST NOT be presented as a quote — server contract C10).
+
+function neighborLine(value: unknown): string | undefined {
+  const node = obj(value);
+  if (!node) return undefined;
+  const label = str(node.label) || "(unlabeled)";
+  const uid = str(node.uid);
+  const type = str(node.node_type);
+  return `- ${label}${uid ? ` [${uid}]` : ""}${type ? ` (${type})` : ""}`;
+}
+
+/** Render an /ontology/query (or object-context-shaped) response. */
+export function renderOntologyAnswer(response: unknown): string | undefined {
+  const payload = obj(response);
+  if (!payload) return undefined;
+  const objects = Array.isArray(payload.objects)
+    ? payload.objects.filter(isNodeShaped)
+    : isNodeShaped(payload.object)
+      ? [payload.object as Rec]
+      : [];
+  const cognitive = obj(payload.cognitive_context);
+  const provenance = Array.isArray(payload.provenance) ? payload.provenance : [];
+  const hasQuerySignature =
+    Array.isArray(payload.objects) || obj(payload.confidence) !== undefined;
+  const cognitiveEmpty =
+    !cognitive || Object.values(cognitive).every((v) => !Array.isArray(v) || v.length === 0);
+  if (objects.length === 0 && cognitiveEmpty && provenance.length === 0) {
+    // A recognized-but-empty result renders honestly; an unknown shape
+    // falls back to raw.
+    return hasQuerySignature ? "No matching domain objects." : undefined;
+  }
+  const state = { bounded: false };
+  const sections: Section[] = [];
+  if (objects.length > 0) {
+    sections.push(...groupedNodeSections(objects, state));
+  }
+  const labelByUid = new Map<string, string>();
+  for (const node of objects) labelByUid.set(str(node.uid)!, str(node.label) || "?");
+  const graph = obj(payload.graph);
+  for (const raw of Array.isArray(graph?.nodes) ? graph!.nodes : []) {
+    const node = obj(raw);
+    const uid = str(node?.uid);
+    if (uid && !labelByUid.has(uid)) labelByUid.set(uid, str(node?.label) || "?");
+  }
+  const relations = Array.isArray(payload.relations) ? payload.relations : [];
+  const relationLines = relationshipItems(relations, labelByUid, state);
+  if (relationLines.length > 0) {
+    sections.push({ heading: "## Relations", items: relationLines });
+  }
+  if (cognitive) {
+    for (const [category, rawNodes] of Object.entries(cognitive)) {
+      if (!Array.isArray(rawNodes) || rawNodes.length === 0) continue;
+      const items = rawNodes
+        .map(neighborLine)
+        .filter((line): line is string => Boolean(line));
+      if (items.length > 0) {
+        sections.push({ heading: `### Cognitive context — ${category}`, items });
+      }
+    }
+  }
+  if (provenance.length > 0) {
+    const items = provenance
+      .map((raw) => obj(raw))
+      .filter((entry): entry is Rec => Boolean(entry))
+      .map((entry) => {
+        const span = clip(entry.text_span, QUOTE_MAX, state) || "";
+        const by = str(entry.ingested_by_name);
+        const suffix = `${by ? ` (ingested by ${by})` : ""} [source ${str(entry.source_uid) || "?"}]`;
+        // C10: chunk_head spans are context, never quotations.
+        return str(entry.span_kind) === "anchor"
+          ? `- "${span}"${suffix}`
+          : `- context: ${span}${suffix}`;
+      });
+    sections.push({ heading: "## Sources", items });
+  }
+  const confidence = num(obj(payload.confidence)?.overall);
+  const notes: string[] = [];
+  if (confidence !== undefined) notes.push(`overall confidence ${confidence}`);
+  if (payload.has_more === true) notes.push("more results exist (has_more)");
+  if (payload.seed_cap_hit === true) notes.push("seed cap hit — narrow the query for a complete set");
+  if (notes.length > 0) sections.push({ heading: `Note: ${notes.join("; ")}.`, items: [] });
+  return assemble(
+    `# Ontology results (${objects.length} object${objects.length === 1 ? "" : "s"})`,
+    sections,
+    state,
+  );
+}
+
+/** Render paged domain-object lists: search / objects / related responses. */
+export function renderObjectList(response: unknown, title: string): string | undefined {
+  const payload = obj(response);
+  if (!payload) return undefined;
+  const items = Array.isArray(payload.items) ? payload.items.filter(isNodeShaped) : [];
+  if (items.length === 0) {
+    // Distinguish a legitimately empty page from an unknown shape.
+    return Array.isArray(payload.items) ? `# ${title} (0 results)` : undefined;
+  }
+  const state = { bounded: false };
+  const sections = groupedNodeSections(items, state);
+  const total = num(payload.total_count);
+  const truncations = Array.isArray(payload.truncation_reasons)
+    ? payload.truncation_reasons.filter((reason) => typeof reason === "string")
+    : [];
+  const notes: string[] = [];
+  if (payload.has_more === true) notes.push("more results exist");
+  if (truncations.length > 0) notes.push(`truncated: ${truncations.join(", ")}`);
+  if (notes.length > 0) sections.push({ heading: `Note: ${notes.join("; ")}.`, items: [] });
+  const count = total !== undefined && total !== items.length
+    ? `${items.length} of ${total}`
+    : `${items.length}`;
+  return assemble(`# ${title} (${count})`, sections, state);
+}
+
+// ── Jobs and synthesis signals ───────────────────────────────────────
+
+const JOBS_RENDER_MAX = 20;
+
+/** Render the ingestion jobs list, newest first, bounded. */
+export function renderJobs(response: unknown): string | undefined {
+  const jobs = Array.isArray(response) ? response : obj(response)?.jobs;
+  if (!Array.isArray(jobs)) return undefined;
+  if (jobs.length === 0) return "No ingestion jobs.";
+  const state = { bounded: false };
+  const sorted = jobs
+    .map((raw) => obj(raw))
+    .filter((job): job is Rec => Boolean(job))
+    .sort((a, b) => (num(b.created_at) ?? 0) - (num(a.created_at) ?? 0));
+  const shown = sorted.slice(0, JOBS_RENDER_MAX);
+  if (shown.length < sorted.length) state.bounded = true;
+  const items = shown.map((job) => {
+    const progress = obj(job.progress);
+    const done = num(progress?.processed_chunks);
+    const totalChunks = num(progress?.total_chunks);
+    const bits = [
+      str(job.status) || "?",
+      done !== undefined && totalChunks !== undefined ? `${done}/${totalChunks} chunks` : undefined,
+      num(progress?.nodes_created) !== undefined ? `${num(progress?.nodes_created)} nodes` : undefined,
+      num(job.queue_position) !== undefined ? `queue #${num(job.queue_position)}` : undefined,
+      str(job.error) ? `error: ${clip(job.error, 160, state)}` : undefined,
+    ].filter(Boolean);
+    return `- [${str(job.id) || "?"}] ${clip(job.title, 120, state) || "(untitled)"} — ${bits.join(", ")}`;
+  });
+  return assemble(
+    `# Ingestion jobs (${shown.length}${shown.length < sorted.length ? ` of ${sorted.length}` : ""})`,
+    [{ heading: "", items }],
+    state,
+  );
+}
+
+/** Render /synthesis/signals: named arrays of typed signal items. */
+export function renderSignals(response: unknown): string | undefined {
+  const payload = obj(response);
+  if (!payload) return undefined;
+  const state = { bounded: false };
+  const sections: Section[] = [];
+  for (const [key, value] of Object.entries(payload)) {
+    if (!Array.isArray(value) || value.length === 0) continue;
+    const items = value
+      .map((raw) => obj(raw))
+      .filter((item): item is Rec => Boolean(item))
+      .map((item) => {
+        const label =
+          str(item.label) ?? str(item.title) ?? str(item.name) ?? str(item.uid) ?? "(item)";
+        const uid = str(item.uid);
+        const numbers = Object.entries(item)
+          .filter(([, v]) => typeof v === "number")
+          .slice(0, 4)
+          .map(([k, v]) => `${k} ${Math.round((v as number) * 100) / 100}`);
+        const lists = Object.entries(item)
+          .filter(([, v]) => Array.isArray(v) && (v as unknown[]).length > 0)
+          .slice(0, 2)
+          .map(([k, v]) => `${k}: ${(v as unknown[]).length}`);
+        const meta = [...numbers, ...lists].join(", ");
+        return `- ${clip(label, 160, state)}${uid && uid !== label ? ` [${uid}]` : ""}${meta ? ` (${meta})` : ""}`;
+      });
+    if (items.length > 0) {
+      sections.push({ heading: `## ${key.replace(/_/g, " ")}`, items });
+    }
+  }
+  if (sections.length === 0) return undefined;
+  return assemble("# Synthesis signals", sections, state);
 }

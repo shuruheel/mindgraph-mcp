@@ -80,7 +80,7 @@ export interface ResourceContents {
 
 function json(uri: string, data: unknown): ResourceContents {
   return {
-    contents: [{ uri, mimeType: "application/json", text: JSON.stringify(data, null, 2) }],
+    contents: [{ uri, mimeType: "application/json", text: JSON.stringify(data) }],
   };
 }
 
