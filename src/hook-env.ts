@@ -76,7 +76,15 @@ export function loadHookEnv(dir?: string): HookEnv {
   }
 }
 
-export function saveHookEnv(env: HookEnv, dir?: string): string {
+export function saveHookEnv(
+  env: Omit<HookEnv, "orgId"> & {
+    /** undefined = keep the stored pin; null = CLEAR it. Without an explicit
+     * clear, a stale org pin survived every reinstall and silently routed
+     * hook writes to the wrong tenant forever. */
+    orgId?: string | null;
+  },
+  dir?: string,
+): string {
   const file = hookEnvPath(dir);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const existing = loadHookEnv(dir);
@@ -84,7 +92,7 @@ export function saveHookEnv(env: HookEnv, dir?: string): string {
     baseUrl: env.baseUrl ?? existing.baseUrl,
     apiKey: env.apiKey ?? existing.apiKey,
     agentId: env.agentId ?? existing.agentId,
-    orgId: env.orgId ?? existing.orgId,
+    orgId: env.orgId === null ? undefined : (env.orgId ?? existing.orgId),
   };
   fs.writeFileSync(file, `${JSON.stringify(merged, null, 2)}\n`, {
     mode: 0o600,

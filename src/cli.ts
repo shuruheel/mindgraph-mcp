@@ -189,7 +189,15 @@ function installClaudeCode(
     "--env",
     "MINDGRAPH_HARNESS=claude-code",
     "--env",
-    `MINDGRAPH_AGENT_ID=${agentId || "claude-code"}`,
+    // The registration, the hooks, and the serve path must all resolve the
+    // SAME identity — a differing default here made the model's fenced tool
+    // calls and the hook's lease two different agents on the server.
+    `MINDGRAPH_AGENT_ID=${
+      agentId ||
+      process.env.MINDGRAPH_AGENT_ID ||
+      loadHookEnv().agentId ||
+      stableAgentId()
+    }`,
   ];
   if (baseUrl) {
     envArgs.push("--env", `MINDGRAPH_BASE_URL=${baseUrl}`);
@@ -339,7 +347,9 @@ function finishCodeInstall(
         process.env.MINDGRAPH_AGENT_ID ||
         loadHookEnv().agentId ||
         stableAgentId(),
-      orgId: process.env.MINDGRAPH_ORG_ID,
+      // The org pin follows the install environment exactly: installing
+      // without MINDGRAPH_ORG_ID clears any stale pin (null = clear).
+      orgId: process.env.MINDGRAPH_ORG_ID ?? null,
     });
     console.log(`Saved hook connection settings to ${envPath} (mode 600)`);
   } else {
@@ -637,7 +647,9 @@ async function main(): Promise<void> {
           process.env.MINDGRAPH_AGENT_ID ||
           loadHookEnv().agentId ||
           stableAgentId(),
-        orgId: process.env.MINDGRAPH_ORG_ID,
+        // The org pin follows the install environment exactly: installing
+        // without MINDGRAPH_ORG_ID clears any stale pin (null = clear).
+        orgId: process.env.MINDGRAPH_ORG_ID ?? null,
       });
       console.log(`Saved hook connection settings to ${envPath} (mode 600)`);
       if (!apiKey && !baseUrl) {

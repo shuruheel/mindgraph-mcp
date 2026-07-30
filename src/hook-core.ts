@@ -136,14 +136,19 @@ function withLedger<T>(
   }
   const lock = `${file}.lock`;
   let lockFd: number | undefined;
-  for (let attempt = 0; attempt < 50; attempt++) {
+  // Holders only ever perform in-memory JSON updates (no subprocess or
+  // network inside the callback), so a live hold is sub-millisecond. The
+  // waiter window must exceed the stale threshold, or a lock orphaned by a
+  // harness kill blanks every hook for seconds — waiters gave up at 500ms
+  // against a 10s reclaim and silently ran on a throwaway default ledger.
+  for (let attempt = 0; attempt < 400; attempt++) {
     try {
       lockFd = fs.openSync(lock, "wx", 0o600);
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       try {
-        if (Date.now() - fs.statSync(lock).mtimeMs > 10_000) fs.unlinkSync(lock);
+        if (Date.now() - fs.statSync(lock).mtimeMs > 3_000) fs.unlinkSync(lock);
       } catch {
         // Another hook won the race.
       }
@@ -521,18 +526,20 @@ async function repositoryScopeUids(
 function isOwnPriorWork(
   brief: Record<string, unknown> | undefined,
   agentId: string,
+  harness: HookHarness,
 ): boolean {
   const reason = string(brief?.selection_reason);
   if (reason === "owned_live_lease" || reason === "same_agent_session_rebind") {
     return true;
   }
   const owner = string(object(brief?.lease)?.lease_owner_agent_id);
-  // Legacy compatibility: before the stable per-user default, agent_id fell
-  // back to the harness name, so existing leases are owned by "claude-code"
-  // or "codex". Treating those as own work is what lets a pre-upgrade lease
-  // rebind after the identity change — and is exactly the cross-harness
-  // handoff the harness-name default made impossible.
-  return owner === agentId || owner === "claude-code" || owner === "codex";
+  // Transition compatibility, REMOVE in 0.15: before the stable per-user
+  // default, agent_id fell back to the harness name, so pre-upgrade leases
+  // are owned by "claude-code"/"codex". Accept only THIS harness's legacy
+  // name — accepting both would let any teammate's expired legacy lease
+  // (org-wide, both harnesses) rebind here, a cross-user seizure. New claims
+  // use the stable id, so this window drains itself.
+  return owner === agentId || owner === harness;
 }
 
 async function sessionStart(
@@ -559,10 +566,13 @@ async function sessionStart(
   // PreToolUse cannot tag and SessionEnd cannot close (observed live:
   // ledgers with real activity and sessionUid null — every capture in those
   // sessions was orphaned).
+  // Subprocess work stays OUTSIDE the ledger lock — a harness kill landing
+  // inside a long-held lock blanks every hook for the stale-lock window.
+  const baselineWorktree = worktreeState(input.cwd);
   if (sessionUid) {
     withLedger(input.session_id, options, (ledger) => {
       ledger.sessionUid = sessionUid;
-      ledger.baselineWorktree = worktreeState(input.cwd);
+      ledger.baselineWorktree = baselineWorktree;
       return undefined;
     });
   }
@@ -583,13 +593,28 @@ async function sessionStart(
   );
   const task = object(brief?.task);
   const lease = object(brief?.lease);
+  // Prior ledger state — on compact/resume re-entry (same harness session
+  // id) this is evidence that THIS session already holds the surfaced lease.
+  const prior = readLedger(input.session_id, options);
+  const leaseExpiry = number(lease?.lease_expires_at);
+  const leaseLive = leaseExpiry !== undefined && leaseExpiry > nowSeconds;
+  const heldByThisSession =
+    leaseLive &&
+    prior.taskUid !== undefined &&
+    prior.taskUid === string(task?.uid) &&
+    prior.leaseEpoch === number(lease?.lease_epoch);
   let claimed: Record<string, unknown> | undefined;
   let claimFailed = false;
   if (
     sessionUid &&
     string(task?.uid) &&
     number(task?.version) &&
-    isOwnPriorWork(brief, agentId)
+    isOwnPriorWork(brief, agentId, options.harness) &&
+    // A LIVE lease belongs to whichever session claimed it — claiming from
+    // here would fence that session out mid-work (the released server
+    // rebinds same-owner live leases without allow_takeover). Re-claim live
+    // leases only when this very session already holds them (re-entry).
+    (!leaseLive || heldByThisSession)
   ) {
     try {
       claimed = object(
@@ -602,29 +627,42 @@ async function sessionStart(
           agent_id: agentId,
         }),
       );
-      brief = object(
-        await client.plan({
-          action: "resume_work",
-          task_uid: task!.uid,
-          session_uid: sessionUid,
-          ...(scopeUids.length > 0 ? { scope_uids: scopeUids } : {}),
-          agent_id: agentId,
-        }),
-      );
-      if (brief && claimed) brief.claim = claimed;
     } catch {
-      // Resume still supplies a useful bounded explanation on a claim race.
+      // A race is possible; a transient failure is indistinguishable here.
+      // The ledger write below decides what survives.
       claimFailed = true;
-      claimed = undefined;
+    }
+    if (claimed) {
+      // The claim stands even if the enriched re-resume fails — conflating
+      // the two orphaned a HELD lease (no heartbeats, no fills, SessionEnd
+      // skip) while telling the model the claim failed.
+      try {
+        const reResumed = object(
+          await client.plan({
+            action: "resume_work",
+            task_uid: task!.uid,
+            session_uid: sessionUid,
+            ...(scopeUids.length > 0 ? { scope_uids: scopeUids } : {}),
+            agent_id: agentId,
+          }),
+        );
+        if (reResumed) brief = reResumed;
+      } catch {
+        // Pre-claim brief still renders; the claim is what matters.
+      }
+      if (brief) brief.claim = claimed;
     }
   }
+  // A transiently-failed re-claim of a lease this session already tracks is
+  // NOT a lost claim — the session still holds it server-side.
+  const stillHeld = !claimed && claimFailed && heldByThisSession;
   const scopeNote =
     scope.failures.length > 0
       ? `Scope: ${scopeUids.length} repositories resolved, ${scope.failures.length} FAILED — durable-work selection ran ${scopeUids.length > 0 ? "narrowed" : "unscoped"}; tasks in the failed repositories may be missing.`
       : undefined;
   const briefText = renderBrief(brief || { status: "no_eligible_work" }, {
-    claimed: Boolean(claimed),
-    claimFailed,
+    claimed: Boolean(claimed) || stillHeld,
+    claimFailed: claimFailed && !stillHeld,
     scopeNote,
   });
   const briefHash = crypto.createHash("sha256").update(briefText).digest("hex");
@@ -633,7 +671,7 @@ async function sessionStart(
     const reinjectCompact =
       options.reinjectUnchangedCompact && input.source === "compact";
     ledger.sessionUid = sessionUid;
-    ledger.baselineWorktree = worktreeState(input.cwd);
+    ledger.baselineWorktree = baselineWorktree;
     // The ledger adopts work-targeting state ONLY when this session actually
     // holds the lease. Adopting a merely-surfaced task made the hook stamp
     // every capture with a task the agent never claimed, and copy a foreign
@@ -666,6 +704,16 @@ async function sessionStart(
             "running",
       );
       ledger.executionUid = running ? string(running.uid) : undefined;
+    } else if (
+      claimFailed &&
+      ledger.taskUid !== undefined &&
+      ledger.taskUid === string(object(brief?.task)?.uid) &&
+      ledger.lastLeaseRenewalAt !== undefined
+    ) {
+      // Transient re-claim failure on re-entry for a task this session
+      // already tracks (compact/resume + maxRetries:0 network blip): keep
+      // the live bookkeeping — wiping it orphans a lease the session still
+      // holds server-side.
     } else {
       ledger.taskUid = undefined;
       ledger.taskVersion = undefined;
@@ -726,17 +774,25 @@ async function preTool(
   if (ledger.taskUid && updatedInput.task_uid === undefined) {
     updatedInput.task_uid = ledger.taskUid;
   }
+  // Gate on the MODEL's own targeting (pre-fill), not the value the hook
+  // just injected — comparing post-fill made the gate self-satisfying, so
+  // non-task actions (update_status on a PlanStep) received the TASK's
+  // expected_version and 409'd against the wrong node. Fencing fills apply
+  // only to actions the server actually fences by task.
+  const modelTask = string(original.task_uid);
   const targetsLedgerTask =
-    ledger.taskUid !== undefined && updatedInput.task_uid === ledger.taskUid;
-  if (
-    ledger.taskUid &&
-    input.tool_name?.includes("mindgraph_capture") &&
-    updatedInput.work_uid === undefined
-  ) {
+    ledger.taskUid !== undefined &&
+    (modelTask === undefined || modelTask === ledger.taskUid);
+  const isCapture = Boolean(input.tool_name?.includes("mindgraph_capture"));
+  const fencedAction =
+    Boolean(input.tool_name?.includes("mindgraph_plan")) &&
+    FENCED_PLAN_ACTIONS.has(string(original.action) || "");
+  if (ledger.taskUid && isCapture && updatedInput.work_uid === undefined) {
     updatedInput.work_uid = ledger.taskUid;
   }
   if (
     targetsLedgerTask &&
+    (fencedAction || isCapture) &&
     ledger.executionUid &&
     updatedInput.execution_uid === undefined
   ) {
@@ -744,6 +800,7 @@ async function preTool(
   }
   if (
     targetsLedgerTask &&
+    fencedAction &&
     ledger.leaseEpoch !== undefined &&
     updatedInput.lease_epoch === undefined
   ) {
@@ -751,6 +808,7 @@ async function preTool(
   }
   if (
     targetsLedgerTask &&
+    fencedAction &&
     ledger.taskVersion !== undefined &&
     updatedInput.expected_version === undefined
   ) {
@@ -758,6 +816,18 @@ async function preTool(
   }
   return { kind: "rewrite", updatedInput };
 }
+
+// Plan actions the server fences by task version/lease — the only calls
+// where injecting expected_version/lease_epoch is meaningful.
+const FENCED_PLAN_ACTIONS = new Set([
+  "claim_task",
+  "heartbeat",
+  "start_iteration",
+  "checkpoint_iteration",
+  "block_task",
+  "complete_task",
+  "abandon_iteration",
+]);
 
 async function postTool(
   input: HookInput,
@@ -788,15 +858,20 @@ async function postTool(
     if (["Edit", "Write", "NotebookEdit", "apply_patch"].includes(name)) {
       ledger.mutatingOperations += 1;
     }
-    // Only reflective captures satisfy the Stop nudge's "capture one durable
+    // Only reflective writes satisfy the Stop nudge's "capture one durable
     // lesson/decision/risk" — creating an Entity or Source is not memory of
-    // the work.
-    if (
-      name.includes("mindgraph_capture") &&
-      !payload?.error &&
-      ["lesson", "journal"].includes(action || "")
-    ) {
-      ledger.memoryWritten = true;
+    // the work. The credited set mirrors the nudge text exactly: lessons/
+    // journals (capture), resolved decisions (commit), risk assessments
+    // (plan).
+    if (!payload?.error) {
+      if (
+        (name.includes("mindgraph_capture") &&
+          ["lesson", "journal"].includes(action || "")) ||
+        (name.includes("mindgraph_commit") && action === "resolve_decision") ||
+        (name.includes("mindgraph_plan") && action === "assess_risk")
+      ) {
+        ledger.memoryWritten = true;
+      }
     }
     if (name.includes("mindgraph_plan")) {
       const targetTask = string(args.task_uid) || ledger.taskUid;
@@ -806,14 +881,22 @@ async function postTool(
         if (action === "claim_task" && targetTask) {
           // A successful claim is the model deliberately (re)binding work —
           // the ledger follows the model, including onto a different task.
+          // On a rebind the OLD task's fence/execution must not survive as
+          // fallbacks: pairing task B with task A's state was the exact
+          // cross-task attribution class this audit closed.
+          const rebindToOther = targetTask !== ledger.taskUid;
           ledger.taskUid = targetTask;
           ledger.taskVersion =
             number(payload?.task_version) ??
             number(payload?.version) ??
-            ledger.taskVersion;
-          ledger.leaseEpoch = number(payload?.lease_epoch) ?? ledger.leaseEpoch;
+            (rebindToOther ? undefined : ledger.taskVersion);
+          ledger.leaseEpoch =
+            number(payload?.lease_epoch) ??
+            (rebindToOther ? undefined : ledger.leaseEpoch);
           ledger.leaseExpiresAt =
-            number(payload?.lease_expires_at) ?? ledger.leaseExpiresAt;
+            number(payload?.lease_expires_at) ??
+            (rebindToOther ? undefined : ledger.leaseExpiresAt);
+          if (rebindToOther) ledger.executionUid = undefined;
           ledger.lastLeaseRenewalAt = nowSeconds;
         }
         if (action === "start_iteration") {
@@ -849,8 +932,13 @@ async function postTool(
               : undefined) ??
             ledger.taskVersion;
           ledger.leaseEpoch = number(payload?.lease_epoch) ?? ledger.leaseEpoch;
-          ledger.leaseExpiresAt =
-            number(payload?.lease_expires_at) ?? ledger.leaseExpiresAt;
+          if (number(payload?.lease_expires_at) !== undefined) {
+            ledger.leaseExpiresAt = number(payload?.lease_expires_at);
+            // A fresh expiry (model-issued heartbeat/renewal) counts as a
+            // renewal — otherwise the hook fires a redundant heartbeat
+            // every 3 minutes on top of the model's own cadence.
+            ledger.lastLeaseRenewalAt = nowSeconds;
+          }
         }
       } else if (aboutLedgerTask) {
         // Structured conflict payloads (server ≥1.11.3) carry the current
@@ -868,10 +956,15 @@ async function postTool(
       ledger.sessionUid &&
       ledger.taskVersion !== undefined &&
       ledger.leaseEpoch !== undefined &&
-      ledger.leaseExpiresAt !== undefined
+      ledger.leaseExpiresAt !== undefined &&
+      // Only ledgers whose lease state was written by a claim THIS code made
+      // may renew: 0.14.9 ledgers carry adopted-but-never-claimed fence
+      // state, and a lapse-reclaim from one would auto-seize a task this
+      // session never owned — the incident class all of this exists to kill.
+      ledger.lastLeaseRenewalAt !== undefined
     ) {
       const expiresIn = ledger.leaseExpiresAt - nowSeconds;
-      const sinceRenewal = nowSeconds - (ledger.lastLeaseRenewalAt ?? 0);
+      const sinceRenewal = nowSeconds - ledger.lastLeaseRenewalAt;
       // Renew on EITHER signal: imminent expiry per the server clock, or
       // elapsed local time since the last successful renewal. The second
       // covers client clock skew (a lagging clock made the expiry check
@@ -924,6 +1017,11 @@ async function postTool(
       );
       withLedger(input.session_id, options, (ledger) => {
         if (payloadIsError(response)) return undefined;
+        // The model may have rebound (or completed) between scheduling this
+        // renewal and its completion — a parallel tool batch runs hooks
+        // concurrently. Stamping task A's fence onto a ledger now tracking
+        // task B is the R20 bug on the async path.
+        if (ledger.taskUid !== active.taskUid) return undefined;
         ledger.taskVersion =
           number(response?.task_version) ?? ledger.taskVersion;
         ledger.leaseEpoch = number(response?.lease_epoch) ?? ledger.leaseEpoch;
@@ -1002,7 +1100,19 @@ async function sessionEnd(
       // A newer Session or stale fence wins; cleanup never overwrites it.
     }
   }
-  if (ledger.sessionUid) {
+  // Codex caps SessionEnd hooks at 3 seconds (platform-side; the configured
+  // timeout cannot raise it), which fits at most ONE cloud call. The
+  // abandon above releases the lease — the part that blocks other sessions —
+  // so when it ran, skip the close: session open is an identity-upsert, so a
+  // stale-open Session node is benign.
+  const abandonRan = Boolean(
+    ledger.executionUid &&
+      ledger.taskUid &&
+      ledger.sessionUid &&
+      ledger.taskVersion !== undefined &&
+      ledger.leaseEpoch !== undefined,
+  );
+  if (ledger.sessionUid && (options.harness !== "codex" || !abandonRan)) {
     try {
       await client.session({
         action: "close",

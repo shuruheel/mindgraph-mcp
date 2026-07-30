@@ -51,10 +51,11 @@ function fakeClient() {
             label: `Ship the adapter (${revision})`,
             version: request.task_uid ? 2 : 1,
           },
+          // Expired own lease — the sanctioned cross-session rebind path.
           lease: {
             lease_owner_agent_id: "codex-b7",
             lease_epoch: 7,
-            lease_expires_at: 9_999_999_999,
+            lease_expires_at: 1,
           },
           active_execution: { uid: "codex-execution", status: "running" },
           next_action: revision,
@@ -244,11 +245,12 @@ describe("Codex normalized hook adapter", () => {
         execution_uid: "codex-execution",
       }),
     );
-    expect(fixture.sessions).toContainEqual(
-      expect.objectContaining({
-        action: "close",
-        session_uid: "codex-session-graph",
-      }),
+    // Codex clamps SessionEnd to 3s — one cloud call fits. The abandon
+    // (which releases the lease, the part that blocks other sessions) wins;
+    // the close is skipped, and the next session-open identity-upsert makes
+    // a stale-open Session benign.
+    expect(fixture.sessions).not.toContainEqual(
+      expect.objectContaining({ action: "close" }),
     );
   });
 });
@@ -313,9 +315,9 @@ describe("Codex hook installer", () => {
       timeout: 30,
       additionalContextLimit: 10_000,
     });
-    // SessionEnd makes up to two sequential cloud calls; 3s guaranteed a
-    // leaked lease + open Session node on every cold-tenant exit.
-    expect(settings.hooks.SessionEnd[0].hooks[0].timeout).toBe(20);
+    // Codex clamps SessionEnd to a 3s platform cap — writing more would be
+    // a no-op; the codex adapter compensates by making at most ONE call.
+    expect(settings.hooks.SessionEnd[0].hooks[0].timeout).toBe(3);
 
     const removed = uninstallCodexHooks("project", root);
     expect(removed.removed).toBe(5);

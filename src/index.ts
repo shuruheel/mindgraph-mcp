@@ -10,6 +10,7 @@ import {
   GetPromptRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { MindGraph } from "mindgraph";
+import { loadHookEnv, stableAgentId } from "./hook-env.js";
 import { handleTool, toolsForProfile } from "./tools.js";
 import { getGeneratedTools, handleGeneratedTool } from "./generated-tools.js";
 import { checkMcpGovernance } from "./governance.js";
@@ -26,7 +27,12 @@ declare const __PACKAGE_VERSION__: string;
 const API_KEY = process.env.MINDGRAPH_API_KEY;
 const BASE_URL =
   process.env.MINDGRAPH_BASE_URL || "https://api.mindgraph.cloud";
-const AGENT_ID = process.env.MINDGRAPH_AGENT_ID || "mcp";
+// Must resolve to the SAME identity as the hooks (hook-env resolution): the
+// hooks claim/heartbeat leases under this id, and every tool call carries it
+// as agent_id. Two different defaults meant the model's fenced writes fought
+// the hook's lease on the server — an unwinnable 409 ping-pong.
+const AGENT_ID =
+  process.env.MINDGRAPH_AGENT_ID || loadHookEnv().agentId || stableAgentId();
 const ORG_ID = process.env.MINDGRAPH_ORG_ID;
 const PROFILE = process.env.MINDGRAPH_PROFILE || "general";
 const HARNESS = process.env.MINDGRAPH_HARNESS || "generic";

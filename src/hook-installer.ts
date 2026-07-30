@@ -115,14 +115,17 @@ function desiredEntries(harness: HookHarness): Record<string, JsonObject[]> {
         hooks: [ownedHook(harness, 5)],
       },
     ],
-    PostToolUse: [{ matcher: ".*", hooks: [ownedHook(harness, 5)] }],
+    // PostToolUse awaits the lease renewal round-trip, which fires exactly
+    // when the tenant is cold (post-idle reclaim) — 5s killed it mid-claim.
+    PostToolUse: [{ matcher: ".*", hooks: [ownedHook(harness, 10)] }],
     Stop: [{ hooks: [ownedHook(harness, 5)] }],
     // SessionEnd makes up to two sequential cloud calls (abandon_iteration +
     // session close) — the SAME cold-tenant latency SessionStart needs 30s
-    // for. The old 3s/8s budgets meant every normal exit on a cold tenant
-    // leaked the lease and left the Session node open.
+    // for. Claude honors the configured budget; Codex clamps SessionEnd to a
+    // 3s platform cap regardless of this value (see codex-hooks.ts wire
+    // map), so the codex adapter instead makes at most ONE call there.
     SessionEnd: [
-      { hooks: [ownedHook(harness, harness === "codex" ? 20 : 30)] },
+      { hooks: [ownedHook(harness, harness === "codex" ? 3 : 30)] },
     ],
   };
   return harness === "claude-code"

@@ -874,8 +874,8 @@ describe("R22 — an expired lease is re-claimed, not heartbeaten", () => {
         lease: {
           lease_owner_agent_id: "continuity-agent",
           lease_epoch: 3,
-          // Renewed lease expires shortly after claim.
-          lease_expires_at: 100,
+          // Expired at clock 50 — the rebind path SessionStart may claim.
+          lease_expires_at: 40,
         },
         selection_reason: "claimed",
       },
@@ -974,5 +974,38 @@ describe("R24 — a PlanStep's version never clobbers the task version", () => {
       action: "checkpoint_iteration",
     });
     expect(updated.expected_version).toBe(2);
+  });
+});
+
+describe("R25 — structured conflict state survives the tool error envelope", () => {
+  it("spreads 409 fencing fields as JSON siblings of `error`", async () => {
+    // Failure pinned: errorDetail() flattened the server's structured 409
+    // body INTO the error string, so the hooks' ledger re-sync (which reads
+    // current_version/current_epoch as top-level keys of the parsed tool
+    // text) could never see them — a fenced session replayed its stale
+    // epoch forever even against a server that reported the fresh state.
+    const client = {
+      plan: vi.fn().mockRejectedValue(
+        new MindGraphError("POST /agent/plan failed: 409", 409, {
+          error: "version_conflict",
+          code: "version_conflict",
+          current_version: 9,
+          current_epoch: 6,
+          lease_expires_at: 1_234,
+        })
+      ),
+    } as unknown as MindGraph;
+    const result = await handleTool(client, "mindgraph_plan", {
+      action: "checkpoint_iteration",
+      task_uid: "task-1",
+    });
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text) as Record<string, unknown>;
+    expect(typeof payload.error).toBe("string");
+    expect(payload.current_version).toBe(9);
+    expect(payload.current_epoch).toBe(6);
+    expect(payload.lease_expires_at).toBe(1_234);
+    // The prose keeps the full body for the model.
+    expect(payload.error).toContain("version_conflict");
   });
 });
