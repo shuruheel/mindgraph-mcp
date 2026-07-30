@@ -1,5 +1,5 @@
 import { MindGraph } from "mindgraph";
-import { errorDetail } from "./error-detail.js";
+import { conflictState, errorDetail } from "./error-detail.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
   CODE_TOOL,
@@ -1080,7 +1080,21 @@ export async function handleTool(
       : result;
   } catch (e: unknown) {
     // Propagate the server's typed error body (code, missing field, conflict
-    // details) — the agent can only self-correct on errors it can see.
+    // details) — the agent can only self-correct on errors it can see. The
+    // structured fencing fields ride along as JSON siblings so the hooks'
+    // ledger re-sync can adopt them.
+    const lifted = conflictState(e);
+    if (Object.keys(lifted).length > 0) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ error: errorDetail(e), ...lifted }),
+          },
+        ],
+        isError: true,
+      };
+    }
     return err(errorDetail(e));
   }
 }

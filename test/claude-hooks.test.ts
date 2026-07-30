@@ -43,10 +43,13 @@ function fakeClient() {
       if (request.action === "resume_work") {
         return {
           task: { uid: "task-1", version: plans.length > 1 ? 2 : 1 },
+          // Own prior lease, EXPIRED — the sanctioned cross-session rebind.
+          // A live lease belongs to a concurrent session and is deliberately
+          // not re-claimed at SessionStart.
           lease: {
             lease_owner_agent_id: "claude-code",
             lease_epoch: 4,
-            lease_expires_at: 9_999_999_999,
+            lease_expires_at: 1,
           },
           recent_executions: [{ uid: "execution-1", props: { status: "running" } }],
         };
@@ -226,7 +229,7 @@ describe("Claude Code normalized hook adapter", () => {
     });
   });
 
-  it("bounds an oversized SessionStart work brief before injection", async () => {
+  it("bounds an oversized SessionStart work brief and keeps the task in it", async () => {
     const cwd = tempRoot();
     const runtimeDir = path.join(cwd, "runtime");
     const { client } = fakeClient();
@@ -239,8 +242,12 @@ describe("Claude Code normalized hook adapter", () => {
         };
       }
       return {
-        task: { uid: "task-large", version: 1 },
-        knowledge: [{ summary: "x".repeat(50_000) }],
+        task: { uid: "task-large", label: "Ship the fix", version: 1 },
+        knowledge: [{ label: "Huge lesson", summary: "x".repeat(50_000) }],
+        code_targets: Array.from({ length: 20 }, (_, index) => ({
+          uid: `target-${index}`,
+          label: `repo-${index}`,
+        })),
       };
     };
 
@@ -256,7 +263,8 @@ describe("Claude Code normalized hook adapter", () => {
     const context = (
       output.hookSpecificOutput as Record<string, unknown>
     ).additionalContext as string;
-    expect(context).toContain("[bounded work brief truncated]");
+    expect(context).toContain("bounded work brief truncated");
+    expect(context).toContain("Task: Ship the fix [task-large]");
     expect(context.length).toBeLessThan(9_200);
   });
 

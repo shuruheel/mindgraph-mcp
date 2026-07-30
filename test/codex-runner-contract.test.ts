@@ -88,9 +88,12 @@ global.fetch = async (url, init = {}) => {
         label: "Runner contract task",
         version: body.task_uid ? 2 : 1,
       },
+      // Expired own lease — the sanctioned cross-session rebind. A live
+      // lease belongs to a concurrent session and is never claimed at
+      // SessionStart.
       lease: {
         lease_epoch: 7,
-        lease_expires_at: 9999999999,
+        lease_expires_at: 1,
         lease_owner_agent_id: "runner-agent",
       },
       active_execution: {
@@ -289,11 +292,12 @@ global.fetch = async (url, init = {}) => {
           action: "abandon_iteration",
           execution_uid: "runner-execution",
         }),
-        expect.objectContaining({
-          action: "close",
-          session_uid: "runner-session",
-        }),
       ]),
+    );
+    // Codex clamps SessionEnd to 3s — one call fits, and the abandon (which
+    // releases the lease) wins over the close.
+    expect(requests).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ action: "close" })]),
     );
   });
 });

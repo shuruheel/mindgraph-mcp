@@ -46,11 +46,16 @@ function fakeClient() {
       }
       if (request.action === "resume_work") {
         return {
-          task: { uid: "codex-task", version: request.task_uid ? 2 : 1 },
+          task: {
+            uid: "codex-task",
+            label: `Ship the adapter (${revision})`,
+            version: request.task_uid ? 2 : 1,
+          },
+          // Expired own lease — the sanctioned cross-session rebind path.
           lease: {
             lease_owner_agent_id: "codex-b7",
             lease_epoch: 7,
-            lease_expires_at: 9_999_999_999,
+            lease_expires_at: 1,
           },
           active_execution: { uid: "codex-execution", status: "running" },
           next_action: revision,
@@ -104,7 +109,7 @@ describe("Codex normalized hook adapter", () => {
     expect(repeated).toEqual({});
     expect(
       (changed.hookSpecificOutput as Record<string, unknown>).additionalContext,
-    ).toContain('"next_action": "changed"');
+    ).toContain("Ship the adapter (changed)");
     expect(fixture.sessions[0]).toMatchObject({
       harness: "codex",
       harness_session_id: "thr_b7",
@@ -240,11 +245,12 @@ describe("Codex normalized hook adapter", () => {
         execution_uid: "codex-execution",
       }),
     );
-    expect(fixture.sessions).toContainEqual(
-      expect.objectContaining({
-        action: "close",
-        session_uid: "codex-session-graph",
-      }),
+    // Codex clamps SessionEnd to 3s — one cloud call fits. The abandon
+    // (which releases the lease, the part that blocks other sessions) wins;
+    // the close is skipped, and the next session-open identity-upsert makes
+    // a stale-open Session benign.
+    expect(fixture.sessions).not.toContainEqual(
+      expect.objectContaining({ action: "close" }),
     );
   });
 });
@@ -307,8 +313,10 @@ describe("Codex hook installer", () => {
     expect(owned.every((hook) => !hook.command.includes("npx"))).toBe(true);
     expect(settings.hooks.SessionStart[0].hooks[0]).toMatchObject({
       timeout: 30,
-      additionalContextLimit: 3_000,
+      additionalContextLimit: 10_000,
     });
+    // Codex clamps SessionEnd to a 3s platform cap — writing more would be
+    // a no-op; the codex adapter compensates by making at most ONE call.
     expect(settings.hooks.SessionEnd[0].hooks[0].timeout).toBe(3);
 
     const removed = uninstallCodexHooks("project", root);
