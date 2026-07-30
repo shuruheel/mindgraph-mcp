@@ -43,7 +43,7 @@ const err = (code: string, message: string, details?: unknown): ToolResult => ({
   content: [
     {
       type: "text",
-      text: JSON.stringify({ error: message, code, details }, null, 2),
+      text: JSON.stringify({ error: message, code, details }),
     },
   ],
   isError: true,

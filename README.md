@@ -145,7 +145,7 @@ composites: `resume_work` (deterministic bounded brief), `claim_task` /
 `block_task` / `complete_task` / `abandon_iteration` (idempotent material
 attempts with version conflict detection).
 
-Plus **dynamically generated read tools**: when the tenant's active schema declares object types, the server renders per-type `search_<objs>` / `get_<obj>` / `summarize_<obj>` tools (from the cloud's `GET /v1/ontology/tools` manifest) at session start. `summarize_<obj>` returns the object — whether mapped from a connected SQL database or extracted from documents — *plus* its cognitive context (claims, risks, decisions, evidence).
+Plus **dynamically generated read tools**: when the tenant's active schema declares object types, the server renders per-type `search_<objs>` / `get_<obj>` / `summarize_<obj>` tools (from the cloud's `GET /v1/ontology/tools` manifest) at session start. `summarize_<obj>` returns the object — whether mapped from a connected SQL database or extracted from documents — *plus* its cognitive context (claims, risks, decisions, evidence). Since 0.17.0 these read tools render as text by default (pass `format: "json"` for the raw response); `related_*` tools follow the same contract, and `structured_query_*` composites always return raw rows.
 
 **7 prompt templates** for common workflows:
 

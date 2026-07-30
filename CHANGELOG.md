@@ -2,6 +2,78 @@
 
 ## Unreleased
 
+## 0.17.0 (2026-07-30)
+
+### Changed
+
+- **BREAKING (output format): `mindgraph_ontology`'s read actions and the
+  generated per-schema read tools return a rendered text block instead of
+  the server's raw JSON.** Pass `format: "json"` on any of those calls to
+  get the raw response back unchanged; the parameter is newly declared on
+  `mindgraph_ontology` — covering `query`, `search`, `objects`, `object`
+  and `object_context` — and injected into the input schema of every
+  generated read tool (`search_*`, `get_*`, `summarize_*`, `related_*`).
+  This is the treatment 0.16.0 gave `mindgraph_retrieve`, applied to the
+  remaining read surfaces. One deliberate exception: the generated
+  structured composite (`structured_query_*`) keeps its exact published
+  schema — the server rejects unknown fields on it — and always returns
+  raw rows, because models copy its tabular output structurally. Anything
+  the renderer does not recognize also falls back to raw, so an unexpected
+  response shape is never swallowed, and no server change is required.
+  Consumers that parse these tools' output programmatically must now pass
+  `format: "json"`. `mindgraph_plan`, `mindgraph_sync`, `mindgraph_code`,
+  and the ontology write, schema and proposal actions are unaffected —
+  they were never rendered and still return JSON.
+- **Domain objects render as their own type, carrying their Layer-7
+  fields.** Objects group under `### Customer` headings, each line reading
+  `- **ACME Corp** [cust-1] (Customer, confidence 1)` above a
+  `fields: region: EMEA; arr: 120000` line. Two wire families reach these
+  tools and both resolve to the domain type: the hand-projected form that
+  carries `node_type` as a plain string, and the serde-derived ontology
+  handlers that emit it externally tagged (`{"Custom": "Customer"}`) with
+  the typed payload under `props.data`. Relations render as
+  `- A —HAS_REQUIREMENT→ B` label lines; an endpoint outside the returned
+  object list — a cognitive neighbour, usually — renders as `[uid]` rather
+  than dropping the relation, which is the difference between a partial
+  answer and a silently incomplete one. Cognitive context is grouped by
+  category (`### Cognitive context — claims`), and the block closes with
+  the overall confidence, whether more results exist, and whether the seed
+  cap was hit.
+- **Provenance now says whether a span is a quotation.** `anchor` spans
+  are located quotations and render quoted; `chunk_head` spans render as
+  `- context: …` and are never quoted, honouring the server's C10
+  contract. Reading the raw payload, a model had to know the `span_kind`
+  convention to avoid attributing surrounding chunk text to a source as a
+  verbatim quote.
+- **An empty result now says it is empty.** A recognized ontology response
+  with no objects, no cognitive context and no provenance renders
+  `No matching domain objects.`, and an empty domain-object page renders
+  `# <title> (0 results)`; both previously arrived as raw JSON for the
+  model to interpret. The renderer claims a result is empty only when it
+  recognizes the envelope — unrecognized shapes still fall through to raw.
+- **`mindgraph_ingest` `job_status` without a `job_id` returns the 20 most
+  recent jobs, newest first, instead of every job the tenant has ever
+  run.** Each line carries the id, title, status, chunk progress, nodes
+  created, queue position and any error (clipped at 160 characters), and
+  the header reports `20 of 25` when the list was cut. The previous
+  response was the entire unbounded list, pretty-printed — on an active
+  tenant, the largest payload this package could hand a model. Pass
+  `format: "json"` for the full raw list.
+- **`mindgraph_synthesize` `signals` renders as named sections.** Each
+  signal array becomes a `## entity bridges` section whose items resolve
+  the label key the server actually sends — `target_label` for claim hubs,
+  `from_label`/`to_label` for dialectical pairs, which render as
+  `Memory as retrieval ↔ Memory as reasoning` — alongside the uid and the
+  numeric scores. `format: "json"` is newly declared on this tool too.
+- **The JSON this package emits is compact rather than 2-space
+  pretty-printed.** That covers the `format: "json"` escapes, the actions
+  that were never rendered, `mindgraph_code`'s payloads (success and error), and MCP
+  resource contents. The indentation was pure output cost: measured on the
+  ontology query and domain-search response shapes the test suite is
+  fixtured on, the compact form is 35–40% smaller. Machine parsers are
+  unaffected — `JSON.parse` reads both forms identically, including the
+  hooks' ledger and the code-anchor attach seam.
+
 ## 0.16.0 (2026-07-30)
 
 ### Changed
