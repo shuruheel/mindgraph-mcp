@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   renderJobs,
+  renderNodeList,
   renderObjectList,
   renderOntologyAnswer,
   renderSignals,
