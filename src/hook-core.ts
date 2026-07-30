@@ -7,6 +7,7 @@ import {
   CodegraphAdapter,
   repositoryIdentityKey,
 } from "./codegraph.js";
+import { anchorRepository, type CodeClient } from "./code-tool.js";
 import { stableAgentId } from "./hook-env.js";
 
 export interface HookInput {
@@ -493,11 +494,28 @@ async function repositoryScopeUids(
         if (payload?.status === "existing" && string(payload.uid)) {
           return string(payload.uid);
         }
-        if (payload?.status !== "absent") {
-          failures.push(
-            `${repository.repoId}: ${string(payload?.status) || "unresolved"}`,
+        if (payload?.status === "absent") {
+          // Anchor the repository identity NOW (the same idempotent upsert
+          // create_task uses). Skipping "absent" repos meant a repo whose
+          // identity had never been anchored ran every session UNSCOPED —
+          // silently mixing other repositories' tasks into its briefs
+          // (caught live by the E2E: a task scoped to repo B surfaced in
+          // repo A's session because A had no anchor).
+          const anchored = await anchorRepository(
+            client as unknown as CodeClient,
+            repository,
+            repository.spaceUid ?? `space:agent:${agentId}`,
+            agentId,
           );
+          if (anchored?.uid) return anchored.uid;
+          failures.push(
+            `${repository.repoId}: anchor ${anchored?.status ?? "failed"}`,
+          );
+          return undefined;
         }
+        failures.push(
+          `${repository.repoId}: ${string(payload?.status) || "unresolved"}`,
+        );
         return undefined;
       } catch (error) {
         failures.push(

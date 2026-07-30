@@ -1009,3 +1009,50 @@ describe("R25 — structured conflict state survives the tool error envelope", (
     expect(payload.error).toContain("version_conflict");
   });
 });
+
+describe("R26 — an unanchored repository is anchored at SessionStart, not skipped", () => {
+  it("creates the repository identity and scopes resume with its uid", async () => {
+    // Failure pinned (caught by the local E2E): resolve_identity returning
+    // "absent" was silently skipped, so a repo whose identity had never
+    // been anchored ran every session UNSCOPED — a task scoped to repo B
+    // surfaced in repo A's sessions.
+    const root = tempDir("mindgraph-r26-root-");
+    fs.mkdirSync(path.join(root, ".git"));
+    const plans: Array<Record<string, unknown>> = [];
+    const entityCalls: Array<Record<string, unknown>> = [];
+    const client = {
+      async session() {
+        return { uid: "session-graph" };
+      },
+      async plan(request: Record<string, unknown>) {
+        plans.push(request);
+        return {};
+      },
+      async entity(request: Record<string, unknown>) {
+        entityCalls.push(request);
+        if (request.action === "resolve_identity") {
+          return { status: "absent" };
+        }
+        return { uid: "anchored-repo-uid", status: "created" };
+      },
+    } as unknown as HookClient;
+    await runClaudeHook(
+      {
+        hook_event_name: "SessionStart",
+        session_id: "r26-session",
+        cwd: root,
+        source: "startup",
+      },
+      client,
+      { agentId: "r26-agent", runtimeDir: tempDir("mindgraph-r26-runtime-") },
+    );
+    const anchor = entityCalls.find((call) => call.action === "create");
+    expect(anchor).toBeDefined();
+    expect(anchor).toMatchObject({
+      identity: expect.objectContaining({ namespace: "external.code" }),
+    });
+    expect(plans.find((request) => request.action === "resume_work")).toMatchObject({
+      scope_uids: ["anchored-repo-uid"],
+    });
+  });
+});
