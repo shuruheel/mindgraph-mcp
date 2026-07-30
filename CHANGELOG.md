@@ -2,6 +2,103 @@
 
 ## Unreleased
 
+## 0.16.0 (2026-07-30)
+
+### Changed
+
+- **BREAKING (output format): `mindgraph_retrieve` returns a rendered text
+  block instead of the server's raw JSON — every action, including the
+  traversals.** Pass `format: "json"` on any call to get the raw response
+  back unchanged. The tool used to hand the model the wire payload verbatim:
+  every null field of every typed prop, unbounded source-chunk offset
+  arrays, curation edges carrying reviewer rationale, retrieval-expansion
+  metadata. Measured live against production on a real `context` query, the
+  response went from 55,045 characters (~14,877 tokens) to 7,228 (~1,954) —
+  87% smaller — and `hybrid` search 83% smaller, with nothing a model reads
+  removed. The rendered block leads with knowledge articles, then graph
+  nodes grouped by node type as
+  `- **label** [uid] (Claim, confidence 0.8, score 0.42) [truth: refuted]: summary`,
+  each with at most one source quote (clipped at 180 characters), its
+  source-document title, and who believes it; then relationships as
+  `- A —EDGE_TYPE→ B` label lines, source excerpts when `include_chunks` is
+  set, any applicable policies with their prose rules, and a count of items
+  withheld by access scoping. Traversals render as a numbered path list with
+  costs, then nodes and relationships. UIDs stay in the output deliberately
+  — unlike a chat UI, a model chains its follow-up tool calls by uid.
+  Consumers that parse `mindgraph_retrieve` output programmatically must now
+  pass `format: "json"`; nothing in this package does (the hooks' ledger
+  reads fencing state only from `mindgraph_plan` responses). This pairs with
+  the server-side context hygiene deployed the same day — a cap on returned
+  source chunks and curation edges dropped from context — but does the
+  equivalent filtering client-side, so it degrades gracefully against a
+  server without it.
+- **Epistemic status now travels with the node instead of being buried in
+  it.** `[SUPERSEDED by <uid>]`, `[truth: refuted]`, and validity-window
+  flags (`OUTSIDE ITS VALIDITY WINDOW`, `NOT VALID AT THE REQUESTED TIME`)
+  render inline on the node line. In the raw payload these were three
+  booleans among forty fields, and models read superseded or refuted
+  knowledge back as current.
+- **Curation and self-referential edges never reach the model.**
+  `POSSIBLE_DUPLICATE` edges — in both the `context` wire spelling and the
+  PascalCase one traversals use — belong to the `merge_candidates` review
+  surface, and shipping them as knowledge context made models repeat
+  reviewer metadata ("LLM review: related but distinct") as fact. Self-loop
+  edges are dropped as noise. Infra nodes (`Chunk`, `Document`, `Article`)
+  are excluded from the graph section, where they duplicate the article and
+  excerpt sections; when they were the *only* matches the block says so and
+  names the action that will return them, rather than reading as an empty
+  graph.
+- **Rendered output is bounded, and says so when it is.** Individual items
+  are clipped (summaries 400 characters, source quotes 180, articles and
+  chunks 6,000 — a full ingestion chunk is 400–800 words, so `include_chunks`
+  still yields quotable text), and sections are packed whole-item against a
+  24,000-character budget: an item is either rendered completely or counted
+  in a `(+N more not shown)` marker, never cut mid-item. Whenever anything
+  was clipped or dropped the block ends by saying so and pointing at both
+  remedies — fetch full content by uid, or re-run with `format: "json"`. For
+  the structured list actions the renderer also caps items at the caller's
+  `limit`, because the server ignores `limit` for several unscoped
+  structured queries and returns up to its 200-row cap.
+- **`limit` and `offset` are honored by `active_goals`, `open_questions`,
+  `weak_claims`, `pending_approvals` and `unresolved_contradictions`.** The
+  tool schema advertised both; these five went through no-argument SDK
+  convenience methods that dropped them, so every call returned the server
+  default. They now go through the generic `/retrieve` action dispatch like
+  every other structured action. Consequence for anyone reading the raw
+  payload: `format: "json"` on these five now returns the `/retrieve`
+  dispatch response, not the previous convenience endpoints' shape.
+
+### Added
+
+- **`top_k_paths` is reachable from the MCP tool.** The k cheapest paths
+  between `start_uid` and `end_uid`, with `k` (default 3, cap 25) and an
+  optional `max_cost` ceiling; `max_depth` maps to the server's `max_hops`.
+  Each path renders as a route of labels with its cost, with the uid
+  sequence on its own line so a model can follow up on any hop.
+- **Time-scoped retrieval parameters.** `valid_at` (an ISO-8601 date such as
+  `"2021-06"`) annotates `context` nodes against their validity windows as
+  of that date instead of today, and `created_after`/`created_before` (unix
+  seconds) window the `recent` action by ingestion time. Both were server
+  surface the tool had never exposed.
+- **`explain: true` on `hybrid`** returns the per-leg retrieval scoring.
+  Responses to a call with `explain` set are returned as raw JSON whatever
+  `format` says, because the per-leg scores are the reason for the call.
+- **`article_limit`** caps wiki articles in `context` results (default 3;
+  `0` drops the article leg). An explicit value overrides profile defaults,
+  including the coding profile's articles-off default — reaching for an
+  advertised knob should not be a silent no-op.
+
+### Fixed
+
+- **`include_documents: false` now drops the article leg in every profile.**
+  It was read only under the coding profile, so outside it the parameter did
+  nothing and the only way to exclude ingested documents and wiki articles
+  from a context result was to run the coding profile.
+- **`layer` retrieval forwards `node_types`,** so a layer query can be
+  narrowed to particular node types instead of returning the whole layer.
+  The filter is applied by mindgraph-server 1.12.0 and later; against an
+  older server the parameter is accepted and ignored, as it was before.
+
 ## 0.15.0 (2026-07-30)
 
 ### Added
