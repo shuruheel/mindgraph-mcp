@@ -10,6 +10,7 @@ import {
 } from "./code-tool.js";
 import { CodegraphAdapter } from "./codegraph.js";
 import { handleSyncTool, SYNC_TOOL } from "./sync-tool.js";
+import { renderContext, renderNodeList, renderTraversal } from "./render.js";
 
 // ── Tool Definitions ──────────────────────────────────────────────────
 
@@ -594,9 +595,16 @@ export const TOOLS: Tool[] = [
             "neighborhood",
             "path",
             "subgraph",
+            "top_k_paths",
             "document_index",
           ],
           description: "Retrieval or traversal strategy",
+        },
+        format: {
+          type: "string",
+          enum: ["text", "json"],
+          description:
+            "Output format (default 'text'): a compact rendered context block — labels, uids, summaries, status tags, relationships. Pass 'json' for the raw server response (full props, source-chunk offsets, retrieval metadata).",
         },
         query: {
           type: "string",
@@ -659,7 +667,37 @@ export const TOOLS: Tool[] = [
         include_documents: {
           type: "boolean",
           description:
-            "Include ingested documents and wiki articles in context results. The coding profile defaults these OFF so engineering questions aren't answered from unrelated ingested content; pass true when the question is about a document, spec, or article.",
+            "Include ingested documents and wiki articles in context results. The coding profile defaults these OFF so engineering questions aren't answered from unrelated ingested content; pass true when the question is about a document, spec, or article — or false in any profile to drop the article leg.",
+        },
+        article_limit: {
+          type: "number",
+          description:
+            "Max wiki articles in context results (default 3; 0 disables the article leg). An explicit value overrides profile defaults, including the coding profile's articles-off default.",
+        },
+        valid_at: {
+          type: "string",
+          description:
+            "ISO-8601 date (e.g. '2021-06') for context: nodes with validity windows are annotated as of this date instead of today",
+        },
+        created_after: {
+          type: "number",
+          description: "Unix seconds — 'recent' action: only nodes ingested after this time",
+        },
+        created_before: {
+          type: "number",
+          description: "Unix seconds — 'recent' action: only nodes ingested before this time",
+        },
+        explain: {
+          type: "boolean",
+          description: "hybrid action: include per-leg retrieval scoring (legs) in the response",
+        },
+        k: {
+          type: "number",
+          description: "top_k_paths action: number of cheapest paths (default 3, cap 25)",
+        },
+        max_cost: {
+          type: "number",
+          description: "top_k_paths action: optional cost ceiling for returned paths",
         },
         include_chunks: {
           type: "boolean",
@@ -1778,6 +1816,7 @@ async function handleRetrieve(
 ): Promise<ToolResult> {
   const {
     action,
+    format,
     query,
     start_uid,
     end_uid,
@@ -1798,9 +1837,17 @@ async function handleRetrieve(
     graph_max_depth,
     confidence_min,
     salience_min,
+    article_limit,
+    valid_at,
+    created_after,
+    created_before,
+    explain,
+    k,
+    max_cost,
     agent_id,
   } = args as {
     action: string;
+    format?: string;
     query?: string;
     start_uid?: string;
     end_uid?: string;
@@ -1821,13 +1868,33 @@ async function handleRetrieve(
     graph_max_depth?: number;
     confidence_min?: number;
     salience_min?: number;
+    article_limit?: number;
+    valid_at?: string;
+    created_after?: number;
+    created_before?: number;
+    explain?: boolean;
+    k?: number;
+    max_cost?: number;
     agent_id?: string;
+  };
+
+  // Rendered-by-default for models; `format: "json"` is the raw escape, and
+  // anything the renderer doesn't recognize falls back to the raw response.
+  const rendered = (
+    raw: unknown,
+    render: (value: unknown) => string | undefined,
+  ): ToolResult => {
+    if (format === "json") return ok(raw);
+    const text = render(raw);
+    return text !== undefined
+      ? { content: [{ type: "text", text }] }
+      : ok(raw);
   };
 
   switch (action) {
     case "context":
       if (!query) return err("query is required for context retrieval");
-      return ok(
+      return rendered(
         await client.retrieveContext({
           query,
           node_limit: limit,
@@ -1836,129 +1903,157 @@ async function handleRetrieve(
           chunk_limit: include_chunks ? (limit ?? 5) : 0,
           // Scoped by default, never walled: the coding profile drops the
           // document/article leg (the "Bob Work" class of noise) unless the
-          // model opts in for a genuinely document-shaped question.
-          ...(process.env.MINDGRAPH_PROFILE === "coding" && !include_documents
-            ? { article_limit: 0 }
-            : {}),
+          // model opts in for a genuinely document-shaped question. Any
+          // profile can drop it with include_documents: false (previously a
+          // silent no-op outside coding). An EXPLICIT article_limit is at
+          // least as clear an opt-in as include_documents:true — it always
+          // wins over profile defaults (a coding-profile model reaching for
+          // the advertised knob must not get a silent no-op).
+          ...(article_limit !== undefined
+            ? { article_limit }
+            : include_documents === false ||
+                (process.env.MINDGRAPH_PROFILE === "coding" && !include_documents)
+              ? { article_limit: 0 }
+              : {}),
+          valid_at,
           include_graph,
           graph_expansion_limit: graph_expansion_limit ?? 3,
           graph_max_depth: graph_max_depth ?? 2,
-        } as any)
+        } as any),
+        renderContext,
       );
 
     case "text":
       if (!query) return err("query is required for text search");
-      return ok(
+      return rendered(
         await client.retrieve({
           action: "text",
           query,
           limit,
           node_types,
           layer,
+          explain,
           agent_id,
-        } as any)
+        } as any),
+        (raw) => renderNodeList(raw, `Text search: ${query}`),
       );
 
     case "semantic":
       if (!query) return err("query is required for semantic search");
-      return ok(
+      return rendered(
         await client.retrieve({
           action: "semantic",
           query,
           k: limit,
           node_types,
           layer,
+          explain,
           agent_id,
-        } as any)
+        } as any),
+        (raw) => renderNodeList(raw, `Semantic search: ${query}`),
       );
 
     case "hybrid":
       if (!query) return err("query is required for hybrid search");
-      return ok(
+      return rendered(
         await client.retrieve({
           action: "hybrid",
           query,
           k: limit,
           node_types,
           layer,
+          explain,
           agent_id,
-        } as any)
+        } as any),
+        // With explain, per-leg scoring must survive — raw JSON only.
+        explain ? () => undefined : (raw) => renderNodeList(raw, `Hybrid search: ${query}`),
       );
 
-    // Structured queries
+    // Structured queries. These go through the generic /retrieve action
+    // dispatch rather than the SDK's no-argument convenience methods — the
+    // conveniences silently dropped `limit`/`offset` (the tool advertised
+    // them; five actions ignored them).
     case "active_goals":
-      return ok(await client.getGoals());
-
     case "open_questions":
-      return ok(await client.getOpenQuestions());
-
     case "weak_claims":
-      return ok(await client.getWeakClaims());
-
     case "pending_approvals":
-      return ok(await client.getPendingApprovals());
-
     case "unresolved_contradictions":
-      return ok(await client.getContradictions());
+      return rendered(
+        await client.retrieve({
+          action,
+          limit,
+          offset,
+          agent_id,
+        } as any),
+        (raw) => renderNodeList(raw, action.replace(/_/g, " "), limit),
+      );
 
     case "stale_derivations":
-      return ok(
+      return rendered(
         await client.retrieve({
           action: "stale_derivations",
           limit,
           offset,
-        } as any)
+        } as any),
+        (raw) => renderNodeList(raw, "stale derivations", limit),
       );
 
     case "preferences":
       // With a query, returns topic-relevant preferences (the semantic leg
       // bridges low lexical overlap); without one, all preferences, most
       // salient first.
-      return ok(
+      return rendered(
         await client.retrieve({
           action: "preferences",
           ...(query ? { query, k: limit } : {}),
           limit,
           agent_id,
-        } as any)
+        } as any),
+        (raw) => renderNodeList(raw, "Preferences", limit),
       );
 
     case "layer":
       if (!layer) return err("layer is required for layer retrieval");
-      return ok(
+      return rendered(
         await client.retrieve({
           action: "layer",
           layer,
           limit,
+          node_types,
           agent_id,
-        } as any)
+        } as any),
+        (raw) => renderNodeList(raw, `Layer: ${layer}`, limit),
       );
 
     case "recent":
-      return ok(
+      return rendered(
         await client.retrieve({
           action: "recent",
           limit,
           node_types,
           confidence_min,
           salience_min,
+          created_after,
+          created_before,
           agent_id,
-        } as any)
+        } as any),
+        (raw) => renderNodeList(raw, "Recently ingested", limit),
       );
 
     // Document inventory
     case "document_index":
-      return ok(
+      return rendered(
         await client.getNodes({
           node_type: "Document",
           limit: limit ?? 100,
-        })
+        }),
+        (raw) => renderNodeList(raw, "Ingested documents"),
       );
 
     // Graph traversal
     case "chain":
       if (!start_uid) return err("start_uid is required for chain traversal");
-      return ok(
+      return rendered(
         await client.traverse({
           action: "chain",
           start_uid,
@@ -1966,12 +2061,13 @@ async function handleRetrieve(
           exclude_edge_types,
           include_provenance,
           max_nodes,
-        } as any)
+        } as any),
+        renderTraversal,
       );
 
     case "neighborhood":
       if (!start_uid) return err("start_uid is required for neighborhood traversal");
-      return ok(
+      return rendered(
         await client.traverse({
           action: "neighborhood",
           start_uid,
@@ -1981,13 +2077,14 @@ async function handleRetrieve(
           exclude_edge_types,
           include_provenance,
           max_nodes,
-        } as any)
+        } as any),
+        renderTraversal,
       );
 
     case "path":
       if (!start_uid) return err("start_uid is required for path traversal");
       if (!end_uid) return err("end_uid is required for path traversal");
-      return ok(
+      return rendered(
         await client.traverse({
           action: "path",
           start_uid,
@@ -1998,12 +2095,13 @@ async function handleRetrieve(
           exclude_edge_types,
           include_provenance,
           max_nodes,
-        } as any)
+        } as any),
+        renderTraversal,
       );
 
     case "subgraph":
       if (!start_uid) return err("start_uid is required for subgraph traversal");
-      return ok(
+      return rendered(
         await client.traverse({
           action: "subgraph",
           start_uid,
@@ -2013,7 +2111,25 @@ async function handleRetrieve(
           exclude_edge_types,
           include_provenance,
           max_nodes,
-        } as any)
+        } as any),
+        renderTraversal,
+      );
+
+    case "top_k_paths":
+      if (!start_uid) return err("start_uid is required for top_k_paths");
+      if (!end_uid) return err("end_uid is required for top_k_paths");
+      return rendered(
+        await client.traverse({
+          action: "top_k_paths",
+          start_uid,
+          end_uid,
+          k,
+          max_hops: max_depth,
+          max_cost,
+          edge_types,
+          exclude_edge_types,
+        } as any),
+        renderTraversal,
       );
 
     default:
