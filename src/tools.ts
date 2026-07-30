@@ -671,7 +671,8 @@ export const TOOLS: Tool[] = [
         },
         article_limit: {
           type: "number",
-          description: "Max wiki articles in context results (default 3; 0 disables the article leg)",
+          description:
+            "Max wiki articles in context results (default 3; 0 disables the article leg). An explicit value overrides profile defaults, including the coding profile's articles-off default.",
         },
         valid_at: {
           type: "string",
@@ -1904,12 +1905,15 @@ async function handleRetrieve(
           // document/article leg (the "Bob Work" class of noise) unless the
           // model opts in for a genuinely document-shaped question. Any
           // profile can drop it with include_documents: false (previously a
-          // silent no-op outside coding) or bound it with article_limit.
-          ...(include_documents === false ||
-          (process.env.MINDGRAPH_PROFILE === "coding" && !include_documents)
-            ? { article_limit: 0 }
-            : article_limit !== undefined
-              ? { article_limit }
+          // silent no-op outside coding). An EXPLICIT article_limit is at
+          // least as clear an opt-in as include_documents:true — it always
+          // wins over profile defaults (a coding-profile model reaching for
+          // the advertised knob must not get a silent no-op).
+          ...(article_limit !== undefined
+            ? { article_limit }
+            : include_documents === false ||
+                (process.env.MINDGRAPH_PROFILE === "coding" && !include_documents)
+              ? { article_limit: 0 }
               : {}),
           valid_at,
           include_graph,
@@ -1981,7 +1985,7 @@ async function handleRetrieve(
           offset,
           agent_id,
         } as any),
-        (raw) => renderNodeList(raw, action.replace(/_/g, " ")),
+        (raw) => renderNodeList(raw, action.replace(/_/g, " "), limit),
       );
 
     case "stale_derivations":
@@ -1991,7 +1995,7 @@ async function handleRetrieve(
           limit,
           offset,
         } as any),
-        (raw) => renderNodeList(raw, "stale derivations"),
+        (raw) => renderNodeList(raw, "stale derivations", limit),
       );
 
     case "preferences":
@@ -2005,7 +2009,7 @@ async function handleRetrieve(
           limit,
           agent_id,
         } as any),
-        (raw) => renderNodeList(raw, "Preferences"),
+        (raw) => renderNodeList(raw, "Preferences", limit),
       );
 
     case "layer":
@@ -2018,7 +2022,7 @@ async function handleRetrieve(
           node_types,
           agent_id,
         } as any),
-        (raw) => renderNodeList(raw, `Layer: ${layer}`),
+        (raw) => renderNodeList(raw, `Layer: ${layer}`, limit),
       );
 
     case "recent":
@@ -2033,7 +2037,7 @@ async function handleRetrieve(
           created_before,
           agent_id,
         } as any),
-        (raw) => renderNodeList(raw, "Recently ingested"),
+        (raw) => renderNodeList(raw, "Recently ingested", limit),
       );
 
     // Document inventory

@@ -3,8 +3,8 @@
 // The general read tools used to return the server's wire JSON verbatim,
 // pretty-printed: full typed props with every null field, unbounded
 // source-chunk offset arrays, curation edges, and retrieval-expansion
-// metadata. A single live `retrieve context` call measured ~11k tokens for
-// ~1.2k tokens of signal, and chat harnesses (ChatGPT desktop, Claude
+// metadata. A single live `retrieve context` call measured ~15k tokens for
+// ~2k tokens of signal, and chat harnesses (ChatGPT desktop, Claude
 // Desktop) burned that on every retrieval.
 //
 // This module renders read responses the way the dashboard chat formats the
@@ -14,6 +14,12 @@
 // difference: node UIDs stay in the output — MCP models chain follow-up
 // tool calls by uid, where dashboard models cite by document title.
 //
+// Wire-shape notes (verified against mindgraph-server, adversarial review
+// 2026-07-30): /retrieve text|semantic|hybrid|preferences return
+// `[{node, score, legs?}]` (SearchResult — unwrapped here); /traverse
+// top_k_paths returns `{paths: [{node_uids, labels, cost}]}`; context edges
+// use SCREAMING_SNAKE edge types while traverse serializes PascalCase.
+//
 // Rendering is for MODELS reading context. Machine-parsed surfaces
 // (mindgraph_plan, sync, code — the hooks re-sync fencing state from those
 // payloads) are never rendered, and `format: "json"` is the per-call escape
@@ -22,20 +28,31 @@
 const LABEL_MAX = 200;
 const SUMMARY_MAX = 400;
 const QUOTE_MAX = 180;
-const ARTICLE_MAX = 2_500;
-const CHUNK_MAX = 1_200;
+const ARTICLE_MAX = 6_000;
+// A full ingestion chunk is 400-800 words (~5,200 chars max) — the clip must
+// not defeat include_chunks' stated purpose (verbatim quotes, citations).
+const CHUNK_MAX = 6_000;
 const RELATIONSHIP_MAX = 40;
 const RENDER_CHAR_BUDGET = 24_000;
 
 // Curation-inbox data has its own surface (`merge_candidates`); shipping it
 // as knowledge context confused models with reviewer metadata ("LLM review:
-// related but distinct", similarity scores) — observed live.
-const CURATION_EDGE_TYPES = new Set(["POSSIBLE_DUPLICATE"]);
+// related but distinct", similarity scores) — observed live. Context
+// responses spell edge types SCREAMING_SNAKE; traverse serializes the enum
+// PascalCase — match both.
+const CURATION_EDGE_TYPES = new Set(["POSSIBLE_DUPLICATE", "PossibleDuplicate"]);
 // Infra nodes render through their own sections (articles, source tags,
 // document_index), not as graph knowledge.
 const INFRA_NODE_TYPES = new Set(["Chunk", "Document", "Article"]);
 
 type Rec = Record<string, unknown>;
+
+/** A renderable section: heading + independent items, packed item-wise
+ * against the budget so one oversized section can never blank the output. */
+interface Section {
+  heading: string;
+  items: string[];
+}
 
 function obj(value: unknown): Rec | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -62,6 +79,19 @@ function clip(value: unknown, max: number, state: { bounded: boolean }): string 
 function isNodeShaped(value: unknown): value is Rec {
   const node = obj(value);
   return Boolean(node && str(node.uid) && (str(node.label) || str(node.node_type)));
+}
+
+/** /retrieve search actions return SearchResult `{node, score, legs?}` —
+ * unwrap to the node, carrying the score along for display. */
+function unwrapSearchResult(value: unknown): Rec | undefined {
+  if (isNodeShaped(value)) return value;
+  const wrapper = obj(value);
+  const inner = obj(wrapper?.node);
+  if (inner && isNodeShaped(inner)) {
+    const score = num(wrapper!.score);
+    return score !== undefined ? { ...inner, retrieval_score: score } : inner;
+  }
+  return undefined;
 }
 
 /** Epistemics the raw JSON buries — without these a model states refuted or
@@ -125,7 +155,15 @@ function nodeLines(node: Rec, state: { bounded: boolean }): string {
   const label = clip(node.label, LABEL_MAX, state) || "(unlabeled)";
   const type = str(node.node_type) || "Node";
   const confidence = num(node.confidence);
-  const head = `- **${label}** [${str(node.uid) || "?"}] (${type}${confidence !== undefined ? `, confidence ${confidence}` : ""})${statusTag(node)}`;
+  const score = num(node.retrieval_score);
+  const parenthetical = [
+    type,
+    confidence !== undefined ? `confidence ${confidence}` : undefined,
+    score !== undefined ? `score ${Math.round(score * 100) / 100}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  const head = `- **${label}** [${str(node.uid) || "?"}] (${parenthetical})${statusTag(node)}`;
   const summary = nodeSummaryText(node, state);
   const lines = [summary && summary !== label ? `${head}: ${summary}` : head];
   const fields = layer7Fields(node, state);
@@ -149,7 +187,11 @@ function nodeLines(node: Rec, state: { bounded: boolean }): string {
   return lines.join("\n");
 }
 
-function groupedNodeSections(nodes: Rec[], state: { bounded: boolean }): string[] {
+function groupedNodeSections(
+  nodes: Rec[],
+  state: { bounded: boolean },
+  headingPrefix = "",
+): Section[] {
   const groups = new Map<string, Rec[]>();
   for (const node of nodes) {
     const type = str(node.node_type) || "Node";
@@ -157,20 +199,24 @@ function groupedNodeSections(nodes: Rec[], state: { bounded: boolean }): string[
     group.push(node);
     groups.set(type, group);
   }
-  const sections: string[] = [];
+  const sections: Section[] = [];
+  let first = true;
   for (const [type, group] of groups) {
-    sections.push(`### ${type}\n${group.map((node) => nodeLines(node, state)).join("\n")}`);
+    sections.push({
+      heading: `${first ? headingPrefix : ""}### ${type}`,
+      items: group.map((node) => nodeLines(node, state)),
+    });
+    first = false;
   }
   return sections;
 }
 
-function relationshipLines(
+function relationshipItems(
   edges: unknown[],
   labelByUid: Map<string, string>,
   state: { bounded: boolean },
 ): string[] {
   const lines: string[] = [];
-  let skippedUnknown = 0;
   for (const raw of edges) {
     const edge = obj(raw);
     if (!edge) continue;
@@ -181,10 +227,7 @@ function relationshipLines(
     if (!from || !to || from === to) continue; // self-loops are data noise
     const fromLabel = labelByUid.get(from);
     const toLabel = labelByUid.get(to);
-    if (!fromLabel || !toLabel) {
-      skippedUnknown += 1;
-      continue;
-    }
+    if (!fromLabel || !toLabel) continue;
     lines.push(`- ${fromLabel} —${type}→ ${toLabel}`);
   }
   if (lines.length > RELATIONSHIP_MAX) {
@@ -192,21 +235,50 @@ function relationshipLines(
     const extra = lines.length - RELATIONSHIP_MAX;
     return [...lines.slice(0, RELATIONSHIP_MAX), `- (+${extra} more relationships)`];
   }
-  if (skippedUnknown > 0 && lines.length === 0) return [];
   return lines;
 }
 
-/** Assemble sections whole under the budget; drop whole, never mid-item. */
-function assemble(header: string, sections: string[], state: { bounded: boolean }): string {
+/** Pack sections item-wise under the budget. A section whose heading fits
+ * gets as many whole items as fit; the rest are counted, never cut mid-item.
+ * Later sections still get a chance (no early break) — one oversized section
+ * must never blank the rest of the output. */
+function assemble(header: string, sections: Section[], state: { bounded: boolean }): string {
   const lines: string[] = [header];
   let used = header.length;
   for (const section of sections) {
-    if (used + section.length + 2 > RENDER_CHAR_BUDGET) {
+    if (section.items.length === 0 && !section.heading) continue;
+    const headingCost = section.heading.length + 2;
+    if (used + headingCost > RENDER_CHAR_BUDGET) {
       state.bounded = true;
-      break;
+      continue;
     }
-    lines.push(section);
-    used += section.length + 2;
+    let sectionUsed = 0;
+    const kept: string[] = [];
+    let dropped = 0;
+    for (const item of section.items) {
+      if (used + headingCost + sectionUsed + item.length + 1 > RENDER_CHAR_BUDGET) {
+        dropped += 1;
+        continue;
+      }
+      kept.push(item);
+      sectionUsed += item.length + 1;
+    }
+    if (kept.length === 0 && section.items.length > 0) {
+      state.bounded = true;
+      continue;
+    }
+    if (dropped > 0) {
+      state.bounded = true;
+      const marker = `(+${dropped} more not shown)`;
+      kept.push(marker);
+      sectionUsed += marker.length + 1;
+    }
+    lines.push(
+      section.items.length === 0
+        ? section.heading
+        : `${section.heading}\n${kept.join("\n")}`,
+    );
+    used += headingCost + sectionUsed;
   }
   if (state.bounded) {
     lines.push(
@@ -216,100 +288,147 @@ function assemble(header: string, sections: string[], state: { bounded: boolean 
   return lines.join("\n\n");
 }
 
+function policySections(payload: Rec, state: { bounded: boolean }): Section[] {
+  const policies = Array.isArray(payload.applicable_policies)
+    ? payload.applicable_policies
+    : [];
+  if (policies.length === 0) return [];
+  const items = policies
+    .map((raw) => obj(raw))
+    .filter((policy): policy is Rec => Boolean(policy))
+    .map((policy) => {
+      // prose_rules is Vec<String> on the wire.
+      const rules = Array.isArray(policy.prose_rules)
+        ? policy.prose_rules.map(String).join("; ")
+        : policy.prose_rules;
+      return `- ${str(policy.name) || "(unnamed policy)"}: ${clip(rules, SUMMARY_MAX, state) || "(structured rules apply)"}`;
+    });
+  return [{ heading: "## Applicable policies", items }];
+}
+
+function hiddenSections(payload: Rec): Section[] {
+  const hidden = payload.hidden_item_count;
+  if (hidden === undefined || hidden === null) return [];
+  return [
+    {
+      heading: `Note: ${hidden} item(s) were hidden by access scoping.`,
+      items: [],
+    },
+  ];
+}
+
 /** Render a /retrieve/context response. */
 export function renderContext(response: unknown): string | undefined {
   const payload = obj(response);
   if (!payload) return undefined;
   const graph = obj(payload.graph);
   const rawNodes = Array.isArray(graph?.nodes) ? graph!.nodes : [];
-  const nodes = rawNodes.filter(isNodeShaped).filter(
-    (node) => !INFRA_NODE_TYPES.has(str(node.node_type) || ""),
-  );
+  const shaped = rawNodes.filter(isNodeShaped);
+  const nodes = shaped.filter((node) => !INFRA_NODE_TYPES.has(str(node.node_type) || ""));
+  const infraOnly = shaped.length - nodes.length;
   const articles = Array.isArray(payload.articles) ? payload.articles : [];
   const chunks = Array.isArray(payload.chunks) ? payload.chunks : [];
-  const policies = Array.isArray(payload.applicable_policies)
-    ? payload.applicable_policies
-    : [];
-  if (nodes.length === 0 && articles.length === 0 && chunks.length === 0) {
-    return "No results found for this search.";
-  }
   const state = { bounded: false };
-  const sections: string[] = [];
+  const sections: Section[] = [];
   if (articles.length > 0) {
-    const rendered = articles
-      .map((raw) => obj(raw))
-      .filter((article): article is Rec => Boolean(article))
-      .map(
-        (article) =>
-          `### ${str(article.label) || "(untitled)"} [${str(article.uid) || "?"}]\n${clip(article.content, ARTICLE_MAX, state) || ""}`,
-      );
-    sections.push(`## Knowledge articles\n\n${rendered.join("\n\n---\n\n")}`);
+    sections.push({
+      heading: "## Knowledge articles",
+      items: articles
+        .map((raw) => obj(raw))
+        .filter((article): article is Rec => Boolean(article))
+        .map(
+          (article) =>
+            `### ${str(article.label) || "(untitled)"} [${str(article.uid) || "?"}]\n${clip(article.content, ARTICLE_MAX, state) || ""}`,
+        ),
+    });
   }
   if (nodes.length > 0) {
-    sections.push(`## Knowledge graph\n\n${groupedNodeSections(nodes, state).join("\n\n")}`);
+    sections.push(...groupedNodeSections(nodes, state, "## Knowledge graph\n\n"));
     const labelByUid = new Map<string, string>();
-    for (const node of nodes) {
-      labelByUid.set(str(node.uid)!, str(node.label) || "?");
-    }
-    const relationships = relationshipLines(
+    for (const node of nodes) labelByUid.set(str(node.uid)!, str(node.label) || "?");
+    const relationships = relationshipItems(
       Array.isArray(graph?.edges) ? graph!.edges : [],
       labelByUid,
       state,
     );
     if (relationships.length > 0) {
-      sections.push(`## Relationships\n\n${relationships.join("\n")}`);
+      sections.push({ heading: "## Relationships", items: relationships });
     }
+  } else if (infraOnly > 0) {
+    sections.push({
+      heading: `Note: ${infraOnly} document/chunk node(s) matched — use action "document_index" or include_chunks for their content.`,
+      items: [],
+    });
   }
   if (chunks.length > 0) {
-    const rendered = chunks
-      .map((raw) => obj(raw))
-      .filter((chunk): chunk is Rec => Boolean(chunk))
-      .map(
-        (chunk) =>
-          `- [${str(chunk.chunk_uid) || "?"}] from "${str(chunk.document_title) || "unknown document"}": "${clip(chunk.content, CHUNK_MAX, state) || ""}"`,
-      );
-    sections.push(`## Source excerpts\n\n${rendered.join("\n")}`);
+    sections.push({
+      heading: "## Source excerpts",
+      items: chunks
+        .map((raw) => obj(raw))
+        .filter((chunk): chunk is Rec => Boolean(chunk))
+        .map(
+          (chunk) =>
+            `- [${str(chunk.chunk_uid) || "?"}] from "${str(chunk.document_title) || "unknown document"}": "${clip(chunk.content, CHUNK_MAX, state) || ""}"`,
+        ),
+    });
   }
-  if (policies.length > 0) {
-    const rendered = policies
-      .map((raw) => obj(raw))
-      .filter((policy): policy is Rec => Boolean(policy))
-      .map(
-        (policy) =>
-          `- ${str(policy.name) || "(unnamed policy)"}: ${clip(policy.prose_rules, SUMMARY_MAX, state) || "(structured rules apply)"}`,
-      );
-    sections.push(`## Applicable policies\n\n${rendered.join("\n")}`);
+  sections.push(...policySections(payload, state));
+  sections.push(...hiddenSections(payload));
+  if (sections.length === 0) {
+    return "No results found for this search.";
   }
-  const hidden = payload.hidden_item_count;
-  if (hidden !== undefined && hidden !== null) {
-    sections.push(`Note: ${hidden} item(s) were hidden by access scoping.`);
+  if (nodes.length === 0 && articles.length === 0 && chunks.length === 0) {
+    // Policies/hidden-count/infra notes still render — an access-filtered
+    // result must not read as "nothing exists".
+    return assemble("# Retrieved context\n\nNo graph results matched this search.", sections, state);
   }
   return assemble("# Retrieved context", sections, state);
 }
 
-/** Render any response whose payload is (or contains) a list of nodes. */
-export function renderNodeList(response: unknown, title: string): string | undefined {
-  let nodes: Rec[] = [];
+/** Render any response whose payload is (or contains) a list of nodes —
+ * bare GraphNode arrays and SearchResult `{node, score}` arrays alike. */
+export function renderNodeList(
+  response: unknown,
+  title: string,
+  limit?: number,
+): string | undefined {
+  let candidates: unknown[] = [];
   if (Array.isArray(response)) {
-    nodes = response.filter(isNodeShaped);
+    candidates = response;
   } else {
     const payload = obj(response);
     if (!payload) return undefined;
     for (const key of ["nodes", "results", "items", "goals", "questions", "claims", "preferences", "documents"]) {
       const candidate = payload[key];
-      if (Array.isArray(candidate) && candidate.some(isNodeShaped)) {
-        nodes = candidate.filter(isNodeShaped);
+      if (Array.isArray(candidate) && candidate.some((entry) => unwrapSearchResult(entry))) {
+        candidates = candidate;
         break;
       }
     }
   }
+  let nodes = candidates
+    .map(unwrapSearchResult)
+    .filter((node): node is Rec => Boolean(node));
   if (nodes.length === 0) return undefined; // caller falls back to raw JSON
+  const total = nodes.length;
   const state = { bounded: false };
+  // The server ignores limit for several unscoped structured queries (up to
+  // its 200-row cap) — honor the caller's bound here.
+  if (limit !== undefined && limit > 0 && nodes.length > limit) {
+    nodes = nodes.slice(0, limit);
+    state.bounded = true;
+  }
   const sections = groupedNodeSections(nodes, state);
-  return assemble(`# ${title} (${nodes.length})`, sections, state);
+  const shown = nodes.length;
+  return assemble(
+    `# ${title} (${shown === total ? total : `${shown} of ${total}`})`,
+    sections,
+    state,
+  );
 }
 
-/** Render a traversal response: nodes + edges (+ per-path costs when present). */
+/** Render a traversal response: nodes + edges, and paths.
+ * top_k_paths wire: `{paths: [{node_uids, labels, cost}]}`. */
 export function renderTraversal(response: unknown): string | undefined {
   const payload = obj(response);
   if (!payload) return undefined;
@@ -319,41 +438,52 @@ export function renderTraversal(response: unknown): string | undefined {
   const paths = Array.isArray(payload.paths) ? payload.paths : [];
   if (nodes.length === 0 && paths.length === 0) return undefined;
   const state = { bounded: false };
-  const sections: string[] = [];
+  const sections: Section[] = [];
   const labelByUid = new Map<string, string>();
   for (const node of nodes) labelByUid.set(str(node.uid)!, str(node.label) || "?");
   if (paths.length > 0) {
-    const rendered = paths
+    const items = paths
       .map((raw) => obj(raw))
       .filter((path): path is Rec => Boolean(path))
       .map((path, index) => {
-        const hops = Array.isArray(path.nodes)
-          ? path.nodes
-              .map((hop) => {
+        const uids = Array.isArray(path.node_uids) ? path.node_uids.map(String) : [];
+        const labels = Array.isArray(path.labels)
+          ? path.labels.map(String)
+          : Array.isArray(path.nodes)
+            ? path.nodes.map((hop) => {
                 const hopNode = obj(hop);
-                return str(hopNode?.label) || labelByUid.get(str(hopNode?.uid) || "") || str(hop as unknown as string) || "?";
+                return (
+                  str(hopNode?.label) ||
+                  labelByUid.get(str(hopNode?.uid) || "") ||
+                  str(hop) ||
+                  "?"
+                );
               })
-              .join(" → ")
-          : "(path)";
-        const cost = num(path.path_cost);
+            : [];
+        const route = labels.length > 0 ? labels.join(" → ") : uids.join(" → ") || "(path)";
+        const cost = num(path.cost) ?? num(path.path_cost);
         const confidence = num(path.path_confidence);
         const meta = [
           cost !== undefined ? `cost ${cost}` : undefined,
           confidence !== undefined ? `confidence ${confidence}` : undefined,
         ].filter(Boolean);
-        return `${index + 1}. ${hops}${meta.length > 0 ? ` (${meta.join(", ")})` : ""}`;
+        const head = `${index + 1}. ${route}${meta.length > 0 ? ` (${meta.join(", ")})` : ""}`;
+        // uids ride along when labels rendered — follow-up calls need them.
+        return labels.length > 0 && uids.length > 0
+          ? `${head}\n   uids: ${uids.join(" → ")}`
+          : head;
       });
-    sections.push(`## Paths\n\n${rendered.join("\n")}`);
+    sections.push({ heading: "## Paths", items });
   }
   if (nodes.length > 0) {
-    sections.push(`## Nodes\n\n${groupedNodeSections(nodes, state).join("\n\n")}`);
-    const relationships = relationshipLines(
+    sections.push(...groupedNodeSections(nodes, state, "## Nodes\n\n"));
+    const relationships = relationshipItems(
       Array.isArray(container.edges) ? container.edges : [],
       labelByUid,
       state,
     );
     if (relationships.length > 0) {
-      sections.push(`## Relationships\n\n${relationships.join("\n")}`);
+      sections.push({ heading: "## Relationships", items: relationships });
     }
   }
   return assemble("# Graph traversal", sections, state);

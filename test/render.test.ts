@@ -157,13 +157,14 @@ describe("renderContext", () => {
     big.articles = Array.from({ length: 30 }, (_, index) => ({
       uid: `article-${index}`,
       label: `Article ${index}`,
-      content: "x".repeat(3_000),
+      content: "x".repeat(8_000),
       article_type: "entity",
     }));
     const text = renderContext(big)!;
     expect(text.length).toBeLessThan(26_000);
     expect(text).toContain("[rendered context bounded");
-    expect(text).not.toContain("x".repeat(2_600));
+    // Per-item clip enforced (ARTICLE_MAX) — no unbounded runs survive.
+    expect(text).not.toContain("x".repeat(6_100));
   });
 });
 
@@ -263,5 +264,141 @@ describe("retrieve format contract", () => {
     });
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.counts.merge_candidates).toBe(3);
+  });
+});
+
+// ── Regressions from the adversarial review (2026-07-30) — all fixtures
+// below use the REAL wire shapes quoted from mindgraph-server. ────────────
+
+describe("review regressions — real wire shapes", () => {
+  it("unwraps SearchResult {node, score} arrays (text/semantic/hybrid/preferences wire)", () => {
+    const wire = [
+      {
+        node: { uid: "n1", label: "MindGraph", node_type: "Entity", confidence: 1, props: {} },
+        score: 0.874,
+      },
+      {
+        node: { uid: "n2", label: "Claim about memory", node_type: "Claim", props: {} },
+        score: 0.61,
+      },
+    ];
+    const text = renderNodeList(wire, "Hybrid search: mindgraph")!;
+    expect(text).toContain("**MindGraph** [n1] (Entity, confidence 1, score 0.87)");
+    expect(text).toContain("**Claim about memory** [n2]");
+  });
+
+  it("renders top_k_paths' real wire: {paths: [{node_uids, labels, cost}]}", () => {
+    const text = renderTraversal({
+      mode: "top_k_paths",
+      start_uid: "a",
+      end_uid: "c",
+      k: 2,
+      paths: [
+        { node_uids: ["a", "b", "c"], labels: ["Start", "Middle", "End"], cost: 1.39 },
+        { node_uids: ["a", "c"], labels: ["Start", "End"], cost: 2.1 },
+      ],
+    })!;
+    expect(text).toContain("1. Start → Middle → End (cost 1.39)");
+    expect(text).toContain("uids: a → b → c");
+    expect(text).toContain("2. Start → End (cost 2.1)");
+  });
+
+  it("an oversized single-type section packs item-wise instead of blanking the output", () => {
+    const nodes = Array.from({ length: 50 }, (_, index) => ({
+      uid: `node-${index}`,
+      label: `${"L".repeat(170)} ${index}`,
+      node_type: "Observation",
+      props: { content: "s".repeat(390) },
+    }));
+    const text = renderNodeList(nodes, "Recently ingested")!;
+    // Items render up to the budget; the remainder is counted, not silent.
+    expect(text).toContain("[node-0]");
+    expect(text).toMatch(/\(\+\d+ more not shown\)/);
+    expect(text.length).toBeLessThan(26_000);
+  });
+
+  it("a later small section survives an oversized earlier section", () => {
+    const big = {
+      graph: {
+        nodes: Array.from({ length: 60 }, (_, index) => ({
+          uid: `node-${index}`,
+          label: `${"L".repeat(170)} ${index}`,
+          node_type: "Observation",
+          props: { content: "s".repeat(390) },
+        })),
+        edges: [],
+      },
+      chunks: [
+        {
+          chunk_uid: "chunk-final",
+          content: "small excerpt",
+          score: 1,
+          document_uid: "d",
+          document_title: "Doc",
+          chunk_index: 0,
+        },
+      ],
+    };
+    const text = renderContext(big)!;
+    expect(text).toContain("chunk-final");
+  });
+
+  it("policy prose_rules (Vec<String> on the wire) render joined", () => {
+    const text = renderContext({
+      graph: { nodes: [{ uid: "n1", label: "X", node_type: "Entity", props: {} }], edges: [] },
+      applicable_policies: [
+        { uid: "p1", name: "Data policy", prose_rules: ["Never expose PII", "Log all access"] },
+      ],
+    })!;
+    expect(text).toContain("- Data policy: Never expose PII; Log all access");
+  });
+
+  it("hidden_item_count and policies render even when the graph result is empty", () => {
+    const text = renderContext({
+      graph: { nodes: [], edges: [] },
+      hidden_item_count: "1-9",
+      applicable_policies: [{ uid: "p1", name: "Scope policy", prose_rules: ["Stay in project"] }],
+    })!;
+    expect(text).toContain("No graph results matched this search.");
+    expect(text).toContain("hidden by access scoping");
+    expect(text).toContain("Scope policy");
+    expect(text).not.toBe("No results found for this search.");
+  });
+
+  it("infra-only matches explain themselves instead of claiming no results", () => {
+    const text = renderContext({
+      graph: {
+        nodes: [{ uid: "d1", label: "Some Doc", node_type: "Document", props: {} }],
+        edges: [],
+      },
+    })!;
+    expect(text).toContain("document/chunk node(s) matched");
+  });
+
+  it("excludes PascalCase PossibleDuplicate edges (traverse wire format)", () => {
+    const text = renderTraversal({
+      nodes: [
+        { uid: "a", label: "Old obs", node_type: "Observation", props: {} },
+        { uid: "b", label: "New obs", node_type: "Observation", props: {} },
+      ],
+      edges: [
+        { uid: "e1", edge_type: "PossibleDuplicate", from_uid: "a", to_uid: "b", props: {} },
+        { uid: "e2", edge_type: "Supersedes", from_uid: "b", to_uid: "a", props: {} },
+      ],
+    })!;
+    expect(text).not.toContain("PossibleDuplicate");
+    expect(text).toContain("New obs —Supersedes→ Old obs");
+  });
+
+  it("caps rendered items at the caller's limit when the server ignores it", () => {
+    const nodes = Array.from({ length: 30 }, (_, index) => ({
+      uid: `goal-${index}`,
+      label: `Goal ${index}`,
+      node_type: "Goal",
+      props: {},
+    }));
+    const text = renderNodeList(nodes, "active goals", 5)!;
+    expect(text).toContain("# active goals (5 of 30)");
+    expect(text).not.toContain("goal-7");
   });
 });
