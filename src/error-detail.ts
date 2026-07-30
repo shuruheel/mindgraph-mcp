@@ -10,7 +10,8 @@ export function errorDetail(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-// Machine-readable conflict state (server ≥1.11.3 409 bodies). errorDetail()
+// Machine-readable conflict state (409 bodies on servers newer than
+// 1.11.2 — mindgraph-rs #41). errorDetail()
 // flattens the body into the error STRING for the model; these keys must
 // ALSO survive as JSON siblings of `error`, or the hooks' ledger re-sync can
 // never read them and a fenced session replays its stale epoch forever.
