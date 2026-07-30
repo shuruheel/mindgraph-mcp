@@ -133,9 +133,9 @@ profile):
 | `mindgraph_commit` | Goals, projects, decisions, options, milestones, and dated decision-context linkage |
 | `mindgraph_plan` | Plans, tasks, procedures, governance policies, risk assessments, executions |
 | `mindgraph_retrieve` | Context retrieval with bounded graph expansion, search, min-cost traversal, document index. Since 0.16.0, read results return as a rendered, token-bounded text block (labels, uids, summaries, epistemic status tags, relationships) — pass `format: "json"` on any call for the raw server response |
-| `mindgraph_ingest` | Chunk / document / session ingestion with LLM-powered extraction |
-| `mindgraph_synthesize` | Project-scoped cross-document synthesis — mine signals, spawn Article-generation jobs |
-| `mindgraph_ontology` | Operational Ontology (Layer 7) — typed domain objects, NL queries with provenance, extraction proposal review (approve/reject), object linking |
+| `mindgraph_ingest` | Chunk / document / session ingestion with LLM-powered extraction. `job_status` without an id renders the 20 most recent jobs (`format: "json"` for the full list) |
+| `mindgraph_synthesize` | Project-scoped cross-document synthesis — mine signals (rendered as sections since 0.17.0), spawn Article-generation jobs |
+| `mindgraph_ontology` | Operational Ontology (Layer 7) — typed domain objects, NL queries with provenance, extraction proposal review (approve/reject), object linking. Read actions render as text since 0.17.0 (`format: "json"` for raw) |
 | `mindgraph_code` *(coding profile)* | Identity-stable code anchors + live structural federation: `anchor`/`recall`/`expand`/`affected` over a local codegraph index — what the graph knows about this code, joined to who calls it |
 | `mindgraph_sync` *(coding profile)* | Idempotent, resumable import of markdown memory files (`.claude/agent-memory/**` etc.) with content-hash drift tracking, conflict surfacing, and a retirement report |
 

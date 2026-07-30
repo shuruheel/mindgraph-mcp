@@ -78,7 +78,39 @@ function clip(value: unknown, max: number, state: { bounded: boolean }): string 
 
 function isNodeShaped(value: unknown): value is Rec {
   const node = obj(value);
-  return Boolean(node && str(node.uid) && (str(node.label) || str(node.node_type)));
+  // node_type may be an externally-tagged object ({"Custom":"Customer"}) on
+  // serde-derived surfaces — presence of either form counts.
+  return Boolean(
+    node &&
+      str(node.uid) &&
+      (str(node.label) || str(node.node_type) || obj(node.node_type)),
+  );
+}
+
+/** Display type for a node across BOTH wire families: retrieve-context
+ * hand-projects (`node_type: "Customer"` string, bare props with top-level
+ * fields), while serde-derived surfaces (ontology handlers) emit externally
+ * tagged node_type ({"Custom":"Customer"}) and `_type`-tagged props with the
+ * payload under `data`. */
+function nodeDisplayType(node: Rec): string {
+  const props = obj(node.props);
+  const plain = str(node.node_type);
+  // A literal "Custom" is the container, not the domain type — prefer the
+  // specific type wherever any wire family carries it.
+  return (
+    (plain && plain !== "Custom" ? plain : undefined) ??
+    str(obj(node.node_type)?.Custom) ??
+    str(props?.object_type) ??
+    str(props?.type_name) ??
+    str(obj(props?.data)?.domain_type) ??
+    plain ??
+    "Node"
+  );
+}
+
+function nodeFields(node: Rec): Rec | undefined {
+  const props = obj(node.props);
+  return obj(props?.fields) ?? obj(obj(props?.data)?.fields);
 }
 
 /** /retrieve search actions return SearchResult `{node, score, legs?}` —
@@ -86,7 +118,10 @@ function isNodeShaped(value: unknown): value is Rec {
 function unwrapSearchResult(value: unknown): Rec | undefined {
   if (isNodeShaped(value)) return value;
   const wrapper = obj(value);
-  const inner = obj(wrapper?.node);
+  // /retrieve wraps as {node, score}; /ontology/objects/search wraps as
+  // {object, score}; /ontology/query/structured rows wrap as {object,
+  // related?}. All unwrap to the node, carrying the score when present.
+  const inner = obj(wrapper?.node) ?? obj(wrapper?.object);
   if (inner && isNodeShaped(inner)) {
     const score = num(wrapper!.score);
     return score !== undefined ? { ...inner, retrieval_score: score } : inner;
@@ -132,7 +167,7 @@ function sourceTag(node: Rec): string | undefined {
 }
 
 function layer7Fields(node: Rec, state: { bounded: boolean }): string | undefined {
-  const fields = obj(obj(node.props)?.fields);
+  const fields = nodeFields(node);
   if (!fields) return undefined;
   const pairs = Object.entries(fields)
     .filter(([, value]) => value !== null && value !== undefined && value !== "")
@@ -153,8 +188,7 @@ function nodeSummaryText(node: Rec, state: { bounded: boolean }): string | undef
 
 function nodeLines(node: Rec, state: { bounded: boolean }): string {
   const label = clip(node.label, LABEL_MAX, state) || "(unlabeled)";
-  const props = obj(node.props);
-  const type = str(props?.object_type) ?? str(node.node_type) ?? "Node";
+  const type = nodeDisplayType(node);
   const confidence = num(node.confidence);
   const score = num(node.retrieval_score);
   const parenthetical = [
@@ -195,7 +229,7 @@ function groupedNodeSections(
 ): Section[] {
   const groups = new Map<string, Rec[]>();
   for (const node of nodes) {
-    const type = str(obj(node.props)?.object_type) ?? str(node.node_type) ?? "Node";
+    const type = nodeDisplayType(node);
     const group = groups.get(type) ?? [];
     group.push(node);
     groups.set(type, group);
@@ -216,6 +250,7 @@ function relationshipItems(
   edges: unknown[],
   labelByUid: Map<string, string>,
   state: { bounded: boolean },
+  options?: { fallbackToUid?: boolean },
 ): string[] {
   const lines: string[] = [];
   for (const raw of edges) {
@@ -226,8 +261,11 @@ function relationshipItems(
     const to = str(edge.to_uid);
     if (CURATION_EDGE_TYPES.has(type)) continue;
     if (!from || !to || from === to) continue; // self-loops are data noise
-    const fromLabel = labelByUid.get(from);
-    const toLabel = labelByUid.get(to);
+    // Ontology surfaces reference endpoints outside the object list
+    // (cognitive neighbors); dropping those edges lost real information —
+    // fall back to the uid there rather than hiding the relation.
+    const fromLabel = labelByUid.get(from) ?? (options?.fallbackToUid ? `[${from}]` : undefined);
+    const toLabel = labelByUid.get(to) ?? (options?.fallbackToUid ? `[${to}]` : undefined);
     if (!fromLabel || !toLabel) continue;
     lines.push(`- ${fromLabel} —${type}→ ${toLabel}`);
   }
@@ -543,8 +581,20 @@ export function renderOntologyAnswer(response: unknown): string | undefined {
     const uid = str(node?.uid);
     if (uid && !labelByUid.has(uid)) labelByUid.set(uid, str(node?.label) || "?");
   }
+  // Cognitive neighbors carry labels too (object_context has NO graph key —
+  // without this every relation line was dropped there).
+  if (cognitive) {
+    for (const rawNodes of Object.values(cognitive)) {
+      if (!Array.isArray(rawNodes)) continue;
+      for (const raw of rawNodes) {
+        const node = obj(raw);
+        const uid = str(node?.uid);
+        if (uid && !labelByUid.has(uid)) labelByUid.set(uid, str(node?.label) || "?");
+      }
+    }
+  }
   const relations = Array.isArray(payload.relations) ? payload.relations : [];
-  const relationLines = relationshipItems(relations, labelByUid, state);
+  const relationLines = relationshipItems(relations, labelByUid, state, { fallbackToUid: true });
   if (relationLines.length > 0) {
     sections.push({ heading: "## Relations", items: relationLines });
   }
@@ -591,10 +641,20 @@ export function renderOntologyAnswer(response: unknown): string | undefined {
 export function renderObjectList(response: unknown, title: string): string | undefined {
   const payload = obj(response);
   if (!payload) return undefined;
-  const items = Array.isArray(payload.items) ? payload.items.filter(isNodeShaped) : [];
+  // `rows` counts only when its entries unwrap to nodes ({object, …} from
+  // structured related queries) — tabular select rows (arrays/scalars) are
+  // NOT an object list and must fall back to raw.
+  const rawItems = Array.isArray(payload.items)
+    ? payload.items
+    : Array.isArray(payload.rows) && payload.rows.some((row) => unwrapSearchResult(row))
+      ? payload.rows
+      : undefined;
+  const items = (rawItems ?? [])
+    .map(unwrapSearchResult)
+    .filter((node): node is Rec => Boolean(node));
   if (items.length === 0) {
     // Distinguish a legitimately empty page from an unknown shape.
-    return Array.isArray(payload.items) ? `# ${title} (0 results)` : undefined;
+    return rawItems ? `# ${title} (0 results)` : undefined;
   }
   const state = { bounded: false };
   const sections = groupedNodeSections(items, state);
@@ -660,9 +720,21 @@ export function renderSignals(response: unknown): string | undefined {
       .map((raw) => obj(raw))
       .filter((item): item is Rec => Boolean(item))
       .map((item) => {
+        const fromLabel = str(item.from_label);
+        const toLabel = str(item.to_label);
+        const anyLabelKey = Object.keys(item).find(
+          (k) => k.endsWith("_label") && str(item[k]),
+        );
         const label =
-          str(item.label) ?? str(item.title) ?? str(item.name) ?? str(item.uid) ?? "(item)";
-        const uid = str(item.uid);
+          str(item.label) ??
+          str(item.title) ??
+          str(item.name) ??
+          (fromLabel && toLabel ? `${fromLabel} ↔ ${toLabel}` : undefined) ??
+          (anyLabelKey ? str(item[anyLabelKey]) : undefined) ??
+          str(item.uid) ??
+          str(item.target_uid) ??
+          "(item)";
+        const uid = str(item.uid) ?? str(item.target_uid);
         const numbers = Object.entries(item)
           .filter(([, v]) => typeof v === "number")
           .slice(0, 4)

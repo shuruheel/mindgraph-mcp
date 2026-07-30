@@ -850,6 +850,12 @@ export const TOOLS: Tool[] = [
           type: "string",
           description: "Job ID to check status (for job_status action)",
         },
+        format: {
+          type: "string",
+          enum: ["text", "json"],
+          description:
+            "job_status without job_id: 'text' (default) renders the 20 most recent jobs; 'json' returns the full raw list.",
+        },
         agent_id: {
           type: "string",
           description: "Agent identity",
@@ -887,6 +893,12 @@ export const TOOLS: Tool[] = [
         job_id: {
           type: "string",
           description: "Job ID to poll (for action='job_status')",
+        },
+        format: {
+          type: "string",
+          enum: ["text", "json"],
+          description:
+            "signals action: 'text' (default) renders signal sections; 'json' returns the raw payload.",
         },
         agent_id: {
           type: "string",

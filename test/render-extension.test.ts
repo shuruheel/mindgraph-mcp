@@ -71,9 +71,12 @@ describe("renderObjectList", () => {
   it("renders items with totals and truncation reasons", () => {
     const text = renderObjectList(
       {
+        // TRUE search wire: items are {object, score} wrappers
+        // (ontology_handlers.rs:1347-1350) — bare nodes here previously
+        // green-lit a renderer that told models "(0 results)" on real hits.
         items: [
-          { uid: "c1", label: "ACME", node_type: "Custom", props: { object_type: "Customer" } },
-          { uid: "c2", label: "Globex", node_type: "Custom", props: { object_type: "Customer" } },
+          { object: { uid: "c1", label: "ACME", node_type: { Custom: "Customer" }, props: { _type: "Custom", type_name: "Customer", data: { fields: { region: "EMEA" } } } }, score: 0.9 },
+          { object: { uid: "c2", label: "Globex", node_type: { Custom: "Customer" }, props: { _type: "Custom", type_name: "Customer", data: {} } }, score: 0.7 },
         ],
         returned_count: 2,
         total_count: 41,
@@ -84,7 +87,9 @@ describe("renderObjectList", () => {
       "Customer search: corp",
     )!;
     expect(text).toContain("# Customer search: corp (2 of 41)");
-    expect(text).toContain("**ACME** [c1]");
+    expect(text).toContain("### Customer"); // serde-tagged type resolved
+    expect(text).toContain("**ACME** [c1] (Customer, score 0.9)");
+    expect(text).toContain("fields: region: EMEA");
     expect(text).toContain("more results exist");
     expect(text).toContain("truncated: seed_cap");
   });
@@ -196,7 +201,7 @@ describe("generated tools: schema injection + rendering", () => {
   it("search renders wire-shaped results and structured_query stays raw", async () => {
     const client = {
       searchDomainObjects: vi.fn().mockResolvedValue({
-        items: [{ uid: "c1", label: "ACME", node_type: "Custom", props: { object_type: "Customer" } }],
+        items: [{ object: { uid: "c1", label: "ACME", node_type: { Custom: "Customer" }, props: { _type: "Custom", type_name: "Customer", data: {} } }, score: 1 }],
         returned_count: 1, total_count: 1, total_count_exact: true, has_more: false, truncation_reasons: [],
       }),
       queryDomainStructured: vi.fn().mockResolvedValue({ rows: [["ACME", 3]], columns: ["name", "count"] }),
@@ -221,5 +226,71 @@ describe("renderOntologyAnswer empty result", () => {
         returned_count: 0, has_more: false, seed_cap_hit: false,
       }),
     ).toBe("No matching domain objects.");
+  });
+});
+
+
+// ── Wire-truth regressions (adversarial review round 2) ─────────────────
+
+describe("wire-truth regressions", () => {
+  it("serde-tagged Custom nodes render their domain type and data.fields", () => {
+    const text = renderNodeList(
+      [
+        {
+          uid: "c1",
+          label: "ACME",
+          node_type: { Custom: "Customer" },
+          props: { _type: "Custom", type_name: "Customer", layer: "ontology", data: { domain_type: "Customer", fields: { region: "EMEA", arr: 5 } } },
+        },
+      ],
+      "objects",
+    )!;
+    expect(text).toContain("### Customer");
+    expect(text).not.toContain("### Node");
+    expect(text).toContain("fields: region: EMEA; arr: 5");
+  });
+
+  it("object_context (no graph key) renders relations via cognitive labels and uid fallback", () => {
+    const text = renderOntologyAnswer({
+      object: { uid: "cust-1", label: "ACME", node_type: { Custom: "Customer" }, props: { _type: "Custom", type_name: "Customer", data: {} } },
+      relations: [
+        { edge_uid: "e1", from_uid: "claim-1", to_uid: "cust-1", edge_type: "ABOUT", traversal_role: "incoming", depth: 1 },
+        { edge_uid: "e2", from_uid: "cust-1", to_uid: "mystery-9", edge_type: "HAS_REQUIREMENT", traversal_role: "outgoing", depth: 1 },
+      ],
+      cognitive_context: {
+        claims: [{ uid: "claim-1", label: "ACME renewal at risk", node_type: "Claim", layer: "epistemic", depth: 1 }],
+      },
+      sources: [],
+      provenance: [],
+    })!;
+    expect(text).toContain("ACME renewal at risk —ABOUT→ ACME");
+    expect(text).toContain("ACME —HAS_REQUIREMENT→ [mystery-9]"); // uid fallback beats dropping
+  });
+
+  it("related_* structured responses ({rows: [{object}]}) render", () => {
+    const text = renderObjectList(
+      {
+        plan: {},
+        rows: [
+          { object: { uid: "r1", label: "SSO requirement", node_type: { Custom: "Requirement" }, props: { _type: "Custom", type_name: "Requirement", data: {} } } },
+        ],
+        relations: [],
+        provenance: [],
+        total_count: 1,
+      },
+      "Requirement related via HAS_REQUIREMENT",
+    )!;
+    expect(text).toContain("**SSO requirement** [r1] (Requirement)");
+  });
+
+  it("signals identify claim hubs and dialectical pairs by their real label keys", () => {
+    const text = renderSignals({
+      project_uid: "p",
+      claim_hubs: [{ target_uid: "t1", target_label: "Institutional memory thesis", claim_count: 14 }],
+      dialectical_pairs: [{ from_uid: "a", from_label: "Memory as retrieval", to_uid: "b", to_label: "Memory as reasoning" }],
+    })!;
+    expect(text).toContain("Institutional memory thesis [t1] (claim_count 14)");
+    expect(text).toContain("Memory as retrieval ↔ Memory as reasoning");
+    expect(text).not.toContain("(item)");
   });
 });
