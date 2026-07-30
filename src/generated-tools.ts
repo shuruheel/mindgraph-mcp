@@ -6,6 +6,7 @@
 // at list-time (cached, short TTL) and dispatch through the typed SDK methods.
 
 import { MindGraph } from "mindgraph";
+import { renderNodeList, renderObjectList, renderOntologyAnswer } from "./render.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 export interface GeneratedToolDescriptor {
@@ -26,8 +27,22 @@ type ToolResult = {
 };
 
 const ok = (data: unknown): ToolResult => ({
-  content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+  // Compact on purpose — pretty-printing doubled the token cost.
+  content: [{ type: "text", text: JSON.stringify(data) }],
 });
+
+// Rendered-by-default for the read mappings; format:"json" escapes; unknown
+// shapes fall back to raw. structured_query is ALWAYS raw — models copy its
+// rows/aggregates structurally.
+const rendered = (
+  format: unknown,
+  raw: unknown,
+  render: (value: unknown) => string | undefined,
+): ToolResult => {
+  if (format === "json") return ok(raw);
+  const text = render(raw);
+  return text !== undefined ? { content: [{ type: "text", text }] } : ok(raw);
+};
 const err = (message: string): ToolResult => ({
   content: [{ type: "text", text: JSON.stringify({ error: message }) }],
   isError: true,
@@ -100,10 +115,27 @@ export async function getGeneratedTools(
         );
       }
       byName.set(d.name, d);
+      // Read mappings gain the format escape hatch; the structured composite
+      // keeps its exact published schema (deny_unknown_fields server-side).
+      const inputSchema =
+        d.maps_to === "structured_query"
+          ? (d.input_schema as Tool["inputSchema"])
+          : ({
+              ...d.input_schema,
+              properties: {
+                ...(d.input_schema.properties as Record<string, unknown> | undefined),
+                format: {
+                  type: "string",
+                  enum: ["text", "json"],
+                  description:
+                    "Output format (default 'text': compact rendered block). Pass 'json' for the raw server response.",
+                },
+              },
+            } as unknown as Tool["inputSchema"]);
       tools.push({
         name: d.name,
         description: d.description,
-        inputSchema: d.input_schema as Tool["inputSchema"],
+        inputSchema,
       });
     }
     cache = { tools, byName, fetchedAt: Date.now() };
@@ -167,31 +199,41 @@ export async function handleGeneratedTool(
               value?: unknown;
             }>
           : undefined;
-        return ok(
+        return rendered(
+          args.format,
           await ontologyClient.searchDomainObjects(query, {
             schema_id: desc.schema_id,
             object_types: [desc.object_type],
             filters,
             limit,
           }),
+          (raw) => renderObjectList(raw, `${desc.object_type} search: ${query}`),
         );
       }
       case "object": {
         const uid = args.uid as string | undefined;
         if (!uid) return err(`uid is required for ${desc.name}`);
-        return ok(await ontologyClient.getDomainObject(uid, {
-          schema_id: desc.schema_id,
-          object_type: desc.object_type,
-        }));
+        return rendered(
+          args.format,
+          await ontologyClient.getDomainObject(uid, {
+            schema_id: desc.schema_id,
+            object_type: desc.object_type,
+          }),
+          (raw) => renderNodeList([raw], desc.object_type),
+        );
       }
       case "object_context": {
         const uid = args.uid as string | undefined;
         if (!uid) return err(`uid is required for ${desc.name}`);
         const depth = typeof args.depth === "number" ? args.depth : undefined;
-        return ok(await ontologyClient.getDomainObjectContext(uid, depth, {
-          schema_id: desc.schema_id,
-          object_type: desc.object_type,
-        }));
+        return rendered(
+          args.format,
+          await ontologyClient.getDomainObjectContext(uid, depth, {
+            schema_id: desc.schema_id,
+            object_type: desc.object_type,
+          }),
+          renderOntologyAnswer,
+        );
       }
       case "related": {
         const uid = args.uid as string | undefined;
@@ -204,7 +246,9 @@ export async function handleGeneratedTool(
             "related ontology tools require a graph-aware version of the mindgraph SDK",
           );
         }
-        return ok(await ontologyClient.queryRelatedDomainObjects({
+        return rendered(
+          args.format,
+          await ontologyClient.queryRelatedDomainObjects({
           schema_id: desc.schema_id,
           entry_type: desc.object_type,
           uid,
@@ -221,7 +265,9 @@ export async function handleGeneratedTool(
           include_provenance: args.include_provenance === true,
           limit: typeof args.limit === "number" ? args.limit : undefined,
           offset: typeof args.offset === "number" ? args.offset : undefined,
-        }));
+        }),
+          (raw) => renderObjectList(raw, `${desc.far_type} related via ${desc.relation}`),
+        );
       }
       case "structured_query": {
         const select = args.select as string | undefined;

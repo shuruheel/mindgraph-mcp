@@ -78,7 +78,39 @@ function clip(value: unknown, max: number, state: { bounded: boolean }): string 
 
 function isNodeShaped(value: unknown): value is Rec {
   const node = obj(value);
-  return Boolean(node && str(node.uid) && (str(node.label) || str(node.node_type)));
+  // node_type may be an externally-tagged object ({"Custom":"Customer"}) on
+  // serde-derived surfaces — presence of either form counts.
+  return Boolean(
+    node &&
+      str(node.uid) &&
+      (str(node.label) || str(node.node_type) || obj(node.node_type)),
+  );
+}
+
+/** Display type for a node across BOTH wire families: retrieve-context
+ * hand-projects (`node_type: "Customer"` string, bare props with top-level
+ * fields), while serde-derived surfaces (ontology handlers) emit externally
+ * tagged node_type ({"Custom":"Customer"}) and `_type`-tagged props with the
+ * payload under `data`. */
+function nodeDisplayType(node: Rec): string {
+  const props = obj(node.props);
+  const plain = str(node.node_type);
+  // A literal "Custom" is the container, not the domain type — prefer the
+  // specific type wherever any wire family carries it.
+  return (
+    (plain && plain !== "Custom" ? plain : undefined) ??
+    str(obj(node.node_type)?.Custom) ??
+    str(props?.object_type) ??
+    str(props?.type_name) ??
+    str(obj(props?.data)?.domain_type) ??
+    plain ??
+    "Node"
+  );
+}
+
+function nodeFields(node: Rec): Rec | undefined {
+  const props = obj(node.props);
+  return obj(props?.fields) ?? obj(obj(props?.data)?.fields);
 }
 
 /** /retrieve search actions return SearchResult `{node, score, legs?}` —
@@ -86,7 +118,10 @@ function isNodeShaped(value: unknown): value is Rec {
 function unwrapSearchResult(value: unknown): Rec | undefined {
   if (isNodeShaped(value)) return value;
   const wrapper = obj(value);
-  const inner = obj(wrapper?.node);
+  // /retrieve wraps as {node, score}; /ontology/objects/search wraps as
+  // {object, score}; /ontology/query/structured rows wrap as {object,
+  // related?}. All unwrap to the node, carrying the score when present.
+  const inner = obj(wrapper?.node) ?? obj(wrapper?.object);
   if (inner && isNodeShaped(inner)) {
     const score = num(wrapper!.score);
     return score !== undefined ? { ...inner, retrieval_score: score } : inner;
@@ -132,7 +167,7 @@ function sourceTag(node: Rec): string | undefined {
 }
 
 function layer7Fields(node: Rec, state: { bounded: boolean }): string | undefined {
-  const fields = obj(obj(node.props)?.fields);
+  const fields = nodeFields(node);
   if (!fields) return undefined;
   const pairs = Object.entries(fields)
     .filter(([, value]) => value !== null && value !== undefined && value !== "")
@@ -153,7 +188,7 @@ function nodeSummaryText(node: Rec, state: { bounded: boolean }): string | undef
 
 function nodeLines(node: Rec, state: { bounded: boolean }): string {
   const label = clip(node.label, LABEL_MAX, state) || "(unlabeled)";
-  const type = str(node.node_type) || "Node";
+  const type = nodeDisplayType(node);
   const confidence = num(node.confidence);
   const score = num(node.retrieval_score);
   const parenthetical = [
@@ -194,7 +229,7 @@ function groupedNodeSections(
 ): Section[] {
   const groups = new Map<string, Rec[]>();
   for (const node of nodes) {
-    const type = str(node.node_type) || "Node";
+    const type = nodeDisplayType(node);
     const group = groups.get(type) ?? [];
     group.push(node);
     groups.set(type, group);
@@ -215,6 +250,7 @@ function relationshipItems(
   edges: unknown[],
   labelByUid: Map<string, string>,
   state: { bounded: boolean },
+  options?: { fallbackToUid?: boolean },
 ): string[] {
   const lines: string[] = [];
   for (const raw of edges) {
@@ -225,8 +261,11 @@ function relationshipItems(
     const to = str(edge.to_uid);
     if (CURATION_EDGE_TYPES.has(type)) continue;
     if (!from || !to || from === to) continue; // self-loops are data noise
-    const fromLabel = labelByUid.get(from);
-    const toLabel = labelByUid.get(to);
+    // Ontology surfaces reference endpoints outside the object list
+    // (cognitive neighbors); dropping those edges lost real information —
+    // fall back to the uid there rather than hiding the relation.
+    const fromLabel = labelByUid.get(from) ?? (options?.fallbackToUid ? `[${from}]` : undefined);
+    const toLabel = labelByUid.get(to) ?? (options?.fallbackToUid ? `[${to}]` : undefined);
     if (!fromLabel || !toLabel) continue;
     lines.push(`- ${fromLabel} —${type}→ ${toLabel}`);
   }
@@ -276,7 +315,9 @@ function assemble(header: string, sections: Section[], state: { bounded: boolean
     lines.push(
       section.items.length === 0
         ? section.heading
-        : `${section.heading}\n${kept.join("\n")}`,
+        : section.heading
+          ? `${section.heading}\n${kept.join("\n")}`
+          : kept.join("\n"),
     );
     used += headingCost + sectionUsed;
   }
@@ -487,4 +528,228 @@ export function renderTraversal(response: unknown): string | undefined {
     }
   }
   return assemble("# Graph traversal", sections, state);
+}
+
+// ── Ontology (Layer 7) rendering ─────────────────────────────────────
+//
+// Wire shapes verified against mindgraph-server ontology_handlers.rs
+// (QueryResponse) and a live /v1/ontology/schemas probe. `objects` are full
+// GraphNodes (Custom nodes carry object_type + fields in props);
+// cognitive_context is a category → NeighborNode[] map; provenance entries
+// distinguish `anchor` (a located quotation) from `chunk_head` (context that
+// MUST NOT be presented as a quote — server contract C10).
+
+function neighborLine(value: unknown): string | undefined {
+  const node = obj(value);
+  if (!node) return undefined;
+  const label = str(node.label) || "(unlabeled)";
+  const uid = str(node.uid);
+  const type = str(node.node_type);
+  return `- ${label}${uid ? ` [${uid}]` : ""}${type ? ` (${type})` : ""}`;
+}
+
+/** Render an /ontology/query (or object-context-shaped) response. */
+export function renderOntologyAnswer(response: unknown): string | undefined {
+  const payload = obj(response);
+  if (!payload) return undefined;
+  const objects = Array.isArray(payload.objects)
+    ? payload.objects.filter(isNodeShaped)
+    : isNodeShaped(payload.object)
+      ? [payload.object as Rec]
+      : [];
+  const cognitive = obj(payload.cognitive_context);
+  const provenance = Array.isArray(payload.provenance) ? payload.provenance : [];
+  const hasQuerySignature =
+    Array.isArray(payload.objects) || obj(payload.confidence) !== undefined;
+  const cognitiveEmpty =
+    !cognitive || Object.values(cognitive).every((v) => !Array.isArray(v) || v.length === 0);
+  if (objects.length === 0 && cognitiveEmpty && provenance.length === 0) {
+    // A recognized-but-empty result renders honestly; an unknown shape
+    // falls back to raw.
+    return hasQuerySignature ? "No matching domain objects." : undefined;
+  }
+  const state = { bounded: false };
+  const sections: Section[] = [];
+  if (objects.length > 0) {
+    sections.push(...groupedNodeSections(objects, state));
+  }
+  const labelByUid = new Map<string, string>();
+  for (const node of objects) labelByUid.set(str(node.uid)!, str(node.label) || "?");
+  const graph = obj(payload.graph);
+  for (const raw of Array.isArray(graph?.nodes) ? graph!.nodes : []) {
+    const node = obj(raw);
+    const uid = str(node?.uid);
+    if (uid && !labelByUid.has(uid)) labelByUid.set(uid, str(node?.label) || "?");
+  }
+  // Cognitive neighbors carry labels too (object_context has NO graph key —
+  // without this every relation line was dropped there).
+  if (cognitive) {
+    for (const rawNodes of Object.values(cognitive)) {
+      if (!Array.isArray(rawNodes)) continue;
+      for (const raw of rawNodes) {
+        const node = obj(raw);
+        const uid = str(node?.uid);
+        if (uid && !labelByUid.has(uid)) labelByUid.set(uid, str(node?.label) || "?");
+      }
+    }
+  }
+  const relations = Array.isArray(payload.relations) ? payload.relations : [];
+  const relationLines = relationshipItems(relations, labelByUid, state, { fallbackToUid: true });
+  if (relationLines.length > 0) {
+    sections.push({ heading: "## Relations", items: relationLines });
+  }
+  if (cognitive) {
+    for (const [category, rawNodes] of Object.entries(cognitive)) {
+      if (!Array.isArray(rawNodes) || rawNodes.length === 0) continue;
+      const items = rawNodes
+        .map(neighborLine)
+        .filter((line): line is string => Boolean(line));
+      if (items.length > 0) {
+        sections.push({ heading: `### Cognitive context — ${category}`, items });
+      }
+    }
+  }
+  if (provenance.length > 0) {
+    const items = provenance
+      .map((raw) => obj(raw))
+      .filter((entry): entry is Rec => Boolean(entry))
+      .map((entry) => {
+        const span = clip(entry.text_span, QUOTE_MAX, state) || "";
+        const by = str(entry.ingested_by_name);
+        const suffix = `${by ? ` (ingested by ${by})` : ""} [source ${str(entry.source_uid) || "?"}]`;
+        // C10: chunk_head spans are context, never quotations.
+        return str(entry.span_kind) === "anchor"
+          ? `- "${span}"${suffix}`
+          : `- context: ${span}${suffix}`;
+      });
+    sections.push({ heading: "## Sources", items });
+  }
+  const confidence = num(obj(payload.confidence)?.overall);
+  const notes: string[] = [];
+  if (confidence !== undefined) notes.push(`overall confidence ${confidence}`);
+  if (payload.has_more === true) notes.push("more results exist (has_more)");
+  if (payload.seed_cap_hit === true) notes.push("seed cap hit — narrow the query for a complete set");
+  if (notes.length > 0) sections.push({ heading: `Note: ${notes.join("; ")}.`, items: [] });
+  return assemble(
+    `# Ontology results (${objects.length} object${objects.length === 1 ? "" : "s"})`,
+    sections,
+    state,
+  );
+}
+
+/** Render paged domain-object lists: search / objects / related responses. */
+export function renderObjectList(response: unknown, title: string): string | undefined {
+  const payload = obj(response);
+  if (!payload) return undefined;
+  // `rows` counts only when its entries unwrap to nodes ({object, …} from
+  // structured related queries) — tabular select rows (arrays/scalars) are
+  // NOT an object list and must fall back to raw.
+  const rawItems = Array.isArray(payload.items)
+    ? payload.items
+    : Array.isArray(payload.rows) && payload.rows.some((row) => unwrapSearchResult(row))
+      ? payload.rows
+      : undefined;
+  const items = (rawItems ?? [])
+    .map(unwrapSearchResult)
+    .filter((node): node is Rec => Boolean(node));
+  if (items.length === 0) {
+    // Distinguish a legitimately empty page from an unknown shape.
+    return rawItems ? `# ${title} (0 results)` : undefined;
+  }
+  const state = { bounded: false };
+  const sections = groupedNodeSections(items, state);
+  const total = num(payload.total_count);
+  const truncations = Array.isArray(payload.truncation_reasons)
+    ? payload.truncation_reasons.filter((reason) => typeof reason === "string")
+    : [];
+  const notes: string[] = [];
+  if (payload.has_more === true) notes.push("more results exist");
+  if (truncations.length > 0) notes.push(`truncated: ${truncations.join(", ")}`);
+  if (notes.length > 0) sections.push({ heading: `Note: ${notes.join("; ")}.`, items: [] });
+  const count = total !== undefined && total !== items.length
+    ? `${items.length} of ${total}`
+    : `${items.length}`;
+  return assemble(`# ${title} (${count})`, sections, state);
+}
+
+// ── Jobs and synthesis signals ───────────────────────────────────────
+
+const JOBS_RENDER_MAX = 20;
+
+/** Render the ingestion jobs list, newest first, bounded. */
+export function renderJobs(response: unknown): string | undefined {
+  const jobs = Array.isArray(response) ? response : obj(response)?.jobs;
+  if (!Array.isArray(jobs)) return undefined;
+  if (jobs.length === 0) return "No ingestion jobs.";
+  const state = { bounded: false };
+  const sorted = jobs
+    .map((raw) => obj(raw))
+    .filter((job): job is Rec => Boolean(job))
+    .sort((a, b) => (num(b.created_at) ?? 0) - (num(a.created_at) ?? 0));
+  const shown = sorted.slice(0, JOBS_RENDER_MAX);
+  if (shown.length < sorted.length) state.bounded = true;
+  const items = shown.map((job) => {
+    const progress = obj(job.progress);
+    const done = num(progress?.processed_chunks);
+    const totalChunks = num(progress?.total_chunks);
+    const bits = [
+      str(job.status) || "?",
+      done !== undefined && totalChunks !== undefined ? `${done}/${totalChunks} chunks` : undefined,
+      num(progress?.nodes_created) !== undefined ? `${num(progress?.nodes_created)} nodes` : undefined,
+      num(job.queue_position) !== undefined ? `queue #${num(job.queue_position)}` : undefined,
+      str(job.error) ? `error: ${clip(job.error, 160, state)}` : undefined,
+    ].filter(Boolean);
+    return `- [${str(job.id) || "?"}] ${clip(job.title, 120, state) || "(untitled)"} — ${bits.join(", ")}`;
+  });
+  return assemble(
+    `# Ingestion jobs (${shown.length}${shown.length < sorted.length ? ` of ${sorted.length}` : ""})`,
+    [{ heading: "", items }],
+    state,
+  );
+}
+
+/** Render /synthesis/signals: named arrays of typed signal items. */
+export function renderSignals(response: unknown): string | undefined {
+  const payload = obj(response);
+  if (!payload) return undefined;
+  const state = { bounded: false };
+  const sections: Section[] = [];
+  for (const [key, value] of Object.entries(payload)) {
+    if (!Array.isArray(value) || value.length === 0) continue;
+    const items = value
+      .map((raw) => obj(raw))
+      .filter((item): item is Rec => Boolean(item))
+      .map((item) => {
+        const fromLabel = str(item.from_label);
+        const toLabel = str(item.to_label);
+        const anyLabelKey = Object.keys(item).find(
+          (k) => k.endsWith("_label") && str(item[k]),
+        );
+        const label =
+          str(item.label) ??
+          str(item.title) ??
+          str(item.name) ??
+          (fromLabel && toLabel ? `${fromLabel} ↔ ${toLabel}` : undefined) ??
+          (anyLabelKey ? str(item[anyLabelKey]) : undefined) ??
+          str(item.uid) ??
+          str(item.target_uid) ??
+          "(item)";
+        const uid = str(item.uid) ?? str(item.target_uid);
+        const numbers = Object.entries(item)
+          .filter(([, v]) => typeof v === "number")
+          .slice(0, 4)
+          .map(([k, v]) => `${k} ${Math.round((v as number) * 100) / 100}`);
+        const lists = Object.entries(item)
+          .filter(([, v]) => Array.isArray(v) && (v as unknown[]).length > 0)
+          .slice(0, 2)
+          .map(([k, v]) => `${k}: ${(v as unknown[]).length}`);
+        const meta = [...numbers, ...lists].join(", ");
+        return `- ${clip(label, 160, state)}${uid && uid !== label ? ` [${uid}]` : ""}${meta ? ` (${meta})` : ""}`;
+      });
+    if (items.length > 0) {
+      sections.push({ heading: `## ${key.replace(/_/g, " ")}`, items });
+    }
+  }
+  if (sections.length === 0) return undefined;
+  return assemble("# Synthesis signals", sections, state);
 }

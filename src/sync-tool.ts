@@ -17,7 +17,7 @@ type InvocationContext = {
 };
 
 const ok = (data: unknown): ToolResult => ({
-  content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+  content: [{ type: "text", text: JSON.stringify(data) }],
 });
 
 const err = (code: string, message: string): ToolResult => ({
