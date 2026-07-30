@@ -46,7 +46,11 @@ function fakeClient() {
       }
       if (request.action === "resume_work") {
         return {
-          task: { uid: "codex-task", version: request.task_uid ? 2 : 1 },
+          task: {
+            uid: "codex-task",
+            label: `Ship the adapter (${revision})`,
+            version: request.task_uid ? 2 : 1,
+          },
           lease: {
             lease_owner_agent_id: "codex-b7",
             lease_epoch: 7,
@@ -104,7 +108,7 @@ describe("Codex normalized hook adapter", () => {
     expect(repeated).toEqual({});
     expect(
       (changed.hookSpecificOutput as Record<string, unknown>).additionalContext,
-    ).toContain('"next_action": "changed"');
+    ).toContain("Ship the adapter (changed)");
     expect(fixture.sessions[0]).toMatchObject({
       harness: "codex",
       harness_session_id: "thr_b7",
@@ -307,9 +311,11 @@ describe("Codex hook installer", () => {
     expect(owned.every((hook) => !hook.command.includes("npx"))).toBe(true);
     expect(settings.hooks.SessionStart[0].hooks[0]).toMatchObject({
       timeout: 30,
-      additionalContextLimit: 3_000,
+      additionalContextLimit: 10_000,
     });
-    expect(settings.hooks.SessionEnd[0].hooks[0].timeout).toBe(3);
+    // SessionEnd makes up to two sequential cloud calls; 3s guaranteed a
+    // leaked lease + open Session node on every cold-tenant exit.
+    expect(settings.hooks.SessionEnd[0].hooks[0].timeout).toBe(20);
 
     const removed = uninstallCodexHooks("project", root);
     expect(removed.removed).toBe(5);

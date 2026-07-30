@@ -419,7 +419,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(
-    `MindGraph MCP server v0.7.1 running on stdio (${BASE_URL})`
+    `MindGraph MCP server v${__PACKAGE_VERSION__} running on stdio (${BASE_URL})`
   );
 }
 

@@ -677,3 +677,302 @@ describe("R17 — cold SessionStart has cross-harness cloud margin", () => {
     expect(codex.hooks.SessionStart[0].hooks[0].timeout).toBe(30);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// R19–R24 pin the session-continuity audit findings (2026-07-29): ledger
+// lifecycle drift, cross-task field pairing, unclaimed-task adoption, lease
+// renewal, and conflict re-sync.
+// ─────────────────────────────────────────────────────────────────────────
+
+function continuityClient(overrides?: {
+  resume?: Record<string, unknown>;
+  plans?: Array<Record<string, unknown>>;
+}): HookClient {
+  const plans = overrides?.plans ?? [];
+  return {
+    async session() {
+      return { uid: "session-graph" };
+    },
+    async plan(request: Record<string, unknown>) {
+      plans.push(request);
+      if (request.action === "claim_task") {
+        return {
+          task_version: 2,
+          lease_epoch: 4,
+          lease_expires_at: 9_999_999_999,
+        };
+      }
+      if (request.action === "resume_work") {
+        return (
+          overrides?.resume ?? {
+            task: { uid: "ledger-task", version: request.task_uid ? 2 : 1 },
+            lease: {
+              lease_owner_agent_id: "continuity-agent",
+              lease_epoch: 3,
+              lease_expires_at: 1,
+            },
+            selection_reason: "claimed",
+            active_execution: { uid: "exec-running", status: "running" },
+          }
+        );
+      }
+      return {};
+    },
+  } as unknown as HookClient;
+}
+
+async function claimedLedger(
+  runtime: string,
+  root: string,
+  c: HookClient,
+  now?: () => number,
+) {
+  await runClaudeHook(
+    {
+      hook_event_name: "SessionStart",
+      session_id: "continuity-session",
+      cwd: root,
+      source: "startup",
+    },
+    c,
+    { agentId: "continuity-agent", runtimeDir: runtime, now },
+  );
+}
+
+async function preToolFills(
+  runtime: string,
+  root: string,
+  c: HookClient,
+  toolInput: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const out = (await runClaudeHook(
+    {
+      hook_event_name: "PreToolUse",
+      session_id: "continuity-session",
+      cwd: root,
+      tool_name: "mcp__mindgraph__mindgraph_plan",
+      tool_input: toolInput,
+    },
+    c,
+    { agentId: "continuity-agent", runtimeDir: runtime },
+  )) as { hookSpecificOutput: { updatedInput: Record<string, unknown> } };
+  return out.hookSpecificOutput.updatedInput;
+}
+
+describe("R19 — completing the task clears the ledger's work-targeting state", () => {
+  it("stops filling task fields after a successful complete_task", async () => {
+    // Failure pinned: the ledger kept taskUid/version/epoch after
+    // complete_task, so the model's next implicit resume_work was rewritten
+    // into an EXPLICIT resume of the COMPLETED task — no_eligible_work for
+    // the rest of the session, and the explicit path bypasses the
+    // extraction-provenance guard shipped for the 2026-07-29 incident.
+    const runtime = tempDir("mindgraph-r19-runtime-");
+    const root = tempDir("mindgraph-r19-root-");
+    fs.mkdirSync(path.join(root, ".git"));
+    const c = continuityClient();
+    await claimedLedger(runtime, root, c);
+    await runClaudeHook(
+      {
+        hook_event_name: "PostToolUse",
+        session_id: "continuity-session",
+        cwd: root,
+        tool_name: "mcp__mindgraph__mindgraph_plan",
+        tool_input: { action: "complete_task" },
+        tool_response: { uid: "ledger-task", version: 3, lease_released: true },
+      },
+      c,
+      { agentId: "continuity-agent", runtimeDir: runtime },
+    );
+    const updated = await preToolFills(runtime, root, c, {
+      action: "resume_work",
+    });
+    expect(updated.session_uid).toBe("session-graph");
+    expect(updated.task_uid).toBeUndefined();
+    expect(updated.expected_version).toBeUndefined();
+    expect(updated.lease_epoch).toBeUndefined();
+    expect(updated.execution_uid).toBeUndefined();
+  });
+});
+
+describe("R20 — ledger fencing state never pairs with a different model task", () => {
+  it("injects nothing but session identity when the model targets task B", async () => {
+    // Failure pinned: fills were gated only on each field's own absence, so
+    // a model call naming task B received task A's expected_version,
+    // lease_epoch and execution_uid — guaranteed version_conflict /
+    // lease_fenced 409s and cross-task execution attribution (both observed
+    // in live runtime ledgers).
+    const runtime = tempDir("mindgraph-r20-runtime-");
+    const root = tempDir("mindgraph-r20-root-");
+    fs.mkdirSync(path.join(root, ".git"));
+    const c = continuityClient();
+    await claimedLedger(runtime, root, c);
+    const other = await preToolFills(runtime, root, c, {
+      action: "claim_task",
+      task_uid: "model-chosen-task",
+    });
+    expect(other.task_uid).toBe("model-chosen-task");
+    expect(other.expected_version).toBeUndefined();
+    expect(other.lease_epoch).toBeUndefined();
+    expect(other.execution_uid).toBeUndefined();
+    // Control: the ledger task still receives the full fencing fill.
+    const own = await preToolFills(runtime, root, c, {
+      action: "checkpoint_iteration",
+    });
+    expect(own.task_uid).toBe("ledger-task");
+    expect(own.expected_version).toBe(2);
+    expect(own.lease_epoch).toBe(4);
+    expect(own.execution_uid).toBe("exec-running");
+  });
+});
+
+describe("R21 — an unclaimed surfaced task is context, not bookkeeping", () => {
+  it("adopts nothing into the ledger for a foreign backlog task", async () => {
+    // Failure pinned: SessionStart wrote the surfaced task into the ledger
+    // even when the claim gate declined it, so every capture was stamped
+    // with a task the agent never owned — and the ledger copied ANOTHER
+    // AGENT'S lease epoch as its own fencing token.
+    const runtime = tempDir("mindgraph-r21-runtime-");
+    const root = tempDir("mindgraph-r21-root-");
+    fs.mkdirSync(path.join(root, ".git"));
+    const c = continuityClient({
+      resume: {
+        task: { uid: "someone-elses-task", version: 5 },
+        lease: {
+          lease_owner_agent_id: "another-user",
+          lease_epoch: 11,
+          lease_expires_at: 1,
+        },
+        selection_reason: "in_progress",
+      },
+    });
+    await claimedLedger(runtime, root, c);
+    const updated = await preToolFills(runtime, root, c, {
+      action: "resume_work",
+    });
+    expect(updated.session_uid).toBe("session-graph");
+    expect(updated.task_uid).toBeUndefined();
+    expect(updated.lease_epoch).toBeUndefined();
+    expect(updated.expected_version).toBeUndefined();
+  });
+});
+
+describe("R22 — an expired lease is re-claimed, not heartbeaten", () => {
+  it("issues claim_task when the lease lapsed mid-session", async () => {
+    // Failure pinned: heartbeats only fired within 60s of expiry per the
+    // SERVER clock; any >TTL quiet stretch (long build, user away) expired
+    // the lease and every later heartbeat 409'd silently — durable tracking
+    // was off for the rest of the session with no recovery path.
+    const runtime = tempDir("mindgraph-r22-runtime-");
+    const root = tempDir("mindgraph-r22-root-");
+    fs.mkdirSync(path.join(root, ".git"));
+    const plans: Array<Record<string, unknown>> = [];
+    let clock = 50;
+    const c = continuityClient({
+      plans,
+      resume: {
+        task: { uid: "ledger-task", version: 1 },
+        lease: {
+          lease_owner_agent_id: "continuity-agent",
+          lease_epoch: 3,
+          // Renewed lease expires shortly after claim.
+          lease_expires_at: 100,
+        },
+        selection_reason: "claimed",
+      },
+    });
+    // Make claim return the soon-expiring lease too.
+    const base = c.plan.bind(c);
+    c.plan = async (request: Record<string, unknown>) => {
+      const response = (await base(request)) as Record<string, unknown>;
+      if (request.action === "claim_task" && clock < 100) {
+        return { ...response, lease_expires_at: 100 };
+      }
+      return response;
+    };
+    await claimedLedger(runtime, root, c, () => clock);
+    clock = 500; // Well past expiry, far beyond any heartbeat window.
+    await runClaudeHook(
+      {
+        hook_event_name: "PostToolUse",
+        session_id: "continuity-session",
+        cwd: root,
+        tool_name: "Bash",
+        tool_input: { command: "git status" },
+        tool_response: {},
+      },
+      c,
+      { agentId: "continuity-agent", runtimeDir: runtime, now: () => clock },
+    );
+    const reclaim = plans.find(
+      (request) =>
+        request.action === "claim_task" &&
+        String(request.idempotency_key || "").startsWith("hook-reclaim:"),
+    );
+    expect(reclaim).toBeDefined();
+    expect(reclaim).toMatchObject({ task_uid: "ledger-task" });
+  });
+});
+
+describe("R23 — structured conflict payloads re-sync the ledger", () => {
+  it("adopts current_version/current_epoch from a 409 body", async () => {
+    // Failure pinned: a fenced ledger replayed its stale epoch forever —
+    // error bodies carried the current state only in prose, so the hook
+    // could never self-heal and every subsequent call 409'd.
+    const runtime = tempDir("mindgraph-r23-runtime-");
+    const root = tempDir("mindgraph-r23-root-");
+    fs.mkdirSync(path.join(root, ".git"));
+    const c = continuityClient();
+    await claimedLedger(runtime, root, c);
+    await runClaudeHook(
+      {
+        hook_event_name: "PostToolUse",
+        session_id: "continuity-session",
+        cwd: root,
+        tool_name: "mcp__mindgraph__mindgraph_plan",
+        tool_input: { action: "checkpoint_iteration" },
+        tool_response: {
+          error: "version_conflict",
+          current_version: 9,
+          current_epoch: 6,
+        },
+      },
+      c,
+      { agentId: "continuity-agent", runtimeDir: runtime },
+    );
+    const updated = await preToolFills(runtime, root, c, {
+      action: "checkpoint_iteration",
+    });
+    expect(updated.expected_version).toBe(9);
+    expect(updated.lease_epoch).toBe(6);
+  });
+});
+
+describe("R24 — a PlanStep's version never clobbers the task version", () => {
+  it("ignores a bare version whose uid is not the ledger task", async () => {
+    // Failure pinned: update_status on a Plan/PlanStep returns the STEP's
+    // version at the top level; the ledger adopted it as the task version
+    // and the next fenced write 409'd against a number belonging to a
+    // different node.
+    const runtime = tempDir("mindgraph-r24-runtime-");
+    const root = tempDir("mindgraph-r24-root-");
+    fs.mkdirSync(path.join(root, ".git"));
+    const c = continuityClient();
+    await claimedLedger(runtime, root, c);
+    await runClaudeHook(
+      {
+        hook_event_name: "PostToolUse",
+        session_id: "continuity-session",
+        cwd: root,
+        tool_name: "mcp__mindgraph__mindgraph_plan",
+        tool_input: { action: "update_status" },
+        tool_response: { uid: "plan-step-7", status: "completed", version: 41 },
+      },
+      c,
+      { agentId: "continuity-agent", runtimeDir: runtime },
+    );
+    const updated = await preToolFills(runtime, root, c, {
+      action: "checkpoint_iteration",
+    });
+    expect(updated.expected_version).toBe(2);
+  });
+});

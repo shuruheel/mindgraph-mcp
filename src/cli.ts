@@ -4,7 +4,7 @@ import * as os from "os";
 import * as crypto from "crypto";
 import { execFileSync } from "child_process";
 import { MindGraph } from "mindgraph";
-import { loadHookEnv, saveHookEnv } from "./hook-env.js";
+import { loadHookEnv, saveHookEnv, stableAgentId } from "./hook-env.js";
 import {
   classifyMcpAddFailure,
   mcpAddFailureOutput,
@@ -24,6 +24,71 @@ import {
   uninstallClaudeHooks,
   uninstallCodexHooks,
 } from "./hook-installer.js";
+
+// ── Hook health marker ────────────────────────────────────────────────
+
+/**
+ * Record a hook failure where a human can find it. Hooks fail open by
+ * design (a broken hook must never block the harness), which previously
+ * meant a revoked key or persistent transport error turned session
+ * continuity off with ZERO observable signal anywhere. `mindgraph-mcp
+ * status` and support can read this file; each failure also emits one
+ * stderr line (visible in harness debug logs).
+ */
+function recordHookHealth(harness: string, error: string): void {
+  try {
+    const dir =
+      process.env.MINDGRAPH_RUNTIME_DIR ||
+      path.join(os.homedir(), ".mindgraph", "runtime");
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const file = path.join(dir, "hook-health.json");
+    let failures = 0;
+    try {
+      failures =
+        Number(JSON.parse(fs.readFileSync(file, "utf8")).consecutiveFailures) ||
+        0;
+    } catch {
+      // First failure, or an unreadable marker — start counting fresh.
+    }
+    fs.writeFileSync(
+      file,
+      `${JSON.stringify({
+        harness,
+        lastError: error.slice(0, 500),
+        lastFailureAt: new Date().toISOString(),
+        consecutiveFailures: failures + 1,
+      })}\n`,
+      { mode: 0o600 },
+    );
+  } catch {
+    // Health reporting must never break the fail-open contract.
+  }
+}
+
+/** Reset the failure counter once a hook call succeeds again. */
+function clearHookHealth(harness: string): void {
+  try {
+    const file = path.join(
+      process.env.MINDGRAPH_RUNTIME_DIR ||
+        path.join(os.homedir(), ".mindgraph", "runtime"),
+      "hook-health.json",
+    );
+    if (!fs.existsSync(file)) return;
+    const current = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!Number(current.consecutiveFailures)) return;
+    fs.writeFileSync(
+      file,
+      `${JSON.stringify({
+        harness,
+        lastOkAt: new Date().toISOString(),
+        consecutiveFailures: 0,
+      })}\n`,
+      { mode: 0o600 },
+    );
+  } catch {
+    // Health reporting must never break the fail-open contract.
+  }
+}
 
 // ── Config Paths ──────────────────────────────────────────────────────
 
@@ -264,7 +329,18 @@ function finishCodeInstall(
     console.log(
       `Installed ${result.added} and refreshed ${result.updated} MindGraph Claude Code hook entries in ${result.path}`
     );
-    const envPath = saveHookEnv({ apiKey, baseUrl, agentId });
+    const envPath = saveHookEnv({
+      apiKey,
+      baseUrl,
+      // Default the stable per-user identity only when nothing is stored —
+      // an explicit or previously persisted agentId must survive reinstalls.
+      agentId:
+        agentId ||
+        process.env.MINDGRAPH_AGENT_ID ||
+        loadHookEnv().agentId ||
+        stableAgentId(),
+      orgId: process.env.MINDGRAPH_ORG_ID,
+    });
     console.log(`Saved hook connection settings to ${envPath} (mode 600)`);
   } else {
     console.log(
@@ -547,10 +623,24 @@ async function main(): Promise<void> {
       // Hooks run with the harness's environment, which rarely carries the
       // MindGraph connection settings — persist them user-level (0600; never
       // into project settings, which get committed).
-      if (apiKey || baseUrl || agentId) {
-        const envPath = saveHookEnv({ apiKey, baseUrl, agentId });
-        console.log(`Saved hook connection settings to ${envPath} (mode 600)`);
-      } else {
+      // Always persist: the stable agent identity and org pin must reach the
+      // hook runtime even when key/url ride the environment. saveHookEnv
+      // merges, so existing stored values are never clobbered by undefined.
+      const envPath = saveHookEnv({
+        apiKey,
+        baseUrl,
+        // Default the stable per-user identity only when nothing is stored —
+        // an explicit or previously persisted agentId must survive
+        // reinstalls.
+        agentId:
+          agentId ||
+          process.env.MINDGRAPH_AGENT_ID ||
+          loadHookEnv().agentId ||
+          stableAgentId(),
+        orgId: process.env.MINDGRAPH_ORG_ID,
+      });
+      console.log(`Saved hook connection settings to ${envPath} (mode 600)`);
+      if (!apiKey && !baseUrl) {
         console.log(
           "Note: hooks resolve MINDGRAPH_API_KEY/MINDGRAPH_BASE_URL from the " +
             "environment or ~/.mindgraph/hooks.json — pass --api-key/--base-url " +
@@ -590,6 +680,7 @@ async function main(): Promise<void> {
       const hookApiKey = apiKey ?? stored.apiKey;
       const hookBaseUrl = baseUrl ?? stored.baseUrl;
       if (!hookApiKey) {
+        recordHookHealth(hookHarness, "no-api-key");
         process.stdout.write("{}\n");
         break;
       }
@@ -598,15 +689,19 @@ async function main(): Promise<void> {
         const client = new MindGraph({
           baseUrl: hookBaseUrl || "https://api.mindgraph.cloud",
           apiKey: hookApiKey,
-          orgId: process.env.MINDGRAPH_ORG_ID,
+          // Hooks run with the harness's environment, which usually lacks
+          // MINDGRAPH_ORG_ID even when the MCP registration pins it — on a
+          // multi-org key the hooks would otherwise track work in the key's
+          // DEFAULT org while the MCP tools write to the pinned one.
+          orgId: process.env.MINDGRAPH_ORG_ID || stored.orgId,
           maxRetries: 0,
           telemetrySurface: "mcp",
         });
         const hookOptions = {
-          agentId:
-            process.env.MINDGRAPH_AGENT_ID ||
-            stored.agentId ||
-            hookHarness,
+          // No harness-name fallback here: hook-core derives a stable
+          // per-user default shared by both harnesses, which is what lets a
+          // task claimed under Codex rebind under Claude Code.
+          agentId: process.env.MINDGRAPH_AGENT_ID || stored.agentId,
         };
         const output =
           hookHarness === "codex"
@@ -621,7 +716,19 @@ async function main(): Promise<void> {
                 hookOptions
               );
         process.stdout.write(`${JSON.stringify(output)}\n`);
-      } catch {
+        clearHookHealth(hookHarness);
+      } catch (error) {
+        // Still fail open — but not silently. The marker file plus one
+        // stderr line are the ONLY observable difference between "hooks are
+        // healthy" and "continuity has been off for a week because the key
+        // was revoked".
+        recordHookHealth(
+          hookHarness,
+          (error as Error)?.message || "hook failed",
+        );
+        console.error(
+          `mindgraph-hook: failing open (${(error as Error)?.message || "unknown error"})`,
+        );
         process.stdout.write("{}\n");
       }
       break;
