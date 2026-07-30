@@ -383,8 +383,10 @@ function renderBrief(
     if (blockerLines.length) lines.push(`Blockers:\n${blockerLines.join("\n")}`);
     const active = object(brief?.active_execution);
     if (active) {
+      const iteration =
+        number(active.iteration) ?? number(object(active.props)?.iteration);
       lines.push(
-        `Active execution: [${string(active.uid) || "?"}] iteration ${number(object(active.props)?.iteration) ?? "?"} still running from a prior session — checkpoint or abandon it.`,
+        `Active execution: [${string(active.uid) || "?"}] iteration ${iteration ?? "?"} still running from a prior session — checkpoint or abandon it.`,
       );
     }
     const poison = object(brief?.poison_task) || string(brief?.warning);
