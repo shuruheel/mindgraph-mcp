@@ -2,6 +2,165 @@
 
 ## Unreleased
 
+## 0.15.0 (2026-07-30)
+
+### Added
+
+- **Hook failures are now observable instead of silent.** Hooks still fail
+  open — a revoked key, an unreachable server, or no key at all never blocks
+  the harness — but every failure writes
+  `~/.mindgraph/runtime/hook-health.json` (harness, last error, timestamp,
+  consecutive-failure count) and one `mindgraph-hook: failing open (…)` line
+  to stderr, where the harness debug log picks it up. The counter resets on
+  the next successful hook run. Until now, continuity could be off for days
+  — no brief, no session, no lease renewal — with nothing anywhere to look
+  at. Override the marker location with `MINDGRAPH_RUNTIME_DIR`.
+
+### Changed
+
+- **BREAKING (identity): the default agent id is now a stable per-user value
+  (`u-<hash of user@host>`) instead of the harness name.** The harness-name
+  default made cross-harness resume — the headline promise — impossible: a
+  task leased by agent `codex` failed the own-prior-work gate under agent
+  `claude-code`, so the work never came back in the other harness. It also
+  made every Claude Code session on every machine one logical agent. The
+  same identity is now resolved by the hooks, the `install-code`
+  registration, and the `serve` path (they previously disagreed, so the
+  model's fenced tool calls and the hook's lease were two different agents on
+  the server and fought each other with 409s). **Re-run `mindgraph-mcp
+  install-hooks` for each harness you use** — it persists the id to
+  `~/.mindgraph/hooks.json` and refreshes the hook budgets below. Leases
+  claimed under the old default still rebind through a transitional
+  compatibility path, restricted to the same harness's legacy name so no
+  teammate's expired legacy lease can be seized; it drains itself as sessions
+  re-claim under the stable id, and will be removed in a later release. To
+  keep the old identity exactly, pass `--agent-id claude-code` (or set
+  `MINDGRAPH_AGENT_ID`), which overrides the default as before.
+- **Hook time budgets now match cold-tenant reality.** SessionEnd 8s → 30s
+  and PostToolUse 5s → 10s (both await a cloud round-trip that fires exactly
+  when the tenant is cold — lease renewal on post-idle reclaim, and
+  abandon+close at exit); PreToolUse 3s → 5s (first-call repository
+  resolution over a large multi-repo workspace plus three git probes; a
+  killed PreToolUse means the tool call goes through untagged). Codex's
+  `additionalContextLimit` goes 3,000 → 10,000: at 3,000 the harness applied
+  a second, tighter truncation the brief renderer knew nothing about. Codex
+  SessionEnd stays at 3s because that is a platform cap the configured
+  timeout cannot raise — the Codex adapter now makes at most one cloud call
+  there, releasing the lease (which blocks other sessions) and skipping the
+  session close (a stale-open Session node is benign, since session open is
+  an identity upsert). Existing installs keep their old budgets until you
+  re-run `install-hooks`.
+
+### Fixed
+
+- **The injected work brief no longer truncates away the task it exists to
+  deliver.** The brief was a raw `JSON.stringify` dump capped at 8,900
+  characters, and the server serializes keys alphabetically — so `task`,
+  `selection_reason`, and `lease` sorted last and were cut out while verbose
+  full-node JSON survived, leaving the remainder sliced mid-string into
+  unparseable JSON (observed live 2026-07-29). The brief is now rendered:
+  the task leads with its uid, status, priority and version, followed by
+  claim state, goal, next steps, blockers, and any still-running execution
+  from a prior session. Each item is clipped against its own limit, optional
+  context sections (relevant knowledge, code targets) are dropped whole
+  rather than cut mid-item, and whenever anything was clipped or dropped the
+  brief says so and tells the model to fetch full content by uid — so a
+  bounded brief is never mistaken for a complete one. When the server reports
+  tasks filtered out by repository scope, the brief now names the count
+  ("N durable task(s) exist outside this repository scope"), and a scope
+  resolution that failed is stated in the brief rather than silently
+  narrowing what the model sees.
+- **SessionStart anchors a repository identity that does not exist yet
+  instead of running unscoped.** Only `existing` identities used to
+  contribute to the scope filter, so the first session in a repository whose
+  identity had never been anchored ran with no scope at all and mixed other
+  repositories' tasks into its brief (caught by the E2E: a task scoped to one
+  repo surfaced in another's session). An `absent` identity is now anchored
+  through the same idempotent upsert `create_task` uses. Resolutions that
+  genuinely error are collected and reported (stderr plus the brief note
+  above) instead of quietly emptying the scope — that silent emptying was the
+  amplifier in the 2026-07-29 auto-claim incident.
+- **A live lease is never taken over by a new session.** SessionStart
+  re-claims the agent's own prior work, but a lease that is still live
+  belongs to whichever session claimed it; claiming from a second session
+  fenced the first out mid-work. It now re-claims a live lease only when this
+  very session already holds it (compact/resume re-entry, matched on task uid
+  and lease epoch). Released servers rebind a same-owner live lease without
+  `allow_takeover`, so this client-side gate is what preserves mutual
+  exclusion today; the paired server change (mindgraph-rs #41) requires the
+  flag.
+- **The hook ledger tracks only work this session actually owns.** It used to
+  adopt whatever the brief surfaced, so a merely-surfaced task became the
+  provenance target stamped on every capture, and a foreign lease epoch was
+  copied as this session's fencing token (both observed live). Work-targeting
+  state is now written only on a successful claim. `complete_task` clears it:
+  a retained task uid turned every later implicit `resume_work` into an
+  explicit resume of the completed task — permanent `no_eligible_work` — and
+  bypassed the extraction-provenance guard. A deliberate `claim_task` onto a
+  different task rebinds the ledger and drops the previous task's version,
+  epoch and execution rather than leaving them as fallbacks. Only a genuinely
+  `running` execution is adopted as the active iteration, so SessionEnd no
+  longer tries to abandon a completed one.
+- **Fenced fields are only injected where they apply.** `expected_version`,
+  `lease_epoch` and `execution_uid` are now filled from the ledger only when
+  the model's own call targets the ledger's task, and only for the plan
+  actions the server actually fences (`claim_task`, `heartbeat`,
+  `start_iteration`, `checkpoint_iteration`, `block_task`, `complete_task`,
+  `abandon_iteration`). Live ledgers showed task-B calls carrying task-A's
+  version, epoch and execution — guaranteed 409s plus cross-task execution
+  attribution — and the old gate compared the value the hook had just
+  injected, making it self-satisfying, so a non-task action such as
+  `update_status` on a PlanStep received the task's `expected_version` and
+  409'd against the wrong node. Relatedly, a PlanStep's own `version` no
+  longer overwrites the tracked task version: a bare `version` is accepted
+  only when the response is the task itself.
+- **A conflict now re-syncs the ledger instead of replaying a stale fence
+  forever.** Structured 409 bodies were unreachable through the tool error
+  envelope, which flattened everything into one prose string. Tool errors
+  carrying machine-readable conflict state now spread `current_version`,
+  `current_epoch`, `lease_expires_at` and `lease_owner_agent_id` as JSON
+  siblings of `error`, and the hooks adopt them on the next call. This
+  requires a server that sends those bodies (any mindgraph-server release
+  newer than 1.11.2 — the resume-loop hardening, mindgraph-rs #41); older
+  servers still get the prose.
+- **A lease survives a quiet stretch mid-session.** Renewal was driven only
+  by the server's expiry timestamp and only from PostToolUse, so a lagging
+  client clock never triggered it and any pause longer than the lease TTL
+  ended durable tracking for the rest of the session. Renewal now fires on
+  either signal — imminent expiry or three minutes since the last successful
+  renewal — and a lease that has already lapsed is re-claimed (bumping the
+  epoch) rather than heartbeaten into a certain 409. A renewal whose response
+  lands after the model has rebound or completed is discarded instead of
+  stamping the old task's fence onto the new one, and the model's own
+  heartbeats count as renewals so the hook does not double up on its cadence.
+- **Hooks no longer track work in the wrong tenant.** They run with the
+  harness's environment, which usually lacks `MINDGRAPH_ORG_ID` even when the
+  MCP registration pins it — so on a multi-org key the hooks opened sessions
+  and claimed leases in the key's default org while the MCP tools wrote to
+  the pinned one. `install-hooks` / `install-code` now persist the org pin
+  alongside the key. It follows the install environment exactly: installing
+  without `MINDGRAPH_ORG_ID` clears a stale pin instead of letting it outlive
+  every reinstall.
+- **Session bookkeeping survives a slow SessionStart.** The session uid is
+  written to the ledger before the resume/claim round-trips, so a harness
+  timeout later in that flow can no longer leave a session PreToolUse cannot
+  tag and SessionEnd cannot close (observed live: ledgers with real activity
+  and a null session uid, every capture in them orphaned). Ledger lock
+  waiters also wait 4s against a 3s stale-lock reclaim; they previously gave
+  up after 500ms against a 10s reclaim, so a lock orphaned by a harness kill
+  silently sent every hook to a throwaway default ledger.
+- **The end-of-session reflection nudge fires on the right signals.** Shell
+  commands are no longer counted as mutations: the `Bash` tool input has no
+  MindGraph `action` field, so the old `action !== "read"` test scored every
+  `git status` as a code change (while Codex's differently-named shell tool
+  scored nothing) — worktree drift already detects shell-driven changes on
+  both harnesses. And only reflective writes now satisfy the nudge — a
+  `lesson` or `journal` capture, a resolved decision, a risk assessment —
+  matching what the nudge actually asks for; creating an Entity or Source no
+  longer counts as memory of the work.
+- **The startup line reports the running version.** It announced `v0.7.1`
+  regardless of what was installed.
+
 ## 0.14.9 (2026-07-29)
 
 ### Fixed

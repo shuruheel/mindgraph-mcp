@@ -551,7 +551,7 @@ function isOwnPriorWork(
     return true;
   }
   const owner = string(object(brief?.lease)?.lease_owner_agent_id);
-  // Transition compatibility, REMOVE in 0.15: before the stable per-user
+  // Transition compatibility, REMOVE in 0.16: before the stable per-user
   // default, agent_id fell back to the harness name, so pre-upgrade leases
   // are owned by "claude-code"/"codex". Accept only THIS harness's legacy
   // name — accepting both would let any teammate's expired legacy lease
@@ -959,7 +959,7 @@ async function postTool(
           }
         }
       } else if (aboutLedgerTask) {
-        // Structured conflict payloads (server ≥1.11.3) carry the current
+        // Structured conflict payloads (servers newer than 1.11.2) carry the
         // fencing state; adopting it lets the next call succeed instead of
         // replaying the stale fence forever.
         ledger.taskVersion =

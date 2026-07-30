@@ -315,6 +315,28 @@ function printStatus(): void {
   console.log(
     `MINDGRAPH_BASE_URL: ${process.env.MINDGRAPH_BASE_URL || "https://api.mindgraph.cloud (default)"}`
   );
+
+  // Hook health — the one observable trace of fail-open hook failures.
+  try {
+    const healthFile = path.join(
+      process.env.MINDGRAPH_RUNTIME_DIR ||
+        path.join(os.homedir(), ".mindgraph", "runtime"),
+      "hook-health.json",
+    );
+    if (fs.existsSync(healthFile)) {
+      const health = JSON.parse(fs.readFileSync(healthFile, "utf8"));
+      const failures = Number(health.consecutiveFailures) || 0;
+      console.log(
+        failures > 0
+          ? `Hooks: FAILING (${failures} consecutive; last: ${health.lastError} at ${health.lastFailureAt})`
+          : `Hooks: healthy (last recovery ${health.lastOkAt || "unknown"})`,
+      );
+    } else {
+      console.log("Hooks: no health marker (no hook failures recorded)");
+    }
+  } catch {
+    console.log("Hooks: health marker unreadable");
+  }
 }
 
 function withHooksFlag(): boolean {

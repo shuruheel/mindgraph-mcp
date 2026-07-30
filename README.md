@@ -189,7 +189,7 @@ teammates one logical agent, which claims each other's work).
 | `MINDGRAPH_BASE_URL` | `https://api.mindgraph.cloud` | Override for self-hosted deployments |
 | `MINDGRAPH_PROFILE` | `general` | `coding` exposes `mindgraph_code`/`mindgraph_sync` and the work composites |
 | `MINDGRAPH_HARNESS` | `generic` | `claude-code` / `codex` — adapter selection and provenance |
-| `MINDGRAPH_AGENT_ID` | `mcp` | Stamped onto every node/edge written by the MCP — useful for provenance across multiple agents |
+| `MINDGRAPH_AGENT_ID` | *(stable per-user id)* | Agent identity stamped on every write and used for durable-work leases. Defaults to a stable `u-<hash>` derived from user@host, shared by the hooks, the registration, and the serve path — set explicitly for cross-device continuity or per-teammate identities |
 | `MINDGRAPH_ORG_ID` | *(unset)* | Pin operations to a specific organization when a key has access to more than one |
 | `MINDGRAPH_CODEGRAPH_BIN` | *(auto)* | Explicit path to the codegraph binary (PATH and `~/.local/bin` are probed) |
 
@@ -202,7 +202,7 @@ Once installed, start asking Claude about your knowledge graph naturally:
 > "Ingest this PDF and extract the main claims."
 > "Find entities mentioned across multiple project documents, then spin up a synthesis."
 
-The server auto-injects `agent_id: "mcp"` on every write so you always know which nodes came from your MCP sessions.
+The server auto-injects your agent identity on every write so you always know which nodes came from your MCP sessions — the same identity the session hooks use for durable-work leases, so work claimed in one harness resumes in the other.
 
 ## Architecture
 
