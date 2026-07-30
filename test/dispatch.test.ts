@@ -567,19 +567,22 @@ describe("mindgraph_retrieve dispatch", () => {
     }
   });
 
-  it("structured retrieves route to dedicated getters", async () => {
-    const map: Array<[string, string]> = [
-      ["active_goals", "getGoals"],
-      ["open_questions", "getOpenQuestions"],
-      ["weak_claims", "getWeakClaims"],
-      ["pending_approvals", "getPendingApprovals"],
-      ["unresolved_contradictions", "getContradictions"],
-      ["stale_derivations", "retrieve"],
+  it("structured retrieves route through generic retrieve() and forward limit", async () => {
+    // The no-argument SDK conveniences (getGoals etc.) silently dropped the
+    // limit/offset the tool schema advertised — five actions ignored them.
+    const actions = [
+      "active_goals",
+      "open_questions",
+      "weak_claims",
+      "pending_approvals",
+      "unresolved_contradictions",
+      "stale_derivations",
     ];
-    for (const [action, method] of map) {
+    for (const action of actions) {
       const c = makeClient();
-      await handleTool(c, "mindgraph_retrieve", { action });
-      expect(c[method], `${action} -> ${method}`).toHaveBeenCalledTimes(1);
+      await handleTool(c, "mindgraph_retrieve", { action, limit: 7 });
+      expect(c.retrieve, `${action} -> retrieve`).toHaveBeenCalledTimes(1);
+      expect(c.retrieve.mock.calls[0][0]).toMatchObject({ action, limit: 7 });
     }
   });
 
@@ -834,7 +837,7 @@ describe("unknown tool / unknown action handling", () => {
   });
 
   it("a thrown client error is caught and returned as an isError result", async () => {
-    client.getGoals.mockRejectedValueOnce(new Error("boom"));
+    client.retrieve.mockRejectedValueOnce(new Error("boom"));
     const r = await handleTool(client, "mindgraph_retrieve", { action: "active_goals" });
     expect(r.isError).toBe(true);
     expect(payload(r).error).toBe("boom");
