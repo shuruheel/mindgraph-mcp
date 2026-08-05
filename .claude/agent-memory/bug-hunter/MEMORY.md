@@ -1,2 +1,3 @@
 - [Extraction retry/escalation invariants](extraction_retry_escalation.md) — pipeline.rs call_llm_with_retries + run_single_pass: where the fragile arithmetic and classification edges live
 - [Dedup supersession idempotency](dedup_supersession.md) — ingestion.rs dedup updates→Supersedes edge: routed/have_* sets, edge orientation, entity downgrade
+- [Hook continuity loop fragility](fragile_hook_continuity_loop.md) — hook-core.ts + runtime ledger: the 5 recurring shapes (alphabetical-order truncation, unowned adoption, tuple incoherence, no self-heal, cold-latency budgets)
