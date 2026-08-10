@@ -3,7 +3,12 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { MindGraph } from "mindgraph";
-import { CodegraphAdapter, type RepositoryIdentity } from "./codegraph.js";
+import {
+  CodegraphAdapter,
+  invocationCwd,
+  pathContains,
+  type RepositoryIdentity,
+} from "./codegraph.js";
 import { errorDetail } from "./error-detail.js";
 
 type ToolResult = {
@@ -102,17 +107,39 @@ function safePath(root: string, candidate: string): string {
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error(`path escapes repository root: ${candidate}`);
   }
+  if (fs.existsSync(absolute)) {
+    // The lexical check above cannot see symlinks; content reads must never
+    // leave the repository through one.
+    if (!pathContains(realPathOf(root), realPathOf(absolute))) {
+      throw new Error(`path escapes repository root via symlink: ${candidate}`);
+    }
+  }
   return absolute;
 }
 
-function markdownFiles(target: string): string[] {
+function realPathOf(target: string): string {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+function markdownFiles(
+  target: string,
+  realRoot: string,
+  visited = new Set<string>(),
+): string[] {
   if (!fs.existsSync(target)) return [];
+  const real = realPathOf(target);
+  if (!pathContains(realRoot, real)) return [];
   const stat = fs.statSync(target);
   if (stat.isFile()) return target.endsWith(".md") ? [target] : [];
-  if (!stat.isDirectory()) return [];
+  if (!stat.isDirectory() || visited.has(real)) return [];
+  visited.add(real);
   return fs
     .readdirSync(target, { withFileTypes: true })
-    .flatMap((entry) => markdownFiles(path.join(target, entry.name)));
+    .flatMap((entry) => markdownFiles(path.join(target, entry.name), realRoot, visited));
 }
 
 function fileDescriptor(root: string, absolute: string) {
@@ -136,9 +163,7 @@ export async function handleSyncTool(
   try {
     const action = String(args.action || "");
     const context = (args.invocation_context || {}) as InvocationContext;
-    const adapter = new CodegraphAdapter({
-      cwd: context.cwd || process.cwd(),
-    });
+    const adapter = new CodegraphAdapter({ cwd: invocationCwd(args) });
     const requestedRepo =
       typeof args.repo === "string"
         ? args.repo
@@ -156,6 +181,12 @@ export async function handleSyncTool(
         args.workspace === true
           ? await adapter.resolveRepositories()
           : [repository];
+      if (args.workspace === true && repositories.length === 0) {
+        return err(
+          "workspace_not_configured",
+          `workspace scan found no declared repositories: ${adapter.workspaceDiagnostic()}`,
+        );
+      }
       const requested =
         Array.isArray(args.paths) && args.paths.length > 0
           ? args.paths.map(String)
@@ -227,10 +258,11 @@ async function scanRepository(
   provider: string,
   agentId: unknown,
 ) {
+  const realRoot = realPathOf(repository.repoRoot);
   const files = [
     ...new Set(
       requested.flatMap((candidate) =>
-        markdownFiles(safePath(repository.repoRoot, candidate)),
+        markdownFiles(safePath(repository.repoRoot, candidate), realRoot),
       ),
     ),
   ].sort();

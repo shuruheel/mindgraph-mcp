@@ -8,7 +8,11 @@ import {
   attachCodeRefsToToolResult,
   handleCodeTool,
 } from "../src/code-tool.js";
-import { CodegraphAdapter } from "../src/codegraph.js";
+import {
+  CodegraphAdapter,
+  UnknownRepositoryError,
+  invocationCwd,
+} from "../src/codegraph.js";
 
 const fakeBinary = resolve("test/fixtures/fake-codegraph.mjs");
 
@@ -236,6 +240,23 @@ describe("CodegraphAdapter", () => {
     expect(timedOut.availability.reason).toBe("timeout");
   });
 
+  it("never resolves an unknown repository id to the enclosing checkout", async () => {
+    const adapter = new CodegraphAdapter({ env: adapterEnv(), cwd: process.cwd() });
+    await expect(
+      adapter.resolveRepository("github.com/example/elsewhere"),
+    ).rejects.toBeInstanceOf(UnknownRepositoryError);
+    const current = await adapter.resolveRepository("github.com/example/repo");
+    expect(current.repoId).toBe("github.com/example/repo");
+  });
+
+  it("prefers the injected invocation cwd and falls back to the process cwd", () => {
+    expect(invocationCwd({ invocation_context: { cwd: "/work/repo" } })).toBe(
+      "/work/repo",
+    );
+    expect(invocationCwd({ invocation_context: "forged" })).toBe(process.cwd());
+    expect(invocationCwd({})).toBe(process.cwd());
+  });
+
   it("caches status for sixty seconds", async () => {
     let now = 0;
     const env = adapterEnv();
@@ -413,6 +434,130 @@ describe("mindgraph_code", () => {
       ]);
       expect(JSON.stringify(creates)).not.toContain(workspace);
     } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("requires an explicit space before anchoring an unconfigured repository", async () => {
+    const entity = vi.fn();
+    const client = {
+      entity,
+      traverse: vi.fn(),
+      getNode: vi.fn(),
+    } as unknown as MindGraph;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mindgraph-space-guard-"));
+    fs.mkdirSync(path.join(root, "src"), { recursive: true });
+    fs.writeFileSync(path.join(root, "src", "module.ts"), "export {};\n");
+    try {
+      const adapter = new CodegraphAdapter({
+        env: adapterEnv({
+          FAKE_CODEGRAPH_QUERY: JSON.stringify([queryHit()]),
+          MINDGRAPH_CODE_SPACE_UID: undefined,
+        }),
+        cwd: root,
+      });
+      const result = await handleCodeTool(
+        client,
+        {
+          action: "anchor",
+          code_refs: [{ path: "src/module.ts", symbol: "target" }],
+          agent_id: "agent",
+        },
+        adapter,
+      );
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content[0].text).code).toBe(
+        "missing_repository_space",
+      );
+      expect(entity).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("degrades expand when the anchor's repository is unavailable locally", async () => {
+    const getNode = vi.fn().mockResolvedValue({
+      uid: "anchor-1",
+      props: {
+        attributes: {
+          code_ref: {
+            repoId: "github.com/example/elsewhere",
+            path: "src/module.ts",
+            language: "typescript",
+            kind: "function",
+            qualifiedName: "module.target",
+            signature: null,
+            startLine: 10,
+            endLine: 20,
+          },
+        },
+      },
+    });
+    const client = {
+      entity: vi.fn(),
+      traverse: vi.fn(),
+      getNode,
+    } as unknown as MindGraph;
+    const adapter = new CodegraphAdapter({ env: adapterEnv() });
+    const result = await handleCodeTool(
+      client,
+      { action: "expand", anchor_uids: ["anchor-1"], agent_id: "agent" },
+      adapter,
+    );
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.code).toBe("repository_unavailable");
+    expect(payload.error).toContain("github.com/example/elsewhere");
+  });
+
+  it("routes through the hook-injected invocation cwd when no adapter is supplied", async () => {
+    const workspace = fs.mkdtempSync(
+      path.join(os.tmpdir(), "mindgraph-invocation-"),
+    );
+    const engine = path.join(workspace, "engine");
+    fs.mkdirSync(path.join(engine, "src"), { recursive: true });
+    fs.writeFileSync(path.join(engine, "src", "module.ts"), "export {};\n");
+    fs.mkdirSync(path.join(workspace, ".mindgraph"));
+    fs.writeFileSync(
+      path.join(workspace, ".mindgraph", "workspace.json"),
+      JSON.stringify({
+        v: 1,
+        repositories: [
+          { repo_id: "engine", root: "engine", space_uid: "space:repo:engine" },
+        ],
+      }),
+    );
+    const entity = vi.fn(async (request: Record<string, unknown>) =>
+      request.action === "relate"
+        ? { uid: "edge" }
+        : { uid: "node", created: true },
+    );
+    const client = {
+      entity,
+      traverse: vi.fn(),
+      getNode: vi.fn(),
+    } as unknown as MindGraph;
+    vi.stubEnv("MINDGRAPH_CODEGRAPH_BIN", fakeBinary);
+    vi.stubEnv("FAKE_CODEGRAPH_QUERY", JSON.stringify([queryHit()]));
+    try {
+      const result = await handleCodeTool(client, {
+        action: "anchor",
+        code_refs: [
+          { path: path.join(engine, "src", "module.ts"), symbol: "target" },
+        ],
+        agent_id: "agent",
+        invocation_context: { cwd: workspace },
+      });
+      expect(result.isError).not.toBe(true);
+      const creates = entity.mock.calls
+        .map(([request]) => request as Record<string, unknown>)
+        .filter((request) => request.action === "create");
+      expect(creates.map((request) => request.identity_space_uid)).toEqual([
+        "space:repo:engine",
+        "space:repo:engine",
+      ]);
+    } finally {
+      vi.unstubAllEnvs();
       fs.rmSync(workspace, { recursive: true, force: true });
     }
   });

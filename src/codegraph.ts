@@ -55,6 +55,32 @@ export type CodegraphUnavailableReason =
   | "index_incomplete"
   | "command_failed";
 
+/** A requested repository id matched neither the configured workspace, the
+ * current checkout, nor an existing path. Raised instead of silently
+ * resolving to the enclosing repository, which would misattribute anchors
+ * created elsewhere (e.g. on another machine) to whatever repo cwd is in. */
+export class UnknownRepositoryError extends Error {
+  constructor(readonly repo: string) {
+    super(
+      `unknown repository "${repo}": not declared in .mindgraph/workspace.json, ` +
+        "not the current repository, and no such path exists",
+    );
+    this.name = "UnknownRepositoryError";
+  }
+}
+
+/** The working directory a tool call should resolve repositories from: the
+ * hook-injected invocation_context.cwd (the live session directory) when
+ * present, else this process's cwd (where the MCP server was launched). */
+export function invocationCwd(args: Record<string, unknown>): string {
+  const context = args.invocation_context;
+  if (context && typeof context === "object" && !Array.isArray(context)) {
+    const cwd = (context as Record<string, unknown>).cwd;
+    if (typeof cwd === "string" && cwd) return cwd;
+  }
+  return process.cwd();
+}
+
 /** Caveat lines for an unavailable index. Strangers hit "absent" on their
  * first anchor; the model relays hints verbatim, so the install line is the
  * self-serve onboarding path. */
@@ -232,7 +258,7 @@ function normalizeRemote(remote: string): string | null {
   }
 }
 
-function pathContains(root: string, candidate: string): boolean {
+export function pathContains(root: string, candidate: string): boolean {
   const child = relative(root, candidate);
   return (
     child === "" ||
@@ -384,10 +410,32 @@ export class CodegraphAdapter {
           )
         : selected;
     }
-    const requestedRoot =
-      repo ||
-      this.env.MINDGRAPH_REPO_ROOT ||
-      this.cwd;
+    if (repo) {
+      const requestedPath = await realpath(resolve(this.cwd, repo)).catch(() =>
+        resolve(this.cwd, repo),
+      );
+      if (!existsSync(requestedPath)) {
+        // The request names a repository id, not a checkout path. Falling
+        // through to the enclosing repository would run codegraph against
+        // the wrong index while labeling results with the requested id.
+        const current = await this.currentRepository(fallbackSpaceUid);
+        if (current.repoId === repo) return current;
+        throw new UnknownRepositoryError(repo);
+      }
+      const repoRoot = (await this.gitRoot(requestedPath)) ?? requestedPath;
+      return this.resolveRepositoryIdentity(
+        repoRoot,
+        this.env.MINDGRAPH_REPO_ID,
+        this.env.MINDGRAPH_CODE_SPACE_UID || fallbackSpaceUid,
+      );
+    }
+    return this.currentRepository(fallbackSpaceUid);
+  }
+
+  private async currentRepository(
+    fallbackSpaceUid?: string,
+  ): Promise<RepositoryIdentity> {
+    const requestedRoot = this.env.MINDGRAPH_REPO_ROOT || this.cwd;
     const requestedPath = await realpath(resolve(this.cwd, requestedRoot)).catch(() =>
       resolve(this.cwd, requestedRoot),
     );
@@ -498,6 +546,18 @@ export class CodegraphAdapter {
       this.env,
     ).catch(() => "");
     return raw.trim() ? resolve(start, raw.trim()) : undefined;
+  }
+
+  /** Why the workspace map yielded no repositories — for callers that were
+   * explicitly asked to fan out and would otherwise return silently empty. */
+  workspaceDiagnostic(): string {
+    if (!this.workspaceFile || !existsSync(this.workspaceFile)) {
+      return (
+        "no .mindgraph/workspace.json was found between the working " +
+        "directory and the filesystem root"
+      );
+    }
+    return `${this.workspaceFile} is malformed or declares no repositories`;
   }
 
   async availability(repository: RepositoryIdentity): Promise<CodegraphAvailability> {
@@ -767,8 +827,9 @@ export class CodegraphAdapter {
           }
         }
       } catch {
-        // Invalid workspace configuration is ignored here and becomes an
-        // ordinary single-repository resolution, never an implicit sibling scan.
+        // Malformed workspace JSON contributes no repositories; it never
+        // becomes an implicit sibling scan. Workspace-dependent callers
+        // surface workspaceDiagnostic() so the failure is visible.
       }
     }
     const raw = this.env.MINDGRAPH_CODE_REPOS;
