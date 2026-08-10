@@ -31,6 +31,11 @@ function fakeClient() {
       sessions.push(request);
       return { uid: "session-graph", created: sessions.length === 1 };
     },
+    // Repository anchors resolve by default so resume stays scoped; tests
+    // for the fail-closed path override this with an "absent" response.
+    async entity() {
+      return { uid: "repository-anchor", status: "existing" };
+    },
     async plan(request) {
       plans.push(request);
       if (request.action === "claim_task") {
@@ -101,6 +106,28 @@ describe("Claude Code normalized hook adapter", () => {
     expect(plans.find((request) => request.action === "resume_work")).toMatchObject({
       scope_uids: ["repository-engine", "repository-core"],
     });
+  });
+
+  it("fails closed instead of resuming unscoped when no repository anchors resolve", async () => {
+    const cwd = tempRoot();
+    const { client, plans } = fakeClient();
+    client.entity = async () => ({ status: "absent" });
+
+    const output = await runClaudeHook(
+      {
+        session_id: "unanchored-session",
+        cwd,
+        hook_event_name: "SessionStart",
+      },
+      client,
+      { runtimeDir: path.join(cwd, "runtime") },
+    );
+    expect(plans.find((request) => request.action === "resume_work")).toBeUndefined();
+    const context = (
+      output.hookSpecificOutput as Record<string, unknown>
+    ).additionalContext as string;
+    expect(context).toContain("no_eligible_work");
+    expect(context).toContain("repository-scoped resume was skipped");
   });
 
   it("reinjects compact briefs and replaces forged invocation context", async () => {

@@ -3,7 +3,9 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { errorDetail } from "./error-detail.js";
 import {
   CodegraphAdapter,
+  UnknownRepositoryError,
   codeRefIdentityKey,
+  invocationCwd,
   repositoryIdentityKey,
   type CodeRef,
   type RepositoryIdentity,
@@ -52,7 +54,7 @@ const err = (code: string, message: string, details?: unknown): ToolResult => ({
 export const CODE_TOOL: Tool = {
   name: "mindgraph_code",
   description:
-    "Resolve typed code references through the local codegraph index and join them to persistent MindGraph memory/work. anchor creates exact repository/code anchors; recall reads attached graph context; expand reads callers/callees; affected reads impact for a code ref or Task/Execution. Ambiguous refs return candidates without writing.",
+    "Resolve typed code references through the local codegraph index and join them to persistent MindGraph memory/work. anchor creates exact repository/code anchors; recall reads attached graph context; expand reads callers/callees; affected reads impact for a code ref or Task/Execution. Ambiguous refs return candidates without writing. Refs with a path route to the repository defining that file (nearest declared root in .mindgraph/workspace.json); bare symbols resolve against the current repository only — pass path or repo to target a sibling.",
   inputSchema: {
     type: "object",
     properties: {
@@ -94,7 +96,8 @@ export const CODE_TOOL: Tool = {
       },
       repo_space_uid: {
         type: "string",
-        description: "Writable shared Project/repository Space for new anchors",
+        description:
+          "Writable shared Project/repository Space for new anchors (anchor requires this, a workspace space_uid, or MINDGRAPH_CODE_SPACE_UID)",
       },
       task_uid: { type: "string" },
       execution_uid: { type: "string" },
@@ -114,7 +117,7 @@ export const CODE_TOOL: Tool = {
 export async function handleCodeTool(
   client: MindGraph,
   args: Record<string, unknown>,
-  adapter = new CodegraphAdapter(),
+  adapter = new CodegraphAdapter({ cwd: invocationCwd(args) }),
 ): Promise<ToolResult> {
   const codeClient = client as unknown as CodeClient;
   const action = args.action as string;
@@ -125,10 +128,10 @@ export async function handleCodeTool(
     ? (args.anchor_uids as string[])
     : [];
   const agentId = typeof args.agent_id === "string" ? args.agent_id : "mcp";
+  // No implicit space: anchors written without an explicit shared space would
+  // silently fragment repository identity across per-agent private spaces.
   const fallbackSpaceUid =
-    typeof args.repo_space_uid === "string"
-      ? args.repo_space_uid
-      : `space:agent:${agentId}`;
+    typeof args.repo_space_uid === "string" ? args.repo_space_uid : undefined;
   const options = {
     repo: typeof args.repo === "string" ? args.repo : undefined,
     fallbackSpaceUid,
@@ -272,6 +275,7 @@ export async function handleCodeTool(
               : undefined;
         let graphContext: unknown;
         const graphRefs: ResolvedCodeRef[] = [];
+        let unavailableRepositories: string[] = [];
         if (targetUid) {
           graphContext = await codeClient.traverse({
             action: "neighborhood",
@@ -279,9 +283,13 @@ export async function handleCodeTool(
             depth: 2,
             max_nodes: 50,
           });
-          graphRefs.push(
-            ...(await codeRefsFromGraphContext(codeClient, adapter, graphContext)),
+          const fromGraph = await codeRefsFromGraphContext(
+            codeClient,
+            adapter,
+            graphContext,
           );
+          graphRefs.push(...fromGraph.refs);
+          unavailableRepositories = fromGraph.unavailable;
         }
         if (refs.length > 0 || anchorUids.length > 0) {
           const target = await resolveSingleTarget(
@@ -300,7 +308,13 @@ export async function handleCodeTool(
             target_uid: targetUid,
             graph_context: graphContext,
             affected: [],
-            degradation: "no materialized code anchors were attached",
+            degradation:
+              unavailableRepositories.length > 0
+                ? `attached code anchors reference repositories unavailable here: ${unavailableRepositories.join(", ")}`
+                : "no materialized code anchors were attached",
+            ...(unavailableRepositories.length > 0
+              ? { unavailable_repositories: unavailableRepositories }
+              : {}),
           });
         }
         const impacts = await Promise.all(
@@ -318,12 +332,18 @@ export async function handleCodeTool(
           graph_context: graphContext,
           impacts,
           materialized: joined,
+          ...(unavailableRepositories.length > 0
+            ? { unavailable_repositories: unavailableRepositories }
+            : {}),
         });
       }
       default:
         return err("unknown_action", `unknown mindgraph_code action: ${action}`);
     }
   } catch (cause) {
+    if (cause instanceof UnknownRepositoryError) {
+      return err("unknown_repository", cause.message);
+    }
     return err("code_tool_failed", errorDetail(cause));
   }
 }
@@ -359,6 +379,9 @@ export async function attachCodeRefsToToolResult(
       repo: args.repo,
       repo_space_uid: args.repo_space_uid,
       agent_id: args.agent_id,
+      // Keeps the default adapter anchored to the live session directory
+      // rather than wherever the MCP server process was launched.
+      invocation_context: args.invocation_context,
     },
     adapter,
   );
@@ -470,14 +493,21 @@ async function codeRefFromAnchor(
   client: CodeClient,
   adapter: CodegraphAdapter,
   uid: string,
-): Promise<ResolvedCodeRef | undefined> {
+): Promise<{ ref: ResolvedCodeRef } | { missingRepo: string } | undefined> {
   const node = await client.getNode(uid);
   const attributes = node.props?.attributes;
   if (!attributes || typeof attributes !== "object") return undefined;
   const codeRef = (attributes as Record<string, unknown>).code_ref;
   if (!isStoredCodeRef(codeRef)) return undefined;
-  const repository = await adapter.resolveRepository(codeRef.repoId);
-  return { ...codeRef, repoRoot: repository.repoRoot };
+  try {
+    const repository = await adapter.resolveRepository(codeRef.repoId);
+    return { ref: { ...codeRef, repoRoot: repository.repoRoot } };
+  } catch (cause) {
+    if (cause instanceof UnknownRepositoryError) {
+      return { missingRepo: codeRef.repoId };
+    }
+    throw cause;
+  }
 }
 
 async function resolveSingleTarget(
@@ -491,10 +521,19 @@ async function resolveSingleTarget(
     return { error: err("ambiguous_target", "expand/affected accepts exactly one code target") };
   }
   if (anchorUids.length === 1) {
-    const ref = await codeRefFromAnchor(client, adapter, anchorUids[0]);
-    return ref
-      ? { ref }
-      : { error: err("invalid_anchor", "anchor UID does not contain a typed code_ref") };
+    const outcome = await codeRefFromAnchor(client, adapter, anchorUids[0]);
+    if (!outcome) {
+      return { error: err("invalid_anchor", "anchor UID does not contain a typed code_ref") };
+    }
+    if ("missingRepo" in outcome) {
+      return {
+        error: err(
+          "repository_unavailable",
+          `repository ${outcome.missingRepo} is not checked out here or declared in .mindgraph/workspace.json; expand/affected need its local index`,
+        ),
+      };
+    }
+    return { ref: outcome.ref };
   }
   if (refs.length !== 1) {
     return { error: err("missing_code_ref", "one code_ref or anchor_uid is required") };
@@ -541,10 +580,10 @@ async function codeRefsFromGraphContext(
   client: CodeClient,
   adapter: CodegraphAdapter,
   context: unknown,
-): Promise<ResolvedCodeRef[]> {
+): Promise<{ refs: ResolvedCodeRef[]; unavailable: string[] }> {
   const uids = new Set<string>();
   collectUids(context, uids);
-  if (uids.size === 0) return [];
+  if (uids.size === 0) return { refs: [], unavailable: [] };
   const nodes = client.getNodesBatch
     ? await client.getNodesBatch([...uids])
     : await Promise.all([...uids].map((uid) => client.getNode(uid).catch(() => undefined)));
@@ -555,12 +594,21 @@ async function codeRefsFromGraphContext(
     const codeRef = (attributes as Record<string, unknown>).code_ref;
     return isStoredCodeRef(codeRef) ? [codeRef] : [];
   });
-  return Promise.all(
-    stored.map(async (ref) => {
+  const refs: ResolvedCodeRef[] = [];
+  const unavailable = new Set<string>();
+  for (const ref of stored) {
+    try {
       const repository = await adapter.resolveRepository(ref.repoId);
-      return { ...ref, repoRoot: repository.repoRoot };
-    }),
-  );
+      refs.push({ ...ref, repoRoot: repository.repoRoot });
+    } catch (cause) {
+      if (cause instanceof UnknownRepositoryError) {
+        unavailable.add(ref.repoId);
+      } else {
+        throw cause;
+      }
+    }
+  }
+  return { refs, unavailable: [...unavailable].sort() };
 }
 
 function collectUids(value: unknown, uids: Set<string>): void {

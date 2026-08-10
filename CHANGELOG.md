@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`mindgraph_code` now resolves from the live session directory.** The tool
+  built its default codegraph adapter on the MCP server process's cwd,
+  ignoring the hook-injected `invocation_context.cwd` that `mindgraph_sync`
+  already honored — user-scope registrations and sessions that changed
+  directory resolved workspaces and relative refs against the wrong root.
+  `attachCodeRefsToToolResult` forwards the context too.
+- **Anchoring an unconfigured repository without an explicit space now errors
+  (`missing_repository_space`) instead of writing silently into the per-agent
+  private space.** The guard existed but was unreachable; anchors created
+  without a workspace `space_uid`, `repo_space_uid`, or
+  `MINDGRAPH_CODE_SPACE_UID` fragmented shared repository identity across
+  agents' personal spaces.
+- **A stored repository id that is not available locally no longer resolves to
+  the enclosing checkout.** `recall`/`expand`/`affected` on an anchor from a
+  repository that isn't checked out or declared here treated the id as a
+  relative path and walked up to the current repo — returning the wrong
+  repository's structure under the anchored id. Unknown ids now surface
+  `repository_unavailable` / `unknown_repository`, and `affected` reports
+  `unavailable_repositories` it had to skip.
+- **SessionStart resume fails closed when no repository anchors resolve.** An
+  empty scope previously ran `resume_work` unscoped, so a fresh repository
+  could be handed an unrelated project's task (and the ledger would begin
+  injecting it into mutations). The brief now explains the skip and how to
+  anchor or resume explicitly.
+- **`mindgraph_sync` never follows symlinks out of the repository.** Scan
+  skips escaping or looping symlinks; `begin`/`status` reject symlinked
+  logical paths that leave the root.
+- **`scan workspace=true` with no declared repositories errors with a
+  diagnostic** (`workspace_not_configured`, distinguishing a missing file from
+  a malformed one) instead of returning silently empty.
+
+### Docs
+
+- README documents multi-repository workspaces: `.mindgraph/workspace.json`
+  discovery and format, per-ref routing rules (path/`repo`/bare-symbol),
+  identity convergence, per-repo spaces, workspace scan, and
+  `MINDGRAPH_CODE_REPOS` precedence.
+
 ## 0.14.5 (2026-07-29)
 
 ### Fixed

@@ -120,6 +120,11 @@ describe("R4 — the ledger fills, never overwrites, model work-targeting args",
       async session() {
         return { uid: "session-graph" };
       },
+      // Resume is repository-scoped and fails closed without an anchor, so
+      // the ledger only populates when the repository resolves.
+      async entity() {
+        return { uid: "repository-anchor", status: "existing" };
+      },
       async plan(request: Record<string, unknown>) {
         if (request.action === "claim_task") {
           return {

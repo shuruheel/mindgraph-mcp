@@ -305,40 +305,53 @@ async function sessionStart(
   );
   const sessionUid = string(opened?.uid);
   const scopeUids = await repositoryScopeUids(input, client, options, agentId);
-  let brief = object(
-    await client.plan({
-      action: "resume_work",
-      session_uid: sessionUid,
-      ...(scopeUids.length > 0 ? { scope_uids: scopeUids } : {}),
-      agent_id: agentId,
-    }),
-  );
-  const task = object(brief?.task);
-  const lease = object(brief?.lease);
-  if (sessionUid && string(task?.uid) && number(task?.version)) {
-    try {
-      const claimed = object(
-        await client.plan({
-          action: "claim_task",
-          task_uid: task!.uid,
-          session_uid: sessionUid,
-          expected_version: task!.version,
-          idempotency_key: `session-start:${input.session_id}:${task!.uid}:${lease?.lease_epoch || 0}`,
-          agent_id: agentId,
-        }),
-      );
-      brief = object(
-        await client.plan({
-          action: "resume_work",
-          task_uid: task!.uid,
-          session_uid: sessionUid,
-          ...(scopeUids.length > 0 ? { scope_uids: scopeUids } : {}),
-          agent_id: agentId,
-        }),
-      );
-      if (brief && claimed) brief.claim = claimed;
-    } catch {
-      // Resume still supplies a useful bounded explanation on a claim race.
+  let brief: Record<string, unknown> | undefined;
+  if (scopeUids.length === 0) {
+    // Durable-work resume is repository-scoped. With no resolvable repository
+    // anchors, an unscoped resume would surface another project's task and
+    // the ledger would start injecting it into this session's mutations —
+    // fail closed and say why instead.
+    brief = {
+      status: "no_eligible_work",
+      reason:
+        "no repository anchors resolved for this workspace, so repository-scoped resume was skipped; anchor this repository (mindgraph_code action=anchor) or resume explicitly with mindgraph_plan action=resume_work",
+    };
+  } else {
+    brief = object(
+      await client.plan({
+        action: "resume_work",
+        session_uid: sessionUid,
+        scope_uids: scopeUids,
+        agent_id: agentId,
+      }),
+    );
+    const task = object(brief?.task);
+    const lease = object(brief?.lease);
+    if (sessionUid && string(task?.uid) && number(task?.version)) {
+      try {
+        const claimed = object(
+          await client.plan({
+            action: "claim_task",
+            task_uid: task!.uid,
+            session_uid: sessionUid,
+            expected_version: task!.version,
+            idempotency_key: `session-start:${input.session_id}:${task!.uid}:${lease?.lease_epoch || 0}`,
+            agent_id: agentId,
+          }),
+        );
+        brief = object(
+          await client.plan({
+            action: "resume_work",
+            task_uid: task!.uid,
+            session_uid: sessionUid,
+            scope_uids: scopeUids,
+            agent_id: agentId,
+          }),
+        );
+        if (brief && claimed) brief.claim = claimed;
+      } catch {
+        // Resume still supplies a useful bounded explanation on a claim race.
+      }
     }
   }
   withLedger(input.session_id, options, (ledger) => {

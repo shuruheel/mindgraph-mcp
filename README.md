@@ -85,6 +85,46 @@ cleanly. Connection settings persist to `~/.mindgraph/hooks.json` (mode 600) so
 hooks work regardless of shell environment; the API key is never written into
 project settings.
 
+### Multi-repository workspaces
+
+Working across sibling repositories (a parent directory holding several
+checkouts)? Declare them once in `.mindgraph/workspace.json` at the parent:
+
+```json
+{
+  "v": 1,
+  "workspace_id": "my-workspace",
+  "repositories": [
+    { "root": "engine", "repo_id": "github.com/acme/engine", "space_uid": "space:project:engine" },
+    { "root": "core", "space_uid": "space:project:core" }
+  ]
+}
+```
+
+- **Discovery** walks up from the invocation directory to the nearest
+  `.mindgraph/workspace.json` (override with `MINDGRAPH_WORKSPACE_FILE`).
+  `root` paths are relative to the directory containing `.mindgraph`. Only
+  declared repositories participate — siblings are never scanned implicitly.
+- **Routing**: a code ref with a `path` routes to the repository defining that
+  file (nearest declared root, else its git root). A `repo` argument matches by
+  declared `repo_id`, root path, or directory basename. Bare symbol refs
+  resolve against the current repository only — pass `path` or `repo` to
+  target a sibling. An id that matches nothing errors (`unknown_repository`)
+  rather than guessing.
+- **Identity**: `repo_id` defaults to the normalized origin remote
+  (`github.com/acme/engine`), so teammates' clones converge on the same graph
+  entities; clones without a remote get a durable generated id.
+- **Spaces**: each repository's anchors are written into its `space_uid`.
+  Anchoring requires an explicit space — per-repo `space_uid`, a
+  `repo_space_uid` argument, or `MINDGRAPH_CODE_SPACE_UID` — so shared code
+  identity never lands silently in a private per-agent space.
+- **Memory-file sync**: `mindgraph_sync action=scan workspace=true` fans out
+  across the declared repositories (and errors with a diagnostic when nothing
+  is declared); all other sync actions stay single-repository.
+- **Precedence**: the legacy `MINDGRAPH_CODE_REPOS` env map (`{"repo-id":
+  {"root": "...", "space_uid": "..."}}`) merges over workspace-file entries
+  for the same root.
+
 ### Coding agents (Codex)
 
 The server is harness-neutral — Codex gets the full coding tool surface today:

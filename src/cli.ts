@@ -584,7 +584,12 @@ async function main(): Promise<void> {
           apiKey: hookApiKey,
           orgId: process.env.MINDGRAPH_ORG_ID,
           maxRetries: 0,
+          // Same cross-package release-window cast as src/index.ts: npm may
+          // still resolve the SDK declaration file that predates the D6
+          // telemetry batch.
           telemetrySurface: "mcp",
+        } as ConstructorParameters<typeof MindGraph>[0] & {
+          telemetrySurface: "mcp";
         });
         const output = await runClaudeHook(input, client as unknown as HookClient, {
           agentId:
