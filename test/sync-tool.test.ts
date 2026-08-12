@@ -100,6 +100,45 @@ describe("mindgraph_sync", () => {
     expect(JSON.stringify(calls)).not.toContain(ignored);
   });
 
+  it("errors with a diagnostic when a workspace scan finds no declared repositories", async () => {
+    const { root, client } = fixture();
+    const result = await handleSyncTool(client, {
+      action: "scan",
+      workspace: true,
+      invocation_context: { cwd: root },
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("workspace_not_configured");
+    expect(result.content[0].text).toContain("workspace.json");
+  });
+
+  it("never follows symlinks out of the repository during scan or begin", async () => {
+    const { root, client } = fixture();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "mindgraph-outside-"));
+    cleanup.push(outside);
+    fs.writeFileSync(path.join(outside, "secret.md"), "# Secret\n");
+    fs.symlinkSync(outside, path.join(root, "memory", "escape"));
+    fs.symlinkSync(path.join(root, "memory"), path.join(root, "memory", "loop"));
+
+    const scan = await handleSyncTool(client, {
+      action: "scan",
+      invocation_context: { cwd: root },
+    });
+    expect(scan.isError).not.toBe(true);
+    const body = JSON.parse(scan.content[0].text);
+    expect(
+      body.files.map((file: { logical_path: string }) => file.logical_path),
+    ).toEqual(["memory/note.md"]);
+
+    const begin = await handleSyncTool(client, {
+      action: "begin",
+      logical_path: "memory/escape/secret.md",
+      invocation_context: { cwd: root },
+    });
+    expect(begin.isError).toBe(true);
+    expect(begin.content[0].text).toContain("escapes repository root");
+  });
+
   it("loads begin content locally, strips cwd, and rejects path escape", async () => {
     const { root, calls, client } = fixture();
     await handleSyncTool(client, {

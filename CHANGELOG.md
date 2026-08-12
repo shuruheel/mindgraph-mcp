@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`mindgraph_code` now resolves from the live session directory.** The tool
+  built its default codegraph adapter on the MCP server process's cwd,
+  ignoring the hook-injected `invocation_context.cwd` that `mindgraph_sync`
+  already honored — user-scope registrations and sessions that changed
+  directory resolved workspaces and relative refs against the wrong root.
+  `attachCodeRefsToToolResult` forwards the context too.
+- **`mindgraph_code` anchor requires an explicit space
+  (`missing_repository_space`) instead of writing code anchors silently into
+  the per-agent private space.** The guard existed but was unreachable.
+  Deliberate knowledge anchors (code symbols/files) written without a
+  workspace `space_uid`, `repo_space_uid`, or `MINDGRAPH_CODE_SPACE_UID`
+  landed in the writing agent's personal space, setting up the
+  `exists_but_inaccessible` cross-agent trap for teammates resolving the
+  same identity. The hooks' repository-scope anchoring (SessionStart /
+  `create_task`) keeps its deliberate `space:agent:` fallback — scoping
+  markers, unlike shared knowledge, are correct per-agent.
+- **A stored repository id that is not available locally no longer resolves to
+  the enclosing checkout.** `recall`/`expand`/`affected` on an anchor from a
+  repository that isn't checked out or declared here treated the id as a
+  relative path and walked up to the current repo — returning the wrong
+  repository's structure under the anchored id, with a clean availability
+  check. Unknown ids now surface `repository_unavailable` /
+  `unknown_repository`, `affected` reports `unavailable_repositories` it had
+  to skip, and a `repo`/`create_task` argument naming an unknown repository
+  errors instead of silently scoping the enclosing one.
+- **`mindgraph_sync` never follows symlinks out of the repository.** Scan
+  skips escaping or looping symlinks; `begin`/`status` reject symlinked
+  logical paths that leave the root.
+- **`scan workspace=true` with no declared repositories errors with a
+  diagnostic** (`workspace_not_configured`, distinguishing a missing file from
+  a malformed one) instead of returning silently empty.
+
+### Docs
+
+- README documents multi-repository workspaces: `.mindgraph/workspace.json`
+  discovery and format, per-ref routing rules (path/`repo`/bare-symbol),
+  identity convergence, per-repo spaces, workspace scan, and
+  `MINDGRAPH_CODE_REPOS` precedence.
+
 ## 0.17.0 (2026-07-30)
 
 ### Changed
