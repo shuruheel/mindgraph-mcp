@@ -7,6 +7,8 @@ import {
   installClaudeHooks,
   installHookRunner,
   installedHookRunnerVersion,
+  refreshHookRunner,
+  refreshOwnedClaudeHooks,
   uninstallClaudeHooks,
   uninstallHookRunner,
   versionSkewNote,
@@ -497,5 +499,158 @@ describe("hook runner version sidecar", () => {
     installHookRunner(source, home, "0.17.0");
     uninstallHookRunner(home);
     expect(installedHookRunnerVersion(home)).toBeUndefined();
+  });
+});
+
+describe("self-healing hook runner", () => {
+  const RUNNER = path.join(".mindgraph", "bin", "mindgraph-hook.cjs");
+
+  function seedRunner(home: string, version?: string): string {
+    const source = path.join(home, "old-bundle.cjs");
+    fs.writeFileSync(source, "// old bundle");
+    installHookRunner(source, home, version);
+    return path.join(home, RUNNER);
+  }
+
+  function newBundle(home: string): string {
+    const source = path.join(home, "new-bundle.cjs");
+    fs.writeFileSync(source, "// new bundle");
+    return source;
+  }
+
+  it("refreshes an older runner from the server's own bundle, upgrade-only", () => {
+    const home = tempRoot();
+    const runner = seedRunner(home, "0.17.0");
+    const result = refreshHookRunner("0.18.0", newBundle(home), home);
+    expect(result).toMatchObject({
+      refreshed: true,
+      reason: "updated",
+      runnerVersion: "0.17.0",
+    });
+    expect(fs.readFileSync(runner, "utf8")).toBe("// new bundle");
+    expect(installedHookRunnerVersion(home)).toBe("0.18.0");
+  });
+
+  it("never downgrades: an npx cache serving an older server leaves the runner alone", () => {
+    const home = tempRoot();
+    const runner = seedRunner(home, "0.19.0");
+    const result = refreshHookRunner("0.18.0", newBundle(home), home);
+    expect(result).toMatchObject({ refreshed: false, reason: "downgrade" });
+    expect(fs.readFileSync(runner, "utf8")).toBe("// old bundle");
+    expect(installedHookRunnerVersion(home)).toBe("0.19.0");
+  });
+
+  it("treats an equal version as current and does not rewrite", () => {
+    const home = tempRoot();
+    const runner = seedRunner(home, "0.18.0");
+    const result = refreshHookRunner("0.18.0", newBundle(home), home);
+    expect(result).toMatchObject({ refreshed: false, reason: "current" });
+    expect(fs.readFileSync(runner, "utf8")).toBe("// old bundle");
+  });
+
+  it("refreshes a pre-sidecar runner (no version record predates 0.17.1 by construction)", () => {
+    const home = tempRoot();
+    const runner = seedRunner(home); // no sidecar
+    const result = refreshHookRunner("0.18.0", newBundle(home), home);
+    expect(result).toMatchObject({ refreshed: true, reason: "updated" });
+    expect(result.runnerVersion).toBeUndefined();
+    expect(fs.readFileSync(runner, "utf8")).toBe("// new bundle");
+    expect(installedHookRunnerVersion(home)).toBe("0.18.0");
+  });
+
+  it("does not install hooks onto a machine that has none", () => {
+    const home = tempRoot();
+    const result = refreshHookRunner("0.18.0", newBundle(home), home);
+    expect(result).toMatchObject({ refreshed: false, reason: "no_runner" });
+    expect(fs.existsSync(path.join(home, RUNNER))).toBe(false);
+  });
+
+  it("respects the opt-out and guards unparseable versions", () => {
+    const home = tempRoot();
+    const runner = seedRunner(home, "0.17.0");
+    process.env.MINDGRAPH_HOOK_AUTOUPDATE = "off";
+    try {
+      expect(refreshHookRunner("0.18.0", newBundle(home), home)).toMatchObject({
+        refreshed: false,
+        reason: "disabled",
+      });
+    } finally {
+      delete process.env.MINDGRAPH_HOOK_AUTOUPDATE;
+    }
+    // A hand-edited sidecar must not be interpreted as older-than-anything.
+    fs.writeFileSync(path.join(home, `${RUNNER}.version`), "nightly\n");
+    expect(refreshHookRunner("0.18.0", newBundle(home), home)).toMatchObject({
+      refreshed: false,
+      reason: "unparseable",
+    });
+    expect(fs.readFileSync(runner, "utf8")).toBe("// old bundle");
+    // A missing source bundle (dev/test import of index.ts) is a no-op.
+    expect(
+      refreshHookRunner("0.18.0", path.join(home, "absent.cjs"), home),
+    ).toMatchObject({ refreshed: false, reason: "no_source" });
+  });
+});
+
+describe("refreshOwnedClaudeHooks", () => {
+  const OWNED_COMMAND =
+    'node "$HOME/.mindgraph/bin/mindgraph-hook.cjs" hook --harness claude-code --owner mindgraph';
+
+  it("re-writes owned entries in scopes that already carry them, preserving foreign hooks", () => {
+    const home = tempRoot();
+    const project = tempRoot();
+    // User scope: an owned entry with a stale 8s timeout, plus a foreign hook.
+    const userFile = path.join(home, ".claude", "settings.json");
+    fs.mkdirSync(path.dirname(userFile), { recursive: true });
+    fs.writeFileSync(
+      userFile,
+      JSON.stringify({
+        hooks: {
+          SessionStart: [
+            {
+              matcher: "startup",
+              hooks: [{ type: "command", command: OWNED_COMMAND, timeout: 8 }],
+            },
+            {
+              matcher: ".*",
+              hooks: [{ type: "command", command: "echo foreign", timeout: 1 }],
+            },
+          ],
+        },
+        permissions: { defaultMode: "auto" },
+      }),
+    );
+    const refreshed = refreshOwnedClaudeHooks(project, home);
+    expect(refreshed).toEqual([userFile]);
+    const settings = JSON.parse(fs.readFileSync(userFile, "utf8")) as {
+      hooks: Record<string, Array<{ matcher?: string; hooks: Array<Record<string, unknown>> }>>;
+      permissions: Record<string, unknown>;
+    };
+    const owned = settings.hooks.SessionStart.find((entry) =>
+      entry.hooks.some((hook) => String(hook.command).includes("--owner mindgraph")),
+    );
+    expect(owned?.hooks[0].timeout).toBe(30);
+    expect(owned?.matcher).toBe("startup|resume|clear|compact|fork");
+    // New events materialize; foreign content and unrelated settings survive.
+    expect(settings.hooks.SessionEnd).toBeDefined();
+    expect(
+      settings.hooks.SessionStart.some((entry) =>
+        entry.hooks.some((hook) => hook.command === "echo foreign"),
+      ),
+    ).toBe(true);
+    expect(settings.permissions).toEqual({ defaultMode: "auto" });
+  });
+
+  it("never expands scope: files without owned entries (or absent) are untouched", () => {
+    const home = tempRoot();
+    const project = tempRoot();
+    const projectFile = path.join(project, ".claude", "settings.json");
+    fs.mkdirSync(path.dirname(projectFile), { recursive: true });
+    const foreignOnly = JSON.stringify({
+      hooks: { Stop: [{ hooks: [{ type: "command", command: "echo mine" }] }] },
+    });
+    fs.writeFileSync(projectFile, foreignOnly);
+    expect(refreshOwnedClaudeHooks(project, home)).toEqual([]);
+    expect(fs.readFileSync(projectFile, "utf8")).toBe(foreignOnly);
+    expect(fs.existsSync(path.join(home, ".claude", "settings.json"))).toBe(false);
   });
 });

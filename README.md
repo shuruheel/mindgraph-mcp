@@ -88,6 +88,17 @@ cleanly. Connection settings persist to `~/.mindgraph/hooks.json` (mode 600) so
 hooks work regardless of shell environment; the API key is never written into
 project settings.
 
+**Updates are hands-free.** The MCP registration floats on `npx @latest`,
+and at startup the server self-heals the pinned hook runner from its own
+bundle — upgrade-only (never a downgrade from a stale npx cache), atomic,
+and only on machines that already have hooks installed. When it refreshes
+the runner it also re-writes MindGraph-owned hook entries (timeout budgets,
+new events) in settings files that already carry them — your scope choice is
+respected, never expanded. So after a release, the next session start picks
+up the new server and refreshes the hooks; the session after that runs them.
+Opt out with `MINDGRAPH_HOOK_AUTOUPDATE=off` (the server then just prints a
+version-skew note and leaves updating to `install-hooks`).
+
 ### Multi-repository workspaces
 
 Working across sibling repositories (a parent directory holding several
@@ -232,6 +243,8 @@ teammates one logical agent, which claims each other's work).
 | `MINDGRAPH_AGENT_ID` | *(stable per-user id)* | Agent identity stamped on every write and used for durable-work leases. Defaults to a stable `u-<hash>` derived from user@host, shared by the hooks, the registration, and the serve path — set explicitly for cross-device continuity or per-teammate identities |
 | `MINDGRAPH_ORG_ID` | *(unset)* | Pin operations to a specific organization when a key has access to more than one |
 | `MINDGRAPH_CODEGRAPH_BIN` | *(auto)* | Explicit path to the codegraph binary (PATH and `~/.local/bin` are probed) |
+| `MINDGRAPH_HOOK_AUTOUPDATE` | *(on)* | `off` disables the server's startup self-heal of the pinned hook runner; the version-skew note then signals drift instead |
+| `MINDGRAPH_SKIP_MCP_REGISTRATION_CHECK` | *(unset)* | `1` silences the SessionStart warning for hooks running without a registered MindGraph MCP server (exotic registration layouts) |
 
 ## Usage in Claude
 

@@ -38,7 +38,12 @@ export function installHookRunner(
 ): string {
   const target = path.join(homeDir || os.homedir(), RUNNER_RELATIVE);
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.copyFileSync(sourceFile, target);
+  // Atomic swap: a hook can spawn `node runner.cjs` at any moment — including
+  // mid-refresh from a concurrently starting MCP server — and must never read
+  // a torn bundle.
+  const temporary = `${target}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  fs.copyFileSync(sourceFile, temporary);
+  fs.renameSync(temporary, target);
   const versionPath = path.join(homeDir || os.homedir(), RUNNER_VERSION_RELATIVE);
   if (version) {
     fs.writeFileSync(versionPath, `${version}\n`);
@@ -63,6 +68,112 @@ export function installedHookRunnerVersion(homeDir?: string): string | undefined
     // indistinguishable from no install, so no skew claim is made.
     return undefined;
   }
+}
+
+function parseSemver(value: string | undefined): [number, number, number] | undefined {
+  if (!value) return undefined;
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value.trim());
+  if (!match) return undefined;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function semverNewer(
+  a: [number, number, number],
+  b: [number, number, number],
+): boolean {
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] !== b[index]) return a[index] > b[index];
+  }
+  return false;
+}
+
+export interface RunnerRefresh {
+  refreshed: boolean;
+  reason:
+    | "updated"
+    | "current"
+    | "downgrade"
+    | "no_runner"
+    | "no_source"
+    | "unparseable"
+    | "disabled"
+    | "error";
+  runnerVersion?: string;
+}
+
+/** Self-heal the pinned hook runner from the running server's own bundle.
+ * The MCP registration floats on `npx @latest` while the runner pins at
+ * install time, so the freshest code in the system is the server — without
+ * this, every release required a manual `install-hooks` on every machine,
+ * and a missed one served weeks-stale hooks with no signal (observed live
+ * 2026-08-12). Upgrade-only: an npx cache serving an older server must
+ * never downgrade the runner. A runner with NO version sidecar predates the
+ * sidecar itself (≤0.17.0), so it is older than any server carrying this
+ * code and safe to refresh. A machine with no runner has no hooks (e.g.
+ * Claude Desktop serving this MCP) and is left untouched. Never throws.
+ * Opt out with MINDGRAPH_HOOK_AUTOUPDATE=off. */
+export function refreshHookRunner(
+  serverVersion: string,
+  sourceBundle: string,
+  homeDir?: string,
+): RunnerRefresh {
+  try {
+    if (process.env.MINDGRAPH_HOOK_AUTOUPDATE === "off") {
+      return { refreshed: false, reason: "disabled" };
+    }
+    const home = homeDir || os.homedir();
+    if (!fs.existsSync(path.join(home, RUNNER_RELATIVE))) {
+      return { refreshed: false, reason: "no_runner" };
+    }
+    if (!fs.existsSync(sourceBundle)) {
+      return { refreshed: false, reason: "no_source" };
+    }
+    const server = parseSemver(serverVersion);
+    if (!server) return { refreshed: false, reason: "unparseable" };
+    const runnerVersion = installedHookRunnerVersion(home);
+    if (runnerVersion !== undefined) {
+      const pinned = parseSemver(runnerVersion);
+      if (!pinned) {
+        return { refreshed: false, reason: "unparseable", runnerVersion };
+      }
+      if (!semverNewer(server, pinned)) {
+        return {
+          refreshed: false,
+          reason: runnerVersion === serverVersion ? "current" : "downgrade",
+          runnerVersion,
+        };
+      }
+    }
+    installHookRunner(sourceBundle, home, serverVersion);
+    return { refreshed: true, reason: "updated", runnerVersion };
+  } catch {
+    return { refreshed: false, reason: "error" };
+  }
+}
+
+/** After a runner refresh, re-write the owned hook ENTRIES too (timeout
+ * budgets, matchers, newly added events) — but only in settings files that
+ * already carry owned entries. The user's scope choice is respected, never
+ * expanded: a file with no owned hooks is not a target, so this never
+ * installs hooks onto a machine (or into a project) that opted out. */
+export function refreshOwnedClaudeHooks(
+  projectDir = process.cwd(),
+  homeDir?: string,
+): string[] {
+  const refreshed: string[] = [];
+  const scopes: HookScope[] = ["user", "project"];
+  for (const scope of scopes) {
+    try {
+      const file = settingsPath("claude-code", scope, projectDir, undefined, homeDir);
+      if (!fs.existsSync(file)) continue;
+      if (!fs.readFileSync(file, "utf8").includes(OWNER_MARKER)) continue;
+      installHooks("claude-code", scope, projectDir, undefined, homeDir);
+      refreshed.push(file);
+    } catch {
+      // Self-heal must never break server startup.
+    }
+  }
+  return refreshed;
 }
 
 /** A one-line warning when the pinned hook runner and the running server
@@ -101,6 +212,7 @@ function settingsPath(
   projectDir = process.cwd(),
   codexHomeDir = process.env.CODEX_HOME ||
     path.join(os.homedir(), ".codex"),
+  homeDir?: string,
 ): string {
   if (harness === "codex") {
     return scope === "user"
@@ -108,7 +220,7 @@ function settingsPath(
       : path.join(projectDir, ".codex", "hooks.json");
   }
   return scope === "user"
-    ? path.join(os.homedir(), ".claude", "settings.json")
+    ? path.join(homeDir || os.homedir(), ".claude", "settings.json")
     : path.join(projectDir, ".claude", "settings.json");
 }
 
@@ -220,8 +332,9 @@ function installHooks(
   scope: HookScope,
   projectDir = process.cwd(),
   codexHomeDir?: string,
+  homeDir?: string,
 ): { path: string; added: number; updated: number } {
-  const file = settingsPath(harness, scope, projectDir, codexHomeDir);
+  const file = settingsPath(harness, scope, projectDir, codexHomeDir, homeDir);
   const settings = readSettings(file);
   const hooks =
     settings.hooks &&
