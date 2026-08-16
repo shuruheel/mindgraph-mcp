@@ -4,6 +4,20 @@
 
 ### Added
 
+- **The server self-heals the pinned hook runner — releases no longer need a
+  manual `install-hooks` on every machine.** The MCP registration floats on
+  `npx @latest` while the runner pins at install time; at startup the server
+  now refreshes `~/.mindgraph/bin/mindgraph-hook.cjs` from its own bundled
+  `cli.js` when the sidecar records an older version (a runner with no
+  sidecar predates the sidecar and is refreshed too). Upgrade-only — a stale
+  npx cache can never downgrade the runner — with an atomic tmp+rename swap
+  so a concurrently firing hook never reads a torn bundle, and a no-runner
+  machine (e.g. Claude Desktop) is left untouched. On refresh it also
+  re-writes MindGraph-owned hook entries (timeout budgets, matchers, new
+  events) in settings files that already carry them, never expanding the
+  user's scope choice. Opt out with `MINDGRAPH_HOOK_AUTOUPDATE=off`; the
+  version-skew instructions note then remains the fallback signal.
+
 - **SessionStart warns when the harness has hooks but no registered MindGraph
   MCP server.** Observed live (2026-08-12): user-scope hooks delivered briefs
   and Stop nudges into Claude Code sessions with no `mcp__mindgraph__*` tools

@@ -19,7 +19,12 @@ import {
   RESOURCE_TEMPLATES,
   readGovernedResource,
 } from "./resources.js";
-import { versionSkewNote } from "./hook-installer.js";
+import path from "node:path";
+import {
+  refreshHookRunner,
+  refreshOwnedClaudeHooks,
+  versionSkewNote,
+} from "./hook-installer.js";
 
 declare const __PACKAGE_VERSION__: string;
 
@@ -168,10 +173,41 @@ if (PROFILE === "coding") {
     .join("\n");
 }
 
-// Hook/server version skew: the hooks run a bundle pinned at install time
-// while this server floats on `npx @latest`. Surface drift where the model
-// can see it (instructions) and the user can see it (stderr) — a 0.14-era
-// runner silently served 0.17-era sessions for two weeks before this check.
+// Self-heal the pinned hook runner: the registration floats on `npx
+// @latest`, so the freshest code in the system is this server — let it
+// refresh the runner (and the owned hook entries' timeout budgets) instead
+// of asking every machine to re-run install-hooks after each release. The
+// bundled cli.js ships as a sibling of this file; in dev/test there is no
+// sibling bundle and the refresh is a no-op.
+const RUNNER_REFRESH = (() => {
+  try {
+    return refreshHookRunner(__PACKAGE_VERSION__, path.join(__dirname, "cli.js"));
+  } catch {
+    return undefined;
+  }
+})();
+if (RUNNER_REFRESH?.refreshed) {
+  const refreshedSettings = (() => {
+    try {
+      return refreshOwnedClaudeHooks();
+    } catch {
+      return [] as string[];
+    }
+  })();
+  console.error(
+    `[mindgraph-mcp] refreshed pinned hook runner ` +
+      `${RUNNER_REFRESH.runnerVersion ? `v${RUNNER_REFRESH.runnerVersion}` : "(pre-sidecar)"}` +
+      ` → v${__PACKAGE_VERSION__}` +
+      (refreshedSettings.length > 0
+        ? `; refreshed owned hook entries in ${refreshedSettings.join(", ")}`
+        : ""),
+  );
+}
+
+// Hook/server version skew: after a successful refresh the sidecar matches
+// and this stays silent; it fires only when the self-heal was opted out,
+// guarded (downgrade), or failed — a 0.14-era runner silently served
+// 0.17-era sessions for two weeks before these checks existed.
 const HOOK_SKEW_NOTE = (() => {
   try {
     return versionSkewNote(__PACKAGE_VERSION__);
