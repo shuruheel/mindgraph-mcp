@@ -5,7 +5,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { runClaudeHook, type HookClient } from "../src/claude-hooks.js";
 import {
   installClaudeHooks,
+  installHookRunner,
+  installedHookRunnerVersion,
   uninstallClaudeHooks,
+  uninstallHookRunner,
+  versionSkewNote,
 } from "../src/hook-installer.js";
 
 const cleanup: string[] = [];
@@ -368,5 +372,130 @@ describe("Claude hook installer", () => {
       fs.readFileSync(path.join(settingsDir, "settings.json"), "utf8"),
     );
     expect(settings.hooks.Stop[0].hooks[0].command).toBe("echo existing");
+  });
+});
+
+describe("SessionStart MCP registration diagnostic", () => {
+  // The half-installed state observed live 2026-08-12: user-scope hooks
+  // delivering briefs and Stop nudges into sessions with no registered
+  // MindGraph MCP server — the model was asked to checkpoint with tools it
+  // did not have, silently, for two weeks.
+  const NOTE = "no MindGraph MCP server appears to be registered";
+
+  function configFile(root: string, config: unknown): string {
+    const file = path.join(root, "claude.json");
+    fs.writeFileSync(file, JSON.stringify(config));
+    return file;
+  }
+
+  async function startContext(
+    root: string,
+    claudeConfigPath: string,
+    sessionId: string,
+  ): Promise<string> {
+    const { client } = fakeClient();
+    const out = await runClaudeHook(
+      { session_id: sessionId, cwd: root, hook_event_name: "SessionStart" },
+      client,
+      { runtimeDir: path.join(root, "runtime"), claudeConfigPath },
+    );
+    return String(
+      (out.hookSpecificOutput as Record<string, unknown>).additionalContext,
+    );
+  }
+
+  it("leads the brief with a warning when nothing in scope registers the server", async () => {
+    const root = tempRoot();
+    const file = configFile(root, {
+      mcpServers: { context7: { command: "npx", args: ["context7"] } },
+      projects: {
+        // A registration scoped to an UNRELATED project must not count.
+        "/somewhere/else": {
+          mcpServers: { mindgraph: { command: "npx", args: ["-y", "mindgraph-mcp@latest"] } },
+        },
+      },
+    });
+    const context = await startContext(root, file, "reg-missing");
+    expect(context).toContain(NOTE);
+    expect(context.indexOf(NOTE)).toBeLessThan(context.indexOf("Task"));
+    expect(context).toContain("install-code");
+  });
+
+  it("stays quiet for a user-scope registration", async () => {
+    const root = tempRoot();
+    const file = configFile(root, {
+      mcpServers: { mindgraph: { command: "npx", args: ["-y", "mindgraph-mcp@latest"] } },
+    });
+    expect(await startContext(root, file, "reg-user")).not.toContain(NOTE);
+  });
+
+  it("stays quiet for a project-scope registration on an ancestor of the cwd", async () => {
+    const root = tempRoot();
+    const nested = path.join(root, "packages", "app");
+    fs.mkdirSync(nested, { recursive: true });
+    const file = configFile(root, {
+      projects: {
+        [root]: {
+          // Recognized by command text, not just the `mindgraph` key.
+          mcpServers: { graph: { command: "npx", args: ["-y", "mindgraph-mcp@0.17.0"] } },
+        },
+      },
+    });
+    const { client } = fakeClient();
+    const out = await runClaudeHook(
+      { session_id: "reg-project", cwd: nested, hook_event_name: "SessionStart" },
+      client,
+      { runtimeDir: path.join(root, "runtime"), claudeConfigPath: file },
+    );
+    expect(
+      String((out.hookSpecificOutput as Record<string, unknown>).additionalContext),
+    ).not.toContain(NOTE);
+  });
+
+  it("stays quiet for a .mcp.json registration above the session cwd", async () => {
+    const root = tempRoot();
+    fs.writeFileSync(
+      path.join(root, ".mcp.json"),
+      JSON.stringify({ mcpServers: { mindgraph: { command: "mindgraph-mcp" } } }),
+    );
+    const file = configFile(root, { mcpServers: {} });
+    expect(await startContext(root, file, "reg-mcpjson")).not.toContain(NOTE);
+  });
+
+  it("stays quiet when the harness config file does not exist, and when silenced by env", async () => {
+    const root = tempRoot();
+    expect(
+      await startContext(root, path.join(root, "absent.json"), "reg-nofile"),
+    ).not.toContain(NOTE);
+    process.env.MINDGRAPH_SKIP_MCP_REGISTRATION_CHECK = "1";
+    try {
+      const file = configFile(root, { mcpServers: {} });
+      expect(await startContext(root, file, "reg-skip")).not.toContain(NOTE);
+    } finally {
+      delete process.env.MINDGRAPH_SKIP_MCP_REGISTRATION_CHECK;
+    }
+  });
+});
+
+describe("hook runner version sidecar", () => {
+  it("records the copied bundle's version and reports skew against the server", () => {
+    const home = tempRoot();
+    const source = path.join(home, "bundle.cjs");
+    fs.writeFileSync(source, "// bundle");
+    installHookRunner(source, home, "0.17.0");
+    expect(installedHookRunnerVersion(home)).toBe("0.17.0");
+    expect(versionSkewNote("0.17.0", home)).toBeUndefined();
+    const note = versionSkewNote("0.18.0", home);
+    expect(note).toContain("v0.17.0");
+    expect(note).toContain("v0.18.0");
+    expect(note).toContain("install-hooks");
+    // A copy of unknown provenance must not inherit the stale record and
+    // start claiming a skew that may not exist.
+    installHookRunner(source, home);
+    expect(installedHookRunnerVersion(home)).toBeUndefined();
+    expect(versionSkewNote("0.18.0", home)).toBeUndefined();
+    installHookRunner(source, home, "0.17.0");
+    uninstallHookRunner(home);
+    expect(installedHookRunnerVersion(home)).toBeUndefined();
   });
 });

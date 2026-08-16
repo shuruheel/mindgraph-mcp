@@ -8,6 +8,7 @@ import {
   repositoryIdentityKey,
 } from "./codegraph.js";
 import { anchorRepository, type CodeClient } from "./code-tool.js";
+import { conflictState } from "./error-detail.js";
 import { stableAgentId } from "./hook-env.js";
 
 export interface HookInput {
@@ -67,6 +68,9 @@ export interface HookRuntimeOptions {
   agentId?: string;
   now?: () => number;
   workspaceFile?: string;
+  /** Claude Code's config file (default ~/.claude.json), used only by the
+   * SessionStart registration diagnostic. Injectable for tests. */
+  claudeConfigPath?: string;
 }
 
 interface CoreHookRuntimeOptions extends HookRuntimeOptions {
@@ -560,6 +564,84 @@ function isOwnPriorWork(
   return owner === agentId || owner === harness;
 }
 
+function hasMindgraphServer(servers: unknown): boolean {
+  if (!servers || typeof servers !== "object") return false;
+  for (const [name, entry] of Object.entries(servers as Record<string, unknown>)) {
+    if (name === "mindgraph") return true;
+    const cfg =
+      entry && typeof entry === "object"
+        ? (entry as Record<string, unknown>)
+        : undefined;
+    const text = [
+      String(cfg?.command ?? ""),
+      Array.isArray(cfg?.args) ? (cfg!.args as unknown[]).join(" ") : "",
+      String(cfg?.url ?? ""),
+    ].join(" ");
+    if (text.includes("mindgraph-mcp")) return true;
+  }
+  return false;
+}
+
+function pathIsWithin(ancestor: string, descendant: string): boolean {
+  const base = path.resolve(ancestor);
+  const target = path.resolve(descendant);
+  return target === base || target.startsWith(base + path.sep);
+}
+
+/** SessionStart diagnostic for the half-installed state observed live
+ * 2026-08-12: hooks delivering briefs and Stop nudges into sessions that had
+ * no registered MindGraph MCP server — weeks of ledgers with stopNudged set
+ * and memoryWritten never true, because the requested actions had no tools
+ * to run through. Checks only the layouts the installer writes (user scope
+ * and cwd-project scope in ~/.claude.json, plus .mcp.json up the tree);
+ * absence anywhere else is deliberately not guessed at, and exotic setups
+ * can silence the check with MINDGRAPH_SKIP_MCP_REGISTRATION_CHECK=1.
+ * Never throws — a broken diagnostic must not cost the session its brief. */
+function claudeMcpRegistrationNote(
+  input: HookInput,
+  options: CoreHookRuntimeOptions,
+): string | undefined {
+  if (options.harness !== "claude-code") return undefined;
+  if (process.env.MINDGRAPH_SKIP_MCP_REGISTRATION_CHECK === "1") return undefined;
+  try {
+    const configPath =
+      options.claudeConfigPath || path.join(os.homedir(), ".claude.json");
+    // No config file means a layout this check does not understand — stay
+    // quiet rather than warn on unknowns.
+    if (!fs.existsSync(configPath)) return undefined;
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      mcpServers?: unknown;
+      projects?: Record<string, { mcpServers?: unknown }>;
+    };
+    if (hasMindgraphServer(config.mcpServers)) return undefined;
+    const cwd = path.resolve(input.cwd || ".");
+    for (const [projectDir, project] of Object.entries(config.projects || {})) {
+      // Local-scope registrations bind only to their own project directory.
+      if (!pathIsWithin(projectDir, cwd)) continue;
+      if (hasMindgraphServer(project?.mcpServers)) return undefined;
+    }
+    for (let dir = cwd; ; dir = path.dirname(dir)) {
+      const candidate = path.join(dir, ".mcp.json");
+      if (fs.existsSync(candidate)) {
+        const parsed = JSON.parse(fs.readFileSync(candidate, "utf8")) as {
+          mcpServers?: unknown;
+        };
+        if (hasMindgraphServer(parsed.mcpServers)) return undefined;
+      }
+      if (dir === path.dirname(dir)) break;
+    }
+  } catch {
+    return undefined;
+  }
+  return (
+    "NOTE: no MindGraph MCP server appears to be registered for Claude Code, " +
+    "so this brief's continuity actions (claim, checkpoint, capture) have no " +
+    "mcp__mindgraph__* tools to run through and durable memory cannot be " +
+    "written this session. Tell the user to run: " +
+    "npx -y mindgraph-mcp@latest install-code — then start a new session."
+  );
+}
+
 async function sessionStart(
   input: HookInput,
   client: HookClient,
@@ -683,7 +765,16 @@ async function sessionStart(
     claimFailed: claimFailed && !stillHeld,
     scopeNote,
   });
-  const briefHash = crypto.createHash("sha256").update(briefText).digest("hex");
+  const registrationNote = claudeMcpRegistrationNote(input, options);
+  if (registrationNote) {
+    console.error(`mindgraph-hook: ${registrationNote}`);
+  }
+  // The note leads: a model that reads the task first will try to act on it
+  // with tools it does not have.
+  const contextText = registrationNote
+    ? `${registrationNote}\n\n${briefText}`
+    : briefText;
+  const briefHash = crypto.createHash("sha256").update(contextText).digest("hex");
   const shouldInject = withLedger(input.session_id, options, (ledger) => {
     const changed = ledger.lastBriefHash !== briefHash;
     const reinjectCompact =
@@ -743,7 +834,7 @@ async function sessionStart(
     ledger.lastBriefHash = briefHash;
     return changed || reinjectCompact;
   });
-  return shouldInject ? { kind: "context", context: briefText } : NOOP;
+  return shouldInject ? { kind: "context", context: contextText } : NOOP;
 }
 
 async function preTool(
@@ -962,11 +1053,7 @@ async function postTool(
         // Structured conflict payloads (servers newer than 1.11.2) carry the
         // fencing state; adopting it lets the next call succeed instead of
         // replaying the stale fence forever.
-        ledger.taskVersion =
-          number(payload?.current_version) ?? ledger.taskVersion;
-        ledger.leaseEpoch = number(payload?.current_epoch) ?? ledger.leaseEpoch;
-        ledger.leaseExpiresAt =
-          number(payload?.lease_expires_at) ?? ledger.leaseExpiresAt;
+        adoptConflictFence(ledger, payload);
       }
     }
     if (
@@ -1034,12 +1121,19 @@ async function postTool(
             }),
       );
       withLedger(input.session_id, options, (ledger) => {
-        if (payloadIsError(response)) return undefined;
         // The model may have rebound (or completed) between scheduling this
         // renewal and its completion — a parallel tool batch runs hooks
         // concurrently. Stamping task A's fence onto a ledger now tracking
         // task B is the R20 bug on the async path.
         if (ledger.taskUid !== active.taskUid) return undefined;
+        if (payloadIsError(response)) {
+          // A 200-shaped error can still carry the current fence — adopt it
+          // exactly like the model-call path, or every minute-bucketed
+          // renewal replays the same stale epoch until the model itself
+          // makes a plan call.
+          adoptConflictFence(ledger, response);
+          return undefined;
+        }
         ledger.taskVersion =
           number(response?.task_version) ?? ledger.taskVersion;
         ledger.leaseEpoch = number(response?.lease_epoch) ?? ledger.leaseEpoch;
@@ -1048,11 +1142,37 @@ async function postTool(
         ledger.lastLeaseRenewalAt = nowSeconds;
         return undefined;
       });
-    } catch {
-      // Renewal is advisory; authoritative fencing remains server-side.
+    } catch (cause) {
+      // Renewal is advisory; authoritative fencing remains server-side. But
+      // a thrown 409 carries the current fence in its typed body — without
+      // adopting it here, the hook replays the stale epoch on every renewal
+      // while the lease silently lapses, until the model happens to make a
+      // plan call of its own (whose conflict payload IS adopted above).
+      const conflict = conflictState(cause);
+      if (Object.keys(conflict).length > 0) {
+        withLedger(input.session_id, options, (ledger) => {
+          if (ledger.taskUid !== active.taskUid) return undefined;
+          adoptConflictFence(ledger, conflict);
+          return undefined;
+        });
+      }
     }
   }
   return NOOP;
+}
+
+/** Adopt the server's current fencing state from a structured conflict
+ * payload (top-level `current_*` keys — either a 409 body lifted by
+ * conflictState() or a 200-shaped error payload). Shared by the model-call
+ * and hook-renewal paths so both recover identically from a stale fence. */
+function adoptConflictFence(
+  ledger: RuntimeLedger,
+  payload: Record<string, unknown> | undefined,
+): void {
+  ledger.taskVersion = number(payload?.current_version) ?? ledger.taskVersion;
+  ledger.leaseEpoch = number(payload?.current_epoch) ?? ledger.leaseEpoch;
+  ledger.leaseExpiresAt =
+    number(payload?.lease_expires_at) ?? ledger.leaseExpiresAt;
 }
 
 function payloadIsError(payload: Record<string, unknown> | undefined): boolean {

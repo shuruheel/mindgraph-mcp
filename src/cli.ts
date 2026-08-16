@@ -25,6 +25,10 @@ import {
   uninstallCodexHooks,
 } from "./hook-installer.js";
 
+// Compile-time define (tsup); the pinned runner records it in a sidecar so
+// the MCP server can detect hook/server version skew.
+declare const __PACKAGE_VERSION__: string;
+
 // ── Hook health marker ────────────────────────────────────────────────
 
 /**
@@ -353,7 +357,7 @@ function finishCodeInstall(
   agentId?: string
 ): void {
   if (withHooks) {
-    const runner = installHookRunner(__filename);
+    const runner = installHookRunner(__filename, undefined, __PACKAGE_VERSION__);
     console.log(`Installed pinned hook runner at ${runner}`);
     const result = installClaudeHooks("user");
     console.log(
@@ -642,7 +646,7 @@ async function main(): Promise<void> {
       if (hookHarness !== "claude-code" && hookHarness !== "codex") {
         throw new Error("--harness must be claude-code or codex");
       }
-      const runner = installHookRunner(__filename);
+      const runner = installHookRunner(__filename, undefined, __PACKAGE_VERSION__);
       console.log(`Installed pinned hook runner at ${runner}`);
       const result =
         hookHarness === "codex"

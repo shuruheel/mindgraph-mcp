@@ -193,9 +193,15 @@ describe("MCP governance checkpoint", () => {
 
     expect(result.allowed).toBe(false);
     expect(fetchImpl).toHaveBeenCalledTimes(3);
+    // The refusal must read as CONNECTIVITY, not policy: the old wording
+    // ("could not establish permission… set MINDGRAPH_GOVERNANCE=off")
+    // steered callers toward disabling governance for a network blip that
+    // disabling governance cannot fix.
     expect(result).toMatchObject({
-      message: expect.stringContaining("MINDGRAPH_GOVERNANCE=off"),
+      message: expect.stringContaining("unreachable"),
     });
+    expect(String(result.message)).toContain("not a governance denial");
+    expect(String(result.message)).not.toContain("MINDGRAPH_GOVERNANCE=off");
   });
 
   it("does not mistake a refused credential for a server without governance", async () => {

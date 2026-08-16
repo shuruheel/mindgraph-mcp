@@ -607,3 +607,52 @@ describe("mindgraph_code", () => {
     });
   });
 });
+
+describe("attach degradation keeps the primary write", () => {
+  it("returns the committed write with a caveat when a relate edge fails", async () => {
+    // The attach contract (code-tool.ts) promises degradation "never
+    // rewrites or rolls back the already-successful memory/work operation" —
+    // but an uncaught relate throw escaped into handleTool's catch and
+    // repainted the whole call as an ERROR, losing the lesson UID the model
+    // had just created.
+    const entity = vi
+      .fn()
+      .mockResolvedValueOnce({ uid: "repo-uid", created: true })
+      .mockResolvedValueOnce({ uid: "symbol-uid", created: true })
+      .mockResolvedValueOnce({ uid: "part-of-edge" })
+      .mockRejectedValueOnce(new Error("edge write refused"));
+    const client = {
+      entity,
+      traverse: vi.fn(),
+      getNode: vi.fn(),
+    } as unknown as MindGraph;
+    const adapter = new CodegraphAdapter({
+      env: adapterEnv({
+        FAKE_CODEGRAPH_QUERY: JSON.stringify([queryHit()]),
+      }),
+    });
+    const result = await attachCodeRefsToToolResult(
+      client,
+      {
+        content: [
+          { type: "text", text: JSON.stringify({ uid: "lesson-uid" }) },
+        ],
+      },
+      {
+        action: "lesson",
+        code_refs: [{ path: "src/module.ts", symbol: "target" }],
+        repo_space_uid: "space:project:repo",
+        agent_id: "agent",
+      },
+      adapter,
+    );
+    expect(result.isError).not.toBe(true);
+    const payload = JSON.parse(result.content[0].text) as {
+      result: { uid: string };
+      code_anchors: { caveat?: string };
+    };
+    expect(payload.result.uid).toBe("lesson-uid");
+    expect(payload.code_anchors.caveat).toContain("relate edge(s) failed");
+    expect(payload.code_anchors.caveat).toContain("edge write refused");
+  });
+});
