@@ -255,13 +255,19 @@ export async function checkMcpGovernance(
 
   if (!response) {
     // Unreachable after retries. The adapter cannot tell "permitted" from
-    // "denied", so it refuses — an unevaluated policy is not a permit.
+    // "denied", so it refuses — an unevaluated policy is not a permit. The
+    // message must name CONNECTIVITY, not policy: the old wording read as a
+    // governance denial and steered callers toward MINDGRAPH_GOVERNANCE=off,
+    // which cannot help when the server itself is down — the graph call
+    // would fail identically.
     return {
       allowed: false,
       message:
-        `MindGraph governance could not establish permission after ` +
-        `${retryDelays.length + 1} attempts (${lastFailure}). ` +
-        `Set MINDGRAPH_GOVERNANCE=off to run this adapter ungoverned.`,
+        `MindGraph at ${config.baseUrl} is unreachable (${lastFailure}; ` +
+        `${retryDelays.length + 1} attempts). The tool call was NOT evaluated ` +
+        `against policy and NOT executed — this is a connectivity failure, ` +
+        `not a governance denial. Check the network and MINDGRAPH_BASE_URL, ` +
+        `then retry.`,
     };
   }
 

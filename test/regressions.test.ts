@@ -133,7 +133,12 @@ describe("R18 — created Tasks carry the repository topology SessionStart filte
       scope_uids: ["explicit-target-1"],
       agent_id: "codex-release-test",
       invocation_context: {
-        cwd: process.cwd(),
+        // A hermetic cwd: process.cwd() made the space assertion depend on
+        // whether a parent overlay above the CHECKOUT declares this repo in
+        // .mindgraph/workspace.json (space:project:* would then beat the
+        // space:agent:* fallback asserted below) — exactly the layout the
+        // product recommends for dev machines.
+        cwd: tempDir("mindgraph-r18-cwd-"),
         repoId: "github.com/example/repository",
         harness: "codex",
         harnessSessionId: "session-1",
@@ -1054,5 +1059,85 @@ describe("R26 — an unanchored repository is anchored at SessionStart, not skip
     expect(plans.find((request) => request.action === "resume_work")).toMatchObject({
       scope_uids: ["anchored-repo-uid"],
     });
+  });
+});
+
+describe("R27 — hook-driven renewal adopts the fence from a thrown 409", () => {
+  it("re-syncs the ledger from the conflict body so the next renewal fences correctly", async () => {
+    // Failure pinned (2026-08-12 audit): the renewal path swallowed thrown
+    // errors wholesale — a stale expected_version made every minute-bucketed
+    // reclaim/heartbeat 409 identically until the MODEL happened to issue a
+    // plan call (whose conflict payload was adopted), while the lease
+    // silently lapsed. The hook path must self-heal exactly like R23 does.
+    const runtime = tempDir("mindgraph-r27-runtime-");
+    const root = tempDir("mindgraph-r27-root-");
+    fs.mkdirSync(path.join(root, ".git"));
+    let clock = 50;
+    const c = continuityClient({
+      resume: {
+        task: { uid: "ledger-task", version: 1 },
+        lease: {
+          lease_owner_agent_id: "continuity-agent",
+          lease_epoch: 3,
+          lease_expires_at: 40, // expired — SessionStart's sanctioned rebind
+        },
+        selection_reason: "claimed",
+      },
+    });
+    const reclaims: Array<Record<string, unknown>> = [];
+    const base = c.plan.bind(c);
+    c.plan = async (request: Record<string, unknown>) => {
+      if (
+        request.action === "claim_task" &&
+        String(request.idempotency_key || "").startsWith("hook-reclaim:")
+      ) {
+        reclaims.push(request);
+        throw new MindGraphError("POST /agent/plan failed: 409", 409, {
+          error: "lease_conflict",
+          code: "lease_conflict",
+          current_version: 9,
+          current_epoch: 6,
+          lease_expires_at: 400,
+        });
+      }
+      const response = (await base(request)) as Record<string, unknown>;
+      if (request.action === "claim_task" && clock < 100) {
+        // SessionStart's claim yields a short lease so the hook path — not
+        // the model — is what must keep it alive.
+        return { ...response, lease_expires_at: 100 };
+      }
+      return response;
+    };
+    await claimedLedger(runtime, root, c, () => clock);
+    const postTool = (at: number) => {
+      clock = at;
+      return runClaudeHook(
+        {
+          hook_event_name: "PostToolUse",
+          session_id: "continuity-session",
+          cwd: root,
+          tool_name: "Bash",
+          tool_input: { command: "true" },
+          tool_response: {},
+        },
+        c,
+        { agentId: "continuity-agent", runtimeDir: runtime, now: () => clock },
+      );
+    };
+    // Lease (expires 100) has lapsed → reclaim fires with the ledger's
+    // pre-conflict fence and 409s.
+    await postTool(200);
+    expect(reclaims).toHaveLength(1);
+    expect(reclaims[0]).toMatchObject({ expected_version: 2 });
+    // The adopted fence says the lease runs to 400 — no renewal attempt
+    // fires while someone verifiably holds it.
+    await postTool(260);
+    expect(reclaims).toHaveLength(1);
+    // Past the adopted expiry the next reclaim must replay the ADOPTED
+    // fence, not the stale one that just 409'd.
+    await postTool(460);
+    expect(reclaims).toHaveLength(2);
+    expect(reclaims[1]).toMatchObject({ expected_version: 9 });
+    expect(String(reclaims[1].idempotency_key)).toContain(":6:");
   });
 });

@@ -19,6 +19,7 @@ import {
   RESOURCE_TEMPLATES,
   readGovernedResource,
 } from "./resources.js";
+import { versionSkewNote } from "./hook-installer.js";
 
 declare const __PACKAGE_VERSION__: string;
 
@@ -165,6 +166,22 @@ if (PROFILE === "coding") {
         !line.includes("Typed code anchors"),
     )
     .join("\n");
+}
+
+// Hook/server version skew: the hooks run a bundle pinned at install time
+// while this server floats on `npx @latest`. Surface drift where the model
+// can see it (instructions) and the user can see it (stderr) — a 0.14-era
+// runner silently served 0.17-era sessions for two weeks before this check.
+const HOOK_SKEW_NOTE = (() => {
+  try {
+    return versionSkewNote(__PACKAGE_VERSION__);
+  } catch {
+    return undefined;
+  }
+})();
+if (HOOK_SKEW_NOTE) {
+  INSTRUCTIONS += `\n\n${HOOK_SKEW_NOTE}`;
+  console.error(`[mindgraph-mcp] ${HOOK_SKEW_NOTE}`);
 }
 
 // ── MCP Server ────────────────────────────────────────────────────────

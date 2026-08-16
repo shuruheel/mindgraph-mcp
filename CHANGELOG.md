@@ -2,7 +2,47 @@
 
 ## Unreleased
 
+### Added
+
+- **SessionStart warns when the harness has hooks but no registered MindGraph
+  MCP server.** Observed live (2026-08-12): user-scope hooks delivered briefs
+  and Stop nudges into Claude Code sessions with no `mcp__mindgraph__*` tools
+  to act on — every ledger showed `stopNudged` with `memoryWritten` never
+  true. The hook now checks the layouts the installer writes (user and
+  cwd-project scope in `~/.claude.json`, `.mcp.json` up the tree) and leads
+  the brief with a fix-it note when nothing registers the server.
+  `MINDGRAPH_SKIP_MCP_REGISTRATION_CHECK=1` silences it; the diagnostic never
+  fails the hook.
+- **Hook-runner/server version skew is now detectable and surfaced.** The MCP
+  registration floats on `npx @latest` while the hook runner is pinned at
+  install time — a 0.14-era runner silently served 0.17-era sessions for two
+  weeks. `install-hooks`/`install-code --hooks` record the copied bundle's
+  version in a sidecar; the server compares it to its own at startup and
+  appends a re-run-install-hooks note to its instructions (and stderr) on
+  mismatch.
+
 ### Fixed
+
+- **A backend outage no longer reads as a governance denial.** The
+  fail-closed message for an unreachable server said "could not establish
+  permission… set `MINDGRAPH_GOVERNANCE=off`", steering callers toward
+  disabling governance for a connectivity failure that disabling governance
+  cannot fix (the graph call would fail identically). It now names the
+  unreachable base URL and states the call was neither evaluated nor
+  executed.
+- **Hook-driven lease renewal adopts the fence from a thrown 409.** Renewal
+  errors were swallowed whole, so a stale `expected_version` made every
+  minute-bucketed heartbeat/reclaim fail identically while the lease silently
+  lapsed — recovery waited for the model to make a plan call of its own. The
+  hook now lifts `current_version`/`current_epoch`/`lease_expires_at` from
+  the typed 409 body (and from 200-shaped error payloads), exactly like the
+  model-call path.
+- **A failed `relate` edge no longer repaints a successful write as an
+  error.** `attachCodeRefsToToolResult` promised degradation without
+  rollback, but its relate loop was unguarded: one thrown edge write turned
+  the whole call into a tool error, losing the lesson/task UID the model had
+  just created. Relate failures now return the committed write plus a
+  per-edge caveat.
 
 - **`mindgraph_code` now resolves from the live session directory.** The tool
   built its default codegraph adapter on the MCP server process's cwd,

@@ -393,16 +393,37 @@ export async function attachCodeRefsToToolResult(
     const anchorUids = (anchors.anchors ?? []).flatMap((anchor) =>
       anchor.uid ? [anchor.uid] : [],
     );
+    const relateFailures: string[] = [];
     for (const targetUid of targetUids) {
       for (const anchorUid of anchorUids) {
-        await codeClient.entity({
-          action: "relate",
-          source_uid: targetUid,
-          target_uid: anchorUid,
-          edge_type: args.action === "lesson" ? "ABOUT" : "RELEVANT_TO",
-          agent_id: args.agent_id,
-        });
+        try {
+          await codeClient.entity({
+            action: "relate",
+            source_uid: targetUid,
+            target_uid: anchorUid,
+            edge_type: args.action === "lesson" ? "ABOUT" : "RELEVANT_TO",
+            agent_id: args.agent_id,
+          });
+        } catch (cause) {
+          // A failed edge must degrade like every other attach failure — an
+          // uncaught throw here repainted the already-committed primary
+          // write as a tool ERROR, losing the UID the model just created.
+          relateFailures.push(
+            `${targetUid} -> ${anchorUid}: ${errorDetail(cause)}`,
+          );
+        }
       }
+    }
+    if (relateFailures.length > 0) {
+      return ok({
+        result: original,
+        code_anchors: {
+          ...anchors,
+          caveat:
+            `anchors written, but ${relateFailures.length} relate edge(s) ` +
+            `failed: ${relateFailures.join("; ")}`,
+        },
+      });
     }
   }
   return ok({ result: original, code_anchors: anchors });

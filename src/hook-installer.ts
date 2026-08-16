@@ -23,12 +23,63 @@ function windowsCommand(harness: HookHarness): string {
   return `node "%USERPROFILE%\\.mindgraph\\bin\\mindgraph-hook.cjs" hook --harness ${harness} --owner mindgraph`;
 }
 
+/** Sidecar recording which package version the pinned runner was copied
+ * from. The MCP registration floats on `npx -y mindgraph-mcp@latest` while
+ * the runner is pinned at install time, so the two silently skew apart —
+ * observed live 2026-08-12: a 0.14.7-era runner serving 0.17-era sessions
+ * for two weeks with no signal. The sidecar is what makes skew detectable. */
+const RUNNER_VERSION_RELATIVE = `${RUNNER_RELATIVE}.version`;
+
 /** Copy the executing CLI bundle to the stable runner path hooks invoke. */
-export function installHookRunner(sourceFile: string, homeDir?: string): string {
+export function installHookRunner(
+  sourceFile: string,
+  homeDir?: string,
+  version?: string,
+): string {
   const target = path.join(homeDir || os.homedir(), RUNNER_RELATIVE);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.copyFileSync(sourceFile, target);
+  const versionPath = path.join(homeDir || os.homedir(), RUNNER_VERSION_RELATIVE);
+  if (version) {
+    fs.writeFileSync(versionPath, `${version}\n`);
+  } else {
+    // A copy of unknown provenance must not inherit the previous sidecar.
+    fs.rmSync(versionPath, { force: true });
+  }
   return target;
+}
+
+export function installedHookRunnerVersion(homeDir?: string): string | undefined {
+  try {
+    const raw = fs
+      .readFileSync(
+        path.join(homeDir || os.homedir(), RUNNER_VERSION_RELATIVE),
+        "utf8",
+      )
+      .trim();
+    return raw || undefined;
+  } catch {
+    // Pre-sidecar installs (≤0.17.0) have a runner but no version record —
+    // indistinguishable from no install, so no skew claim is made.
+    return undefined;
+  }
+}
+
+/** A one-line warning when the pinned hook runner and the running server
+ * come from different package versions; undefined when they match or the
+ * runner's version is unrecorded. */
+export function versionSkewNote(
+  serverVersion: string,
+  homeDir?: string,
+): string | undefined {
+  const runnerVersion = installedHookRunnerVersion(homeDir);
+  if (!runnerVersion || runnerVersion === serverVersion) return undefined;
+  return (
+    `NOTE: the installed MindGraph hook runner is v${runnerVersion} but this ` +
+    `MCP server is v${serverVersion} — hook behavior and tool contracts may ` +
+    `be out of sync. Tell the user to run: ` +
+    `npx -y mindgraph-mcp@latest install-hooks (refreshes the pinned runner).`
+  );
 }
 
 export function uninstallHookRunner(homeDir?: string): void {
@@ -37,6 +88,9 @@ export function uninstallHookRunner(homeDir?: string): void {
   } catch {
     // Best effort — absence is the goal.
   }
+  fs.rmSync(path.join(homeDir || os.homedir(), RUNNER_VERSION_RELATIVE), {
+    force: true,
+  });
 }
 
 type JsonObject = Record<string, unknown>;
