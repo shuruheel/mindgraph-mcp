@@ -10,6 +10,7 @@ import {
   mcpAddFailureOutput,
   parseArgs,
 } from "./cli-args.js";
+import { httpSkillsApi, skillsPull, skillsPush } from "./skills-cli.js";
 import {
   readHookInput,
   runClaudeHook,
@@ -421,6 +422,20 @@ USAGE:
   mindgraph-mcp install-hooks --harness claude-code|codex [--scope user|project]
   mindgraph-mcp uninstall-hooks --harness claude-code|codex [--scope user|project]
   mindgraph-mcp status           Show installation status
+  mindgraph-mcp skills pull [--dir .claude/skills]
+                                 Write your org's published+granted skills as
+                                 SKILL.md directories (allowlisted frontmatter
+                                 only). Revoked/archived skills are withdrawn;
+                                 local edits are never overwritten (.conflict
+                                 sidecars). NOTE: coding harnesses hot-reload
+                                 skill files — running sessions adopt pulled
+                                 changes immediately; session pinning exists
+                                 on the managed-agent leg only.
+  mindgraph-mcp skills push <path>
+                                 Import a SKILL.md directory as a review
+                                 candidate (nothing auto-publishes). A
+                                 previously pulled directory routes to the
+                                 candidate-only update path.
 
 OPTIONS:
   --api-key <key>     MindGraph API key (or set MINDGRAPH_API_KEY env var)
@@ -600,10 +615,89 @@ async function interactiveInit(baseUrl?: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const { command, apiKey, baseUrl, scope, projectDir, harness, hooks, agentId } =
-    parseArgs(process.argv);
+  const {
+    command,
+    apiKey,
+    baseUrl,
+    scope,
+    projectDir,
+    harness,
+    hooks,
+    agentId,
+    positionals,
+    dir,
+  } = parseArgs(process.argv);
 
   switch (command) {
+    case "skills": {
+      if (!apiKey) {
+        console.error(
+          "API key required. Use --api-key or set MINDGRAPH_API_KEY."
+        );
+        process.exit(1);
+      }
+      const sub = positionals[0];
+      const api = httpSkillsApi(
+        baseUrl ?? "https://api.mindgraph.cloud",
+        apiKey,
+        agentId
+      );
+      if (sub === "pull") {
+        if (!agentId) {
+          console.error(
+            "note: no --agent-id/MINDGRAPH_AGENT_ID — pulling ALL published " +
+              "skills; bind an agent identity to scope the set by its grants."
+          );
+        }
+        const report = await skillsPull(api, dir ?? ".claude/skills", agentId);
+        for (const name of report.written) console.log(`  written    ${name}`);
+        for (const name of report.unchanged)
+          console.log(`  unchanged  ${name}`);
+        for (const name of report.locallyEdited)
+          console.log(`  local-edit ${name} — upstream unchanged; left alone`);
+        for (const name of report.conflicts)
+          console.log(
+            `  CONFLICT   ${name} — local edits kept; new upstream saved as SKILL.md.conflict`
+          );
+        for (const removal of report.removed)
+          console.log(
+            `  withdrawn  ${removal.name}${
+              removal.kept ? " (local edits kept as SKILL.md.conflict)" : ""
+            }${removal.statusReason ? ` — ${removal.statusReason}` : ""}`
+          );
+        for (const refusal of report.refused)
+          console.log(`  REFUSED    ${refusal.name} — ${refusal.reason}`);
+        const total =
+          report.written.length +
+          report.unchanged.length +
+          report.locallyEdited.length +
+          report.conflicts.length;
+        console.log(`\n${total} skill(s) synced.`);
+      } else if (sub === "push") {
+        const target = positionals[1];
+        if (!target) {
+          console.error("Usage: mindgraph-mcp skills push <path>");
+          process.exit(1);
+        }
+        const report = await skillsPush(api, target);
+        console.log(report.message);
+        if (report.existingUid) {
+          console.log(
+            `  existing skill: ${report.existingUid}${
+              report.existingStatus ? ` (${report.existingStatus})` : ""
+            }`
+          );
+        }
+        if (report.outcome === "error" || report.outcome === "conflict") {
+          process.exit(1);
+        }
+      } else {
+        console.error("Usage: mindgraph-mcp skills pull|push [...]");
+        process.exit(1);
+      }
+      break;
+    }
+
     case "help":
       printUsage();
       break;
