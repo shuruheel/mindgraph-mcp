@@ -14,6 +14,8 @@ export function parseArgs(argv: string[]): {
   harness?: string;
   hooks: boolean;
   agentId?: string;
+  positionals: string[];
+  dir?: string;
 } {
   const args = argv.slice(2);
   let command = "serve";
@@ -24,6 +26,8 @@ export function parseArgs(argv: string[]): {
   let harness: string | undefined;
   let hooks = false;
   let agentId: string | undefined = process.env.MINDGRAPH_AGENT_ID;
+  const positionals: string[] = [];
+  let dir: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -44,6 +48,9 @@ export function parseArgs(argv: string[]): {
       }
       case "--project-dir":
         projectDir = args[++i];
+        break;
+      case "--dir":
+        dir = args[++i];
         break;
       case "--harness":
         harness = args[++i];
@@ -67,13 +74,30 @@ export function parseArgs(argv: string[]): {
         break;
       default:
         if (!arg.startsWith("-")) {
-          command = arg;
+          // First bare token is the command; the rest are positionals
+          // (subcommands and paths, e.g. `skills pull`).
+          if (command === "serve") {
+            command = arg;
+          } else {
+            positionals.push(arg);
+          }
         }
         break;
     }
   }
 
-  return { command, apiKey, baseUrl, scope, projectDir, harness, hooks, agentId };
+  return {
+    command,
+    apiKey,
+    baseUrl,
+    scope,
+    projectDir,
+    harness,
+    hooks,
+    agentId,
+    positionals,
+    dir,
+  };
 }
 
 export type McpAddFailure = "already-exists" | "missing-cli" | "other";
