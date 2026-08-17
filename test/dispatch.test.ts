@@ -82,6 +82,7 @@ function makeClient() {
     "rejectOntologyProposal",
     "linkDomainObjects",
     "extractOntology",
+    "request",
   ] as const;
 
   const client = {} as Record<string, ReturnType<typeof vi.fn>>;
@@ -637,6 +638,42 @@ describe("mindgraph_retrieve dispatch", () => {
     const r = await handleTool(client, "mindgraph_retrieve", { action: "neighborhood" });
     expect(r.isError).toBe(true);
     expect(client.traverse).not.toHaveBeenCalled();
+  });
+});
+
+describe("mindgraph_series_query dispatch", () => {
+  it("delegates read-only actions to the canonical series endpoint", async () => {
+    await handleTool(client, "mindgraph_series_query", {
+      action: "window",
+      series_uid: "s1",
+      from: 10,
+      to: 20,
+      limit: 5,
+    });
+    expect(client.request).toHaveBeenCalledWith("POST", "/reality/series", {
+      action: "window",
+      series_uid: "s1",
+      from: 10,
+      to: 20,
+      limit: 5,
+    });
+  });
+
+  it("rejects writes and missing action-specific coordinates", async () => {
+    const append = await handleTool(client, "mindgraph_series_query", {
+      action: "append",
+      series_uid: "s1",
+      points: [],
+    });
+    expect(append.isError).toBe(true);
+    const aggregate = await handleTool(client, "mindgraph_series_query", {
+      action: "aggregate",
+      series_uid: "s1",
+      from: 0,
+      to: 1,
+    });
+    expect(aggregate.isError).toBe(true);
+    expect(client.request).not.toHaveBeenCalled();
   });
 });
 

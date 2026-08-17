@@ -106,6 +106,7 @@ export function toolMutability(
   action: string | undefined,
 ): ToolMutability {
   if (toolName === "mindgraph_retrieve") return "read";
+  if (toolName === "mindgraph_series_query") return "read";
   if (toolName === "mindgraph_plan") {
     return action && PLAN_READ_ACTIONS.has(action) ? "read" : "write";
   }
@@ -138,6 +139,8 @@ export function toolMutability(
 const UID_FIELDS = [
   "uid",
   "source_uid",
+  "entity_uid",
+  "series_uid",
   "session_uid",
   "work_uid",
   "goal_uid",
