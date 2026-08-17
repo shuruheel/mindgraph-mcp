@@ -744,6 +744,43 @@ export const TOOLS: Tool[] = [
     },
   },
   {
+    name: "mindgraph_series_query",
+    description:
+      "Read dense numeric time series without placing raw points in general retrieval context. Use list_for_entity to discover series, latest for cached statistics, window for [from,to) keyset pages, and aggregate for bounded calendar buckets.",
+    inputSchema: {
+      type: "object" as const,
+      additionalProperties: false,
+      properties: {
+        action: {
+          type: "string",
+          enum: ["list_for_entity", "latest", "window", "aggregate"],
+        },
+        entity_uid: { type: "string" },
+        series_uid: { type: "string" },
+        from: { type: "number" },
+        to: { type: "number" },
+        cursor: { type: "number" },
+        limit: { type: "number", minimum: 1, maximum: 10000 },
+        bucket: {
+          type: "string",
+          enum: ["year", "quarter", "month", "week", "day", "hour"],
+        },
+        agg: {
+          type: "string",
+          enum: ["sum", "mean", "min", "max", "count", "std_dev", "last"],
+        },
+        fill: { type: "string", enum: ["none", "null", "prev"] },
+      },
+      required: ["action"],
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
     name: "mindgraph_ingest",
     description:
       "Ingest long-form content (articles, transcripts, documents, meeting notes) into the knowledge graph. The pipeline automatically chunks the text, extracts entities/claims/relationships via LLM, and deduplicates against existing nodes. Use 'chunk' for a single passage (synchronous), 'document' for full documents (async — returns a job ID), 'session' for conversation transcripts. Use 'job_status' to check progress. For short individual facts, use the specific cognitive tools instead.",
@@ -1122,6 +1159,9 @@ export async function handleTool(
       case "mindgraph_retrieve":
         result = await handleRetrieve(client, args);
         break;
+      case "mindgraph_series_query":
+        result = await handleSeriesQuery(client, args);
+        break;
       case "mindgraph_ingest":
         result = await handleIngest(client, args);
         break;
@@ -1175,6 +1215,41 @@ export async function handleTool(
     }
     return err(errorDetail(e));
   }
+}
+
+async function handleSeriesQuery(
+  client: MindGraph,
+  args: Record<string, unknown>,
+): Promise<ToolResult> {
+  const action = typeof args.action === "string" ? args.action : "";
+  if (!["list_for_entity", "latest", "window", "aggregate"].includes(action)) {
+    return err(`Unknown series query action: ${action}`);
+  }
+  if (action === "list_for_entity" && typeof args.entity_uid !== "string") {
+    return err("entity_uid is required for action='list_for_entity'");
+  }
+  if (action !== "list_for_entity" && typeof args.series_uid !== "string") {
+    return err(`series_uid is required for action='${action}'`);
+  }
+  if (
+    (action === "window" || action === "aggregate") &&
+    (typeof args.from !== "number" || typeof args.to !== "number")
+  ) {
+    return err(`from and to are required for action='${action}'`);
+  }
+  if (
+    action === "aggregate" &&
+    (typeof args.bucket !== "string" || typeof args.agg !== "string")
+  ) {
+    return err("bucket and agg are required for action='aggregate'");
+  }
+  // `request` is the SDK's shared retry/auth/telemetry transport. The cast
+  // keeps this adapter compatible with the 0.14 SDK package while the B2
+  // source-level `series()` convenience method moves through release.
+  const transport = client as unknown as {
+    request<T>(method: string, path: string, body?: unknown): Promise<T>;
+  };
+  return ok(await transport.request("POST", "/reality/series", args));
 }
 
 // ── Capture (+ Journal) ──────────────────────────────────────────────
