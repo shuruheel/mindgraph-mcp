@@ -209,6 +209,26 @@ describe("coding-agent work contract parity", () => {
     }
   });
 
+  it("requires authored fields and provenance for skill capture", () => {
+    expect(actionEnum("mindgraph_capture")).toContain("skill");
+    const schema = toolByName("mindgraph_capture").inputSchema as JsonSchema & {
+      allOf?: unknown[];
+    };
+    const encoded = JSON.stringify(schema.allOf);
+    expect(encoded).toContain('"const":"skill"');
+    for (const field of ["name", "description", "content"]) {
+      expect(encoded).toContain(`"${field}"`);
+    }
+    for (const field of [
+      "session_uid",
+      "work_uid",
+      "execution_uid",
+      "summarizes_uids",
+    ]) {
+      expect(encoded).toContain(`"${field}"`);
+    }
+  });
+
   it("marks the mixed read/write plan tool conservatively write-capable", () => {
     const annotations = toolByName("mindgraph_plan").annotations;
     expect(annotations?.readOnlyHint).toBe(false);

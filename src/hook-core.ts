@@ -970,12 +970,12 @@ async function postTool(
     // Only reflective writes satisfy the Stop nudge's "capture one durable
     // lesson/decision/risk" — creating an Entity or Source is not memory of
     // the work. The credited set mirrors the nudge text exactly: lessons/
-    // journals (capture), resolved decisions (commit), risk assessments
-    // (plan).
+    // journals/skills (capture), resolved decisions (commit), risk
+    // assessments (plan).
     if (!payload?.error) {
       if (
         (name.includes("mindgraph_capture") &&
-          ["lesson", "journal"].includes(action || "")) ||
+          ["lesson", "journal", "skill"].includes(action || "")) ||
         (name.includes("mindgraph_commit") && action === "resolve_decision") ||
         (name.includes("mindgraph_plan") && action === "assess_risk")
       ) {

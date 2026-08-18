@@ -198,6 +198,57 @@ describe("mindgraph_capture dispatch", () => {
     expect(client.distill.mock.calls[0][0]).not.toHaveProperty("action");
   });
 
+  it("skill -> distill() with caller-authored props and provenance", async () => {
+    await handleTool(client, "mindgraph_capture", {
+      action: "skill",
+      label: "Capture parser recovery",
+      summary: "Reusable parser recovery procedure",
+      name: "parser-recovery",
+      description: "Recover a parser after malformed input.",
+      content: "# Parser recovery\n\nNormalize input, then retry.",
+      license: "MIT",
+      session_uid: "session-1",
+      summarizes_uids: ["project-1"],
+      agent_id: "mcp",
+    });
+
+    expect(client.distill).toHaveBeenCalledTimes(1);
+    expect(client.distill.mock.calls[0][0]).toEqual({
+      label: "Capture parser recovery",
+      output_type: "skill",
+      summary: "Reusable parser recovery procedure",
+      confidence: undefined,
+      salience: undefined,
+      session_uid: "session-1",
+      work_uid: undefined,
+      execution_uid: undefined,
+      idempotency_key: undefined,
+      supersedes_uid: undefined,
+      summarizes_uids: ["project-1"],
+      props: {
+        name: "parser-recovery",
+        description: "Recover a parser after malformed input.",
+        content: "# Parser recovery\n\nNormalize input, then retry.",
+        license: "MIT",
+      },
+      agent_id: "mcp",
+    });
+  });
+
+  it("skill without provenance is rejected before distill()", async () => {
+    const r = await handleTool(client, "mindgraph_capture", {
+      action: "skill",
+      label: "Capture parser recovery",
+      name: "parser-recovery",
+      description: "Recover a parser after malformed input.",
+      content: "# Parser recovery",
+    });
+
+    expect(r.isError).toBe(true);
+    expect(payload(r).error).toContain("at least one of session_uid");
+    expect(client.distill).not.toHaveBeenCalled();
+  });
+
   it("observation -> capture({action:'observation', ...})", async () => {
     await handleTool(client, "mindgraph_capture", {
       action: "observation",

@@ -179,7 +179,7 @@ profile):
 
 | Tool | Purpose |
 |------|---------|
-| `mindgraph_capture` | Entities, observations, sources, snippets, concepts, journal entries |
+| `mindgraph_capture` | Entities, observations, sources, snippets, concepts, journals, lessons, governed skill candidates |
 | `mindgraph_reason` | Claims with evidence, open questions, hypotheses, theories, anomalies |
 | `mindgraph_commit` | Goals, projects, decisions, options, milestones, and dated decision-context linkage |
 | `mindgraph_plan` | Plans, tasks, procedures, governance policies, risk assessments, executions |

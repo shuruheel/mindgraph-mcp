@@ -26,7 +26,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_capture",
     description:
-      "Capture knowledge into the graph. Use 'entity' for people/orgs/places/events/nations/concepts (auto-deduplicates — safe to call even if already exists), 'observation' for factual statements, 'source' for documents/URLs, 'snippet' for quotes from a source, and 'concept' for abstract ideas. Use 'journal' for quick personal notes and 'lesson' for a durable learning attributable to a session or source nodes. Prefer 'entity'/'observation' for objective facts, 'journal' for informal notes, and 'lesson' only for reusable knowledge.",
+      "Capture knowledge into the graph. Use 'entity' for people/orgs/places/events/nations/concepts (auto-deduplicates — safe to call even if already exists), 'observation' for factual statements, 'source' for documents/URLs, 'snippet' for quotes from a source, and 'concept' for abstract ideas. Use 'journal' for quick personal notes, 'lesson' for a durable learning, and 'skill' for a reusable procedure authored from completed work. Skill capture always creates a candidate requiring admin review; it never publishes. Skill names must be 1-64 lowercase a-z, digits, or hyphens, with no leading/trailing/consecutive hyphens and no 'anthropic' or 'claude'. Provide at least one provenance field and write instructions, not a transcript dump.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -40,6 +40,7 @@ export const TOOLS: Tool[] = [
             "concept",
             "journal",
             "lesson",
+            "skill",
           ],
           description: "Type of knowledge to capture",
         },
@@ -53,11 +54,34 @@ export const TOOLS: Tool[] = [
         },
         content: {
           type: "string",
-          description: "Journal content/body text (for action=journal)",
+          maxLength: 65_536,
+          description:
+            "Journal body (action=journal) or complete SKILL.md instructions, at most 64 KiB UTF-8 (action=skill)",
+        },
+        name: {
+          type: "string",
+          minLength: 1,
+          maxLength: 64,
+          pattern:
+            "^(?!.*(?:anthropic|claude))(?!-)(?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+          description:
+            "Stable skill identifier using lowercase a-z, digits, and hyphens (for action=skill)",
+        },
+        description: {
+          type: "string",
+          minLength: 1,
+          maxLength: 1_024,
+          description:
+            "When the skill should be used; XML tags are rejected (for action=skill)",
+        },
+        license: {
+          type: "string",
+          description: "Optional skill license (for action=skill)",
         },
         session_uid: {
           type: "string",
-          description: "Session UID that produced a lesson (for action=lesson)",
+          minLength: 1,
+          description: "Session UID that produced a lesson or skill",
         },
         work_uid: {
           type: "string",
@@ -78,8 +102,9 @@ export const TOOLS: Tool[] = [
         summarizes_uids: {
           type: "array",
           items: { type: "string" },
+          minItems: 1,
           description:
-            "Source node UIDs the lesson was learned from (for action=lesson)",
+            "Source node UIDs the lesson or skill was learned from",
         },
         entity_type: {
           type: "string",
@@ -147,6 +172,23 @@ export const TOOLS: Tool[] = [
         },
       },
       required: ["action", "label"],
+      allOf: [
+        {
+          if: {
+            properties: { action: { const: "skill" } },
+            required: ["action"],
+          },
+          then: {
+            required: ["name", "description", "content"],
+            anyOf: [
+              { required: ["session_uid"] },
+              { required: ["work_uid"] },
+              { required: ["execution_uid"] },
+              { required: ["summarizes_uids"] },
+            ],
+          },
+        },
+      ],
     },
   },
   {
@@ -1263,6 +1305,9 @@ async function handleCapture(
     label,
     summary,
     content,
+    name,
+    description,
+    license,
     session_uid,
     work_uid,
     execution_uid,
@@ -1282,6 +1327,9 @@ async function handleCapture(
     label: string;
     summary?: string;
     content?: string;
+    name?: string;
+    description?: string;
+    license?: string;
     session_uid?: string;
     work_uid?: string;
     execution_uid?: string;
@@ -1315,8 +1363,46 @@ async function handleCapture(
           summarizes_uids,
           props,
           agent_id,
-        } as any)
+        })
       );
+    case "skill": {
+      if (!name) return err("name is required for action=skill");
+      if (!description) return err("description is required for action=skill");
+      if (content === undefined) return err("content is required for action=skill");
+      const hasProvenance =
+        [session_uid, work_uid, execution_uid].some(
+          (uid) => typeof uid === "string" && uid.length > 0,
+        ) ||
+        (Array.isArray(summarizes_uids) &&
+          summarizes_uids.some((uid) => typeof uid === "string" && uid.length > 0));
+      if (!hasProvenance) {
+        return err(
+          "at least one of session_uid, work_uid, execution_uid, or summarizes_uids is required for action=skill",
+        );
+      }
+      return ok(
+        await client.distill({
+          label,
+          output_type: "skill",
+          summary,
+          confidence,
+          salience,
+          session_uid,
+          work_uid,
+          execution_uid,
+          idempotency_key,
+          supersedes_uid,
+          summarizes_uids,
+          props: {
+            name,
+            description,
+            content,
+            ...(license ? { license } : {}),
+          },
+          agent_id,
+        }),
+      );
+    }
     case "journal": {
       if (!content) return err("content is required for action=journal");
       const journalProps: Record<string, unknown> = { content };

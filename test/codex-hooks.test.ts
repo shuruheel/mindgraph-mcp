@@ -253,6 +253,60 @@ describe("Codex normalized hook adapter", () => {
       expect.objectContaining({ action: "close" }),
     );
   });
+
+  it("treats a successful skill capture as durable memory", async () => {
+    const cwd = tempRoot();
+    const runtimeDir = path.join(cwd, "runtime");
+    const fixture = fakeClient();
+    await runCodexHook(
+      {
+        session_id: "thr_skill",
+        cwd,
+        hook_event_name: "SessionStart",
+        source: "startup",
+      },
+      fixture.client,
+      { agentId: "codex-b7", runtimeDir },
+    );
+    for (const toolName of ["apply_patch", "apply_patch"]) {
+      await runCodexHook(
+        {
+          session_id: "thr_skill",
+          cwd,
+          hook_event_name: "PostToolUse",
+          tool_name: toolName,
+          tool_input: {},
+          tool_response: { ok: true },
+        },
+        fixture.client,
+        { agentId: "codex-b7", runtimeDir },
+      );
+    }
+    await runCodexHook(
+      {
+        session_id: "thr_skill",
+        cwd,
+        hook_event_name: "PostToolUse",
+        tool_name: "mcp__mindgraph__mindgraph_capture",
+        tool_input: { action: "skill" },
+        tool_response: { uid: "skill-1", status: "candidate" },
+      },
+      fixture.client,
+      { agentId: "codex-b7", runtimeDir },
+    );
+
+    const stopped = await runCodexHook(
+      {
+        session_id: "thr_skill",
+        cwd,
+        hook_event_name: "Stop",
+        stop_hook_active: false,
+      },
+      fixture.client,
+      { agentId: "codex-b7", runtimeDir },
+    );
+    expect(stopped).toEqual({});
+  });
 });
 
 describe("Codex hook installer", () => {
