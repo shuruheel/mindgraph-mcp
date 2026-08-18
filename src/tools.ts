@@ -1285,13 +1285,9 @@ async function handleSeriesQuery(
   ) {
     return err("bucket and agg are required for action='aggregate'");
   }
-  // `request` is the SDK's shared retry/auth/telemetry transport. The cast
-  // keeps this adapter compatible with the 0.14 SDK package while the B2
-  // source-level `series()` convenience method moves through release.
-  const transport = client as unknown as {
-    request<T>(method: string, path: string, body?: unknown): Promise<T>;
-  };
-  return ok(await transport.request("POST", "/reality/series", args));
+  return ok(
+    await client.series(args as Parameters<typeof client.series>[0]),
+  );
 }
 
 // ── Capture (+ Journal) ──────────────────────────────────────────────
@@ -1380,32 +1376,27 @@ async function handleCapture(
           "at least one of session_uid, work_uid, execution_uid, or summarizes_uids is required for action=skill",
         );
       }
-      const skillRequest = {
-        label,
-        output_type: "skill",
-        summary,
-        confidence,
-        salience,
-        session_uid,
-        work_uid,
-        execution_uid,
-        idempotency_key,
-        supersedes_uid,
-        summarizes_uids,
-        props: {
-          name,
-          description,
-          content,
-          ...(license ? { license } : {}),
-        },
-        agent_id,
-      };
-      // mindgraph 0.14 accepts this server-side shape, but its published
-      // DistillRequest type predates the skill discriminator added in 0.15.
       return ok(
-        await client.distill(
-          skillRequest as unknown as Parameters<typeof client.distill>[0],
-        ),
+        await client.distill({
+          label,
+          output_type: "skill",
+          summary,
+          confidence,
+          salience,
+          session_uid,
+          work_uid,
+          execution_uid,
+          idempotency_key,
+          supersedes_uid,
+          summarizes_uids,
+          props: {
+            name,
+            description,
+            content,
+            ...(license ? { license } : {}),
+          },
+          agent_id,
+        }),
       );
     }
     case "journal": {

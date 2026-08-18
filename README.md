@@ -174,7 +174,7 @@ and never block the coding session.
 
 ## What You Get
 
-**8 tools** covering the full knowledge-graph workflow (**10** in the coding
+**9 tools** covering the full knowledge-graph workflow (**11** in the coding
 profile):
 
 | Tool | Purpose |
@@ -184,6 +184,7 @@ profile):
 | `mindgraph_commit` | Goals, projects, decisions, options, milestones, and dated decision-context linkage |
 | `mindgraph_plan` | Plans, tasks, procedures, governance policies, risk assessments, executions |
 | `mindgraph_retrieve` | Context retrieval with bounded graph expansion, search, min-cost traversal, document index. Since 0.16.0, read results return as a rendered, token-bounded text block (labels, uids, summaries, epistemic status tags, relationships) — pass `format: "json"` on any call for the raw server response |
+| `mindgraph_series_query` | Bounded, read-only dense-measurement queries: list an entity's Series, inspect latest values, page a time window, or calculate calendar aggregates |
 | `mindgraph_ingest` | Chunk / document / session ingestion with LLM-powered extraction. `job_status` without an id renders the 20 most recent jobs (`format: "json"` for the full list) |
 | `mindgraph_synthesize` | Project-scoped cross-document synthesis — mine signals (rendered as sections since 0.17.0), spawn Article-generation jobs |
 | `mindgraph_ontology` | Operational Ontology (Layer 7) — typed domain objects, NL queries with provenance, extraction proposal review (approve/reject), object linking. Read actions render as text since 0.17.0 (`format: "json"` for raw) |
@@ -220,6 +221,8 @@ mindgraph-mcp uninstall        Remove from Claude Desktop config
 mindgraph-mcp uninstall-code   Remove from Claude Code
 mindgraph-mcp install-hooks    Install coding hooks (--harness claude-code|codex)
 mindgraph-mcp uninstall-hooks  Remove MindGraph-owned hook entries
+mindgraph-mcp skills pull      Render published and granted skills into local SKILL.md directories
+mindgraph-mcp skills push      Import or update one local SKILL.md as a governed candidate
 mindgraph-mcp status           Show installation status
 ```
 
