@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.19.0 (2026-08-17)
+
+This release turns governed skills and dense measurements into first-class MCP
+workflows. It depends on `mindgraph` TypeScript SDK 0.15.x and should be
+published after SDK 0.15.0 resolves on npm.
+
+### Added
+
+- **Governed skill capture.** `mindgraph_capture action="skill"` accepts a
+  stable agentskills.io name, trigger description, complete SKILL.md body,
+  optional license, and required provenance. It always creates a candidate for
+  owner/admin review and cannot self-publish.
+- **Explicit skill-file interop.** `mindgraph-mcp skills pull` renders the
+  caller's published and granted skills with a fixed allowlist of frontmatter;
+  `skills push <path>` imports or updates a candidate with content-hash and
+  version conflict protection. Neither command runs from hooks or background
+  processes.
+- **Bounded Series reads.** The read-only `mindgraph_series_query` tool lists
+  an entity's Series and supports latest, keyset-window, and aggregate queries
+  without injecting raw dense points into general retrieval context.
+
+### Changed
+
+- The `mindgraph` SDK dependency now targets `^0.15.0`; Series and skill
+  calls use its published typed methods directly.
+
 ## 0.18.0 (2026-08-16)
 
 ### Added

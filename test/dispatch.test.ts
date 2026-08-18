@@ -82,7 +82,7 @@ function makeClient() {
     "rejectOntologyProposal",
     "linkDomainObjects",
     "extractOntology",
-    "request",
+    "series",
   ] as const;
 
   const client = {} as Record<string, ReturnType<typeof vi.fn>>;
@@ -701,7 +701,7 @@ describe("mindgraph_series_query dispatch", () => {
       to: 20,
       limit: 5,
     });
-    expect(client.request).toHaveBeenCalledWith("POST", "/reality/series", {
+    expect(client.series).toHaveBeenCalledWith({
       action: "window",
       series_uid: "s1",
       from: 10,
@@ -724,7 +724,7 @@ describe("mindgraph_series_query dispatch", () => {
       to: 1,
     });
     expect(aggregate.isError).toBe(true);
-    expect(client.request).not.toHaveBeenCalled();
+    expect(client.series).not.toHaveBeenCalled();
   });
 });
 
