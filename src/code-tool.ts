@@ -481,7 +481,7 @@ async function anchorCodeRef(
     identity_space_uid: spaceUid,
     agent_id: agentId,
   });
-  if (response.uid) {
+  if (response.uid && response.created !== false && response.status !== "existing") {
     await client.entity({
       action: "relate",
       source_uid: response.uid,

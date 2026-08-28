@@ -160,6 +160,7 @@ if (PROFILE === "coding") {
 
 - Use mindgraph_sync for explicit, one-way project memory-file imports. It discovers and hashes files, but you deliberately map durable assertions with record; it never writes graph state back to files.
 - Capture corrections, decisions with rationale, fixes that survived meaningful failed attempts, durable invariants/preferences, and blockers with evidence.
+- If a write returns \`near_duplicate\`, choose \`reuse_uid\` or \`supersedes_uid\`; use \`confirm_new\` only for genuinely distinct facts.
 - Do not capture routine mechanics, transient command output, facts cheaply derivable from code, unsupported speculation as high-confidence lessons, or completion without evidence.
 - Adapter context is owned by ${HARNESS}; omit invocation_context because hooks replace it.`;
 } else {

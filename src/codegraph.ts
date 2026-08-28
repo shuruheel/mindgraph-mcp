@@ -1055,8 +1055,6 @@ export function codeRefIdentityKey(ref: ResolvedCodeRef): Record<string, unknown
     disambiguator: {
       signature: ref.signature ?? "",
       path: ref.path,
-      start_line: ref.startLine,
-      end_line: ref.endLine,
     },
   };
 }

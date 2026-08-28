@@ -1,4 +1,5 @@
 import { MindGraph } from "mindgraph";
+import { createHash } from "node:crypto";
 import { conflictState, errorDetail } from "./error-detail.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
@@ -19,6 +20,86 @@ import {
   renderSignals,
   renderTraversal,
 } from "./render.js";
+
+const RESOLUTION_PROPERTIES = {
+  idempotency_key: {
+    type: "string",
+    description: "Stable retry key; a mismatched replay is rejected",
+  },
+  reuse_uid: {
+    type: "string",
+    description: "Reuse this live same-scope node after a duplicate response",
+  },
+  supersedes_uid: {
+    type: "string",
+    description: "Create and mark this same-scope node as superseded",
+  },
+  contradicts_uid: {
+    type: "string",
+    description: "Create and mark this same-scope node as contradicted",
+  },
+  confirm_new: {
+    type: "boolean",
+    description: "Confirm that the new fact is genuinely distinct",
+  },
+  on_near_duplicate: {
+    type: "string",
+    enum: ["create"],
+    description: "Alias for confirm_new on a near-duplicate response",
+  },
+} as const;
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function defaultWriteIdempotencyKey(
+  tool: string,
+  args: Record<string, unknown>,
+): string | undefined {
+  if (typeof args.idempotency_key === "string") return args.idempotency_key;
+  const context = args.invocation_context as Record<string, unknown> | undefined;
+  const sessionId = context?.harnessSessionId;
+  if (typeof sessionId !== "string" || sessionId.length === 0) return undefined;
+  const canonicalArgs = Object.fromEntries(
+    Object.entries(args).filter(
+      ([key]) => key !== "invocation_context" && key !== "idempotency_key",
+    ),
+  );
+  return createHash("sha256")
+    .update(
+      stableJson({
+        harness_session_id: sessionId,
+        harness_turn_id: context?.harnessTurnId ?? null,
+        tool,
+        action: args.action ?? null,
+        args: canonicalArgs,
+      }),
+    )
+    .digest("hex");
+}
+
+function resolutionFields(args: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    [
+      "idempotency_key",
+      "reuse_uid",
+      "supersedes_uid",
+      "contradicts_uid",
+      "confirm_new",
+      "on_near_duplicate",
+    ]
+      .filter((key) => args[key] !== undefined)
+      .map((key) => [key, args[key]]),
+  );
+}
 
 // ── Tool Definitions ──────────────────────────────────────────────────
 
@@ -91,14 +172,7 @@ export const TOOLS: Tool[] = [
           type: "string",
           description: "Material Execution that produced the lesson",
         },
-        idempotency_key: {
-          type: "string",
-          description: "Stable retry key for an intentional capture",
-        },
-        supersedes_uid: {
-          type: "string",
-          description: "Earlier capture corrected or superseded by this one",
-        },
+        ...RESOLUTION_PROPERTIES,
         summarizes_uids: {
           type: "array",
           items: { type: "string" },
@@ -198,6 +272,7 @@ export const TOOLS: Tool[] = [
     inputSchema: {
       type: "object" as const,
       properties: {
+        ...RESOLUTION_PROPERTIES,
         action: {
           type: "string",
           enum: [
@@ -293,6 +368,7 @@ export const TOOLS: Tool[] = [
     inputSchema: {
       type: "object" as const,
       properties: {
+        ...RESOLUTION_PROPERTIES,
         action: {
           type: "string",
           enum: [
@@ -1191,6 +1267,23 @@ export async function handleTool(
   args: Record<string, unknown>
 ): Promise<ToolResult> {
   try {
+    if (
+      ["mindgraph_capture", "mindgraph_reason", "mindgraph_commit"].includes(name) &&
+      args.action !== "get_open_decisions"
+    ) {
+      const key = defaultWriteIdempotencyKey(name, args);
+      if (key) args = { ...args, idempotency_key: key };
+      const dispositions = [
+        args.reuse_uid,
+        args.supersedes_uid,
+        args.contradicts_uid,
+        args.confirm_new === true ? true : undefined,
+        args.on_near_duplicate,
+      ].filter((value) => value !== undefined);
+      if (dispositions.length > 1) {
+        return err("resolution dispositions are mutually exclusive");
+      }
+    }
     let result: ToolResult;
     switch (name) {
       case "mindgraph_capture":
@@ -1315,7 +1408,11 @@ async function handleCapture(
     work_uid,
     execution_uid,
     idempotency_key,
+    reuse_uid,
     supersedes_uid,
+    contradicts_uid,
+    confirm_new,
+    on_near_duplicate,
     summarizes_uids,
     entity_type,
     source_uid,
@@ -1337,7 +1434,11 @@ async function handleCapture(
     work_uid?: string;
     execution_uid?: string;
     idempotency_key?: string;
+    reuse_uid?: string;
     supersedes_uid?: string;
+    contradicts_uid?: string;
+    confirm_new?: boolean;
+    on_near_duplicate?: "create";
     summarizes_uids?: string[];
     entity_type?: string;
     source_uid?: string;
@@ -1362,11 +1463,15 @@ async function handleCapture(
           work_uid,
           execution_uid,
           idempotency_key,
+          reuse_uid,
           supersedes_uid,
+          contradicts_uid,
+          confirm_new,
+          on_near_duplicate,
           summarizes_uids,
           props,
           agent_id,
-        })
+        } as any)
       );
     case "skill": {
       if (!name) return err("name is required for action=skill");
@@ -1411,28 +1516,32 @@ async function handleCapture(
       const journalProps: Record<string, unknown> = { content };
       if (mood) journalProps.mood = mood;
       if (tags) journalProps.tags = tags;
-      return ok(await client.journal(label, journalProps, { agent_id }));
+      return ok(await client.journal(label, journalProps, {
+        agent_id,
+        idempotency_key,
+        reuse_uid,
+        supersedes_uid,
+        contradicts_uid,
+        confirm_new,
+        on_near_duplicate,
+      } as any));
     }
     case "entity": {
       const type = entity_type || "concept";
       const entityProps = { ...props };
       if (summary) entityProps.description = summary;
-
-      switch (type) {
-        case "person":
-          return ok(await client.findOrCreatePerson(label, entityProps, agent_id));
-        case "organization":
-          return ok(await client.findOrCreateOrganization(label, entityProps, agent_id));
-        case "nation":
-          return ok(await client.findOrCreateNation(label, entityProps, agent_id));
-        case "event":
-          return ok(await client.findOrCreateEvent(label, entityProps, agent_id));
-        case "place":
-          return ok(await client.findOrCreatePlace(label, entityProps, agent_id));
-        case "concept":
-        default:
-          return ok(await client.findOrCreateConcept(label, entityProps, agent_id));
-      }
+      return ok(await client.entity({
+        action: "create",
+        label,
+        props: { ...entityProps, entity_type: type },
+        agent_id,
+        idempotency_key,
+        reuse_uid,
+        supersedes_uid,
+        contradicts_uid,
+        confirm_new,
+        on_near_duplicate,
+      } as any));
     }
     case "observation":
       return ok(
@@ -1444,7 +1553,13 @@ async function handleCapture(
           salience,
           props,
           agent_id,
-        })
+          idempotency_key,
+          reuse_uid,
+          supersedes_uid,
+          contradicts_uid,
+          confirm_new,
+          on_near_duplicate,
+        } as any)
       );
     case "source":
       return ok(
@@ -1456,7 +1571,13 @@ async function handleCapture(
           salience,
           props,
           agent_id,
-        })
+          idempotency_key,
+          reuse_uid,
+          supersedes_uid,
+          contradicts_uid,
+          confirm_new,
+          on_near_duplicate,
+        } as any)
       );
     case "snippet":
       return ok(
@@ -1469,20 +1590,31 @@ async function handleCapture(
           salience,
           props,
           agent_id,
+          idempotency_key,
+          reuse_uid,
+          supersedes_uid,
+          contradicts_uid,
+          confirm_new,
+          on_near_duplicate,
         } as any)
       );
     case "concept":
-      return ok(
-        await client.structure({
-          action: "concept",
-          label,
-          summary,
-          confidence,
-          salience,
-          props,
-          agent_id,
-        })
-      );
+      return ok(await client.entity({
+        action: "create",
+        label,
+        props: {
+          ...props,
+          entity_type: "concept",
+          ...(summary ? { description: summary } : {}),
+        },
+        agent_id,
+        idempotency_key,
+        reuse_uid,
+        supersedes_uid,
+        contradicts_uid,
+        confirm_new,
+        on_near_duplicate,
+      } as any));
     default:
       return err(`Unknown capture action: ${action}`);
   }
@@ -1494,6 +1626,7 @@ async function handleReason(
   client: MindGraph,
   args: Record<string, unknown>
 ): Promise<ToolResult> {
+  const resolution = resolutionFields(args);
   const {
     action,
     label,
@@ -1551,6 +1684,7 @@ async function handleReason(
           : undefined,
         argument,
         agent_id,
+        ...resolution,
       } as any)
     );
   }
@@ -1566,7 +1700,8 @@ async function handleReason(
       salience,
       props,
       agent_id,
-    })
+      ...resolution,
+    } as any)
   );
 }
 
@@ -1576,6 +1711,7 @@ async function handleCommit(
   client: MindGraph,
   args: Record<string, unknown>
 ): Promise<ToolResult> {
+  const resolution = resolutionFields(args);
   const {
     action,
     label,
@@ -1623,17 +1759,18 @@ async function handleCommit(
           salience,
           props,
           agent_id,
+          ...resolution,
         } as any)
       );
 
     case "open_decision":
       if (!label) return err("label is required for open_decision");
-      return ok(await client.openDecision(label, { summary, props, agent_id }));
+      return ok(await client.openDecision(label, { summary, props, agent_id, ...resolution } as any));
 
     case "add_option":
       if (!decision_uid) return err("decision_uid is required for add_option");
       if (!label) return err("label is required for add_option");
-      return ok(await client.addOption(decision_uid, label, { summary, props, agent_id }));
+      return ok(await client.addOption(decision_uid, label, { summary, props, agent_id, ...resolution } as any));
 
     case "add_constraint":
       if (!decision_uid) return err("decision_uid is required for add_constraint");
@@ -1645,6 +1782,7 @@ async function handleCommit(
           summary,
           props,
           agent_id,
+          ...resolution,
         } as any)
       );
 
@@ -1660,6 +1798,7 @@ async function handleCommit(
           session_id,
           retrieval_trace_id,
           agent_id,
+          ...resolution,
         } as any)
       );
 
