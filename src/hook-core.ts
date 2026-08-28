@@ -975,7 +975,10 @@ async function postTool(
     if (!payload?.error) {
       if (
         (name.includes("mindgraph_capture") &&
-          ["lesson", "journal", "skill"].includes(action || "")) ||
+          (["lesson", "journal", "skill"].includes(action || "") ||
+            (["observation", "entity"].includes(action || "") &&
+              (Array.isArray(args.code_refs) ||
+                typeof args.supersedes_uid === "string")))) ||
         (name.includes("mindgraph_commit") && action === "resolve_decision") ||
         (name.includes("mindgraph_plan") && action === "assess_risk")
       ) {

@@ -11,6 +11,7 @@ import {
 import {
   CodegraphAdapter,
   UnknownRepositoryError,
+  codeRefIdentityKey,
   invocationCwd,
 } from "../src/codegraph.js";
 
@@ -43,6 +44,22 @@ function adapterEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 }
 
 describe("CodegraphAdapter", () => {
+  it("keeps symbol identity stable across within-file line moves", () => {
+    const base = {
+      repoId: "github.com/example/repo",
+      repoRoot: "/tmp/repo",
+      path: "src/module.ts",
+      language: "typescript",
+      kind: "function",
+      qualifiedName: "module.target",
+      signature: "(value: string): Promise<void>",
+      startLine: 10,
+      endLine: 20,
+    } as const;
+    expect(codeRefIdentityKey(base)).toEqual(
+      codeRefIdentityKey({ ...base, startLine: 80, endLine: 90 }),
+    );
+  });
   it("uses an explicit workspace map to route each ref to its defining sibling repo", async () => {
     const workspace = fs.mkdtempSync(
       path.join(os.tmpdir(), "mindgraph-workspace-"),

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { MindGraph } from "mindgraph";
-import { handleTool, TOOLS } from "../src/tools.js";
+import { defaultWriteIdempotencyKey, handleTool, TOOLS } from "../src/tools.js";
 
 /** The action enum a tool advertises to the model. */
 function actionEnum(name: string): string[] {
@@ -34,6 +34,7 @@ function makeClient() {
     "journal",
     "distill",
     "structure",
+    "entity",
     "findOrCreatePerson",
     "findOrCreateOrganization",
     "findOrCreateNation",
@@ -102,8 +103,30 @@ function payload(result: { content: Array<{ text: string }>; isError?: boolean }
   return JSON.parse(result.content[0].text);
 }
 
+it("derives stable retry keys only from harness-bound sessions", () => {
+  const args = {
+    action: "observation",
+    label: "A",
+    invocation_context: {
+      harnessSessionId: "session-1",
+      harnessTurnId: "turn-2",
+      cwd: "/first/path",
+    },
+  };
+  const first = defaultWriteIdempotencyKey("mindgraph_capture", args);
+  const second = defaultWriteIdempotencyKey("mindgraph_capture", {
+    ...args,
+    invocation_context: { ...args.invocation_context, cwd: "/other/path" },
+  });
+  expect(first).toBe(second);
+  expect(defaultWriteIdempotencyKey("mindgraph_capture", {
+    action: "observation",
+    label: "A",
+  })).toBeUndefined();
+});
+
 describe("mindgraph_capture dispatch", () => {
-  it("entity/person -> findOrCreatePerson(label, props-with-description, agent_id)", async () => {
+  it("entity/person -> entity create with subtype and resolution fields", async () => {
     await handleTool(client, "mindgraph_capture", {
       action: "entity",
       entity_type: "person",
@@ -111,13 +134,13 @@ describe("mindgraph_capture dispatch", () => {
       summary: "Diplomat",
       agent_id: "mcp",
     });
-    expect(client.findOrCreatePerson).toHaveBeenCalledTimes(1);
-    const [label, props, agentId] = client.findOrCreatePerson.mock.calls[0];
-    expect(label).toBe("Henry Kissinger");
-    expect(props).toMatchObject({ description: "Diplomat" });
-    expect(agentId).toBe("mcp");
-    // no other entity ctor called
-    expect(client.findOrCreateConcept).not.toHaveBeenCalled();
+    expect(client.entity).toHaveBeenCalledTimes(1);
+    expect(client.entity.mock.calls[0][0]).toMatchObject({
+      action: "create",
+      label: "Henry Kissinger",
+      props: { entity_type: "person", description: "Diplomat" },
+      agent_id: "mcp",
+    });
   });
 
   it("entity with no entity_type defaults to concept", async () => {
@@ -125,26 +148,28 @@ describe("mindgraph_capture dispatch", () => {
       action: "entity",
       label: "Entropy",
     });
-    expect(client.findOrCreateConcept).toHaveBeenCalledTimes(1);
-    expect(client.findOrCreateConcept.mock.calls[0][0]).toBe("Entropy");
+    expect(client.entity).toHaveBeenCalledTimes(1);
+    expect(client.entity.mock.calls[0][0]).toMatchObject({
+      action: "create",
+      label: "Entropy",
+      props: { entity_type: "concept" },
+    });
   });
 
-  it("each entity_type maps to its dedicated find-or-create method", async () => {
-    const cases: Array<[string, string]> = [
-      ["organization", "findOrCreateOrganization"],
-      ["nation", "findOrCreateNation"],
-      ["event", "findOrCreateEvent"],
-      ["place", "findOrCreatePlace"],
-      ["concept", "findOrCreateConcept"],
-    ];
-    for (const [entity_type, method] of cases) {
+  it("each entity_type is carried to the common entity resolver", async () => {
+    const cases = ["organization", "nation", "event", "place", "concept"];
+    for (const entity_type of cases) {
       const c = makeClient();
       await handleTool(c, "mindgraph_capture", {
         action: "entity",
         entity_type,
         label: "X",
       });
-      expect(c[method], `${entity_type} should route to ${method}`).toHaveBeenCalledTimes(1);
+      expect(c.entity).toHaveBeenCalledTimes(1);
+      expect(c.entity.mock.calls[0][0]).toMatchObject({
+        action: "create",
+        props: { entity_type },
+      });
     }
   });
 
@@ -263,13 +288,17 @@ describe("mindgraph_capture dispatch", () => {
     });
   });
 
-  it("concept capture -> structure({action:'concept', ...})", async () => {
+  it("concept capture -> entity create with concept subtype", async () => {
     await handleTool(client, "mindgraph_capture", {
       action: "concept",
       label: "Justice",
     });
-    expect(client.structure).toHaveBeenCalledTimes(1);
-    expect(client.structure.mock.calls[0][0]).toMatchObject({ action: "concept", label: "Justice" });
+    expect(client.entity).toHaveBeenCalledTimes(1);
+    expect(client.entity.mock.calls[0][0]).toMatchObject({
+      action: "create",
+      label: "Justice",
+      props: { entity_type: "concept" },
+    });
   });
 });
 
