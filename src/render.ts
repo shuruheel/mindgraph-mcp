@@ -34,6 +34,8 @@ const ARTICLE_MAX = 6_000;
 const CHUNK_MAX = 6_000;
 const RELATIONSHIP_MAX = 40;
 const RENDER_CHAR_BUDGET = 24_000;
+const MIN_RENDER_CHAR_BUDGET = 512;
+const BOUNDED_MARKER_RESERVE = 220;
 
 // Curation-inbox data has its own surface (`merge_candidates`); shipping it
 // as knowledge context confused models with reviewer metadata ("LLM review:
@@ -54,6 +56,11 @@ interface Section {
   items: string[];
 }
 
+interface RenderState {
+  bounded: boolean;
+  omitted: number;
+}
+
 function obj(value: unknown): Rec | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Rec)
@@ -68,7 +75,23 @@ function num(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function clip(value: unknown, max: number, state: { bounded: boolean }): string | undefined {
+/** Serde externally tags user-defined enum variants as `{Custom: "NAME"}`.
+ * Hand-projected endpoint responses use the plain string. Model-facing output
+ * must treat these as the same semantic value rather than leaking transport
+ * punctuation or replacing a real relation with `?`. */
+function edgeTypeName(value: unknown): string | undefined {
+  return str(value) ?? str(obj(value)?.Custom);
+}
+
+function renderBudget(requested?: number): number {
+  if (requested === undefined || !Number.isFinite(requested)) return RENDER_CHAR_BUDGET;
+  return Math.min(
+    RENDER_CHAR_BUDGET,
+    Math.max(MIN_RENDER_CHAR_BUDGET, Math.floor(requested)),
+  );
+}
+
+function clip(value: unknown, max: number, state: RenderState): string | undefined {
   const text = str(value);
   if (!text) return undefined;
   if (text.length <= max) return text;
@@ -147,7 +170,7 @@ function statusTag(node: Rec): string {
   return tags.length > 0 ? ` [${tags.join("; ")}]` : "";
 }
 
-function firstQuote(node: Rec, state: { bounded: boolean }): string | undefined {
+function firstQuote(node: Rec, state: RenderState): string | undefined {
   const chunks = Array.isArray(node.source_chunks) ? node.source_chunks : [];
   for (const raw of chunks) {
     const chunk = obj(raw);
@@ -166,7 +189,7 @@ function sourceTag(node: Rec): string | undefined {
   return `from: ${title}${extra}`;
 }
 
-function layer7Fields(node: Rec, state: { bounded: boolean }): string | undefined {
+function layer7Fields(node: Rec, state: RenderState): string | undefined {
   const fields = nodeFields(node);
   if (!fields) return undefined;
   const pairs = Object.entries(fields)
@@ -176,7 +199,7 @@ function layer7Fields(node: Rec, state: { bounded: boolean }): string | undefine
   return clip(pairs.join("; "), SUMMARY_MAX, state);
 }
 
-function nodeSummaryText(node: Rec, state: { bounded: boolean }): string | undefined {
+function nodeSummaryText(node: Rec, state: RenderState): string | undefined {
   const props = obj(node.props);
   return (
     clip(node.summary, SUMMARY_MAX, state) ??
@@ -186,7 +209,7 @@ function nodeSummaryText(node: Rec, state: { bounded: boolean }): string | undef
   );
 }
 
-function nodeLines(node: Rec, state: { bounded: boolean }): string {
+function nodeLines(node: Rec, state: RenderState): string {
   const label = clip(node.label, LABEL_MAX, state) || "(unlabeled)";
   const type = nodeDisplayType(node);
   const confidence = num(node.confidence);
@@ -224,7 +247,7 @@ function nodeLines(node: Rec, state: { bounded: boolean }): string {
 
 function groupedNodeSections(
   nodes: Rec[],
-  state: { bounded: boolean },
+  state: RenderState,
   headingPrefix = "",
 ): Section[] {
   const groups = new Map<string, Rec[]>();
@@ -249,14 +272,14 @@ function groupedNodeSections(
 function relationshipItems(
   edges: unknown[],
   labelByUid: Map<string, string>,
-  state: { bounded: boolean },
+  state: RenderState,
   options?: { fallbackToUid?: boolean },
 ): string[] {
   const lines: string[] = [];
   for (const raw of edges) {
     const edge = obj(raw);
     if (!edge) continue;
-    const type = str(edge.edge_type) || "?";
+    const type = edgeTypeName(edge.edge_type) || "?";
     const from = str(edge.from_uid);
     const to = str(edge.to_uid);
     if (CURATION_EDGE_TYPES.has(type)) continue;
@@ -272,6 +295,7 @@ function relationshipItems(
   if (lines.length > RELATIONSHIP_MAX) {
     state.bounded = true;
     const extra = lines.length - RELATIONSHIP_MAX;
+    state.omitted += extra;
     return [...lines.slice(0, RELATIONSHIP_MAX), `- (+${extra} more relationships)`];
   }
   return lines;
@@ -281,21 +305,31 @@ function relationshipItems(
  * gets as many whole items as fit; the rest are counted, never cut mid-item.
  * Later sections still get a chance (no early break) — one oversized section
  * must never blank the rest of the output. */
-function assemble(header: string, sections: Section[], state: { bounded: boolean }): string {
+function assemble(
+  header: string,
+  sections: Section[],
+  state: RenderState,
+  maxChars?: number,
+): string {
+  const budget = renderBudget(maxChars);
+  // Always reserve room for a truthful truncation marker. This keeps the hard
+  // bound even when the final accepted item ends exactly at the requested cap.
+  const packingBudget = Math.max(header.length, budget - BOUNDED_MARKER_RESERVE);
   const lines: string[] = [header];
   let used = header.length;
   for (const section of sections) {
     if (section.items.length === 0 && !section.heading) continue;
     const headingCost = section.heading.length + 2;
-    if (used + headingCost > RENDER_CHAR_BUDGET) {
+    if (used + headingCost > packingBudget) {
       state.bounded = true;
+      state.omitted += Math.max(1, section.items.length);
       continue;
     }
     let sectionUsed = 0;
     const kept: string[] = [];
     let dropped = 0;
     for (const item of section.items) {
-      if (used + headingCost + sectionUsed + item.length + 1 > RENDER_CHAR_BUDGET) {
+      if (used + headingCost + sectionUsed + item.length + 1 > packingBudget) {
         dropped += 1;
         continue;
       }
@@ -304,13 +338,17 @@ function assemble(header: string, sections: Section[], state: { bounded: boolean
     }
     if (kept.length === 0 && section.items.length > 0) {
       state.bounded = true;
+      state.omitted += dropped;
       continue;
     }
     if (dropped > 0) {
       state.bounded = true;
+      state.omitted += dropped;
       const marker = `(+${dropped} more not shown)`;
-      kept.push(marker);
-      sectionUsed += marker.length + 1;
+      if (used + headingCost + sectionUsed + marker.length + 1 <= packingBudget) {
+        kept.push(marker);
+        sectionUsed += marker.length + 1;
+      }
     }
     lines.push(
       section.items.length === 0
@@ -323,13 +361,13 @@ function assemble(header: string, sections: Section[], state: { bounded: boolean
   }
   if (state.bounded) {
     lines.push(
-      "…[rendered context bounded — fetch full node content by uid, or pass format: \"json\" for the raw response]",
+      `…[rendered context bounded to ${budget} chars; ${state.omitted} item(s) omitted — fetch full node content by uid, narrow the query, raise max_output_chars, or pass format: "json" for the raw response]`,
     );
   }
-  return lines.join("\n\n");
+  return lines.join("\n\n").slice(0, budget);
 }
 
-function policySections(payload: Rec, state: { bounded: boolean }): Section[] {
+function policySections(payload: Rec, state: RenderState): Section[] {
   const policies = Array.isArray(payload.applicable_policies)
     ? payload.applicable_policies
     : [];
@@ -359,7 +397,7 @@ function hiddenSections(payload: Rec): Section[] {
 }
 
 /** Render a /retrieve/context response. */
-export function renderContext(response: unknown): string | undefined {
+export function renderContext(response: unknown, maxChars?: number): string | undefined {
   const payload = obj(response);
   if (!payload) return undefined;
   const graph = obj(payload.graph);
@@ -369,7 +407,7 @@ export function renderContext(response: unknown): string | undefined {
   const infraOnly = shaped.length - nodes.length;
   const articles = Array.isArray(payload.articles) ? payload.articles : [];
   const chunks = Array.isArray(payload.chunks) ? payload.chunks : [];
-  const state = { bounded: false };
+  const state: RenderState = { bounded: false, omitted: 0 };
   const sections: Section[] = [];
   if (articles.length > 0) {
     sections.push({
@@ -421,9 +459,14 @@ export function renderContext(response: unknown): string | undefined {
   if (nodes.length === 0 && articles.length === 0 && chunks.length === 0) {
     // Policies/hidden-count/infra notes still render — an access-filtered
     // result must not read as "nothing exists".
-    return assemble("# Retrieved context\n\nNo graph results matched this search.", sections, state);
+    return assemble(
+      "# Retrieved context\n\nNo graph results matched this search.",
+      sections,
+      state,
+      maxChars,
+    );
   }
-  return assemble("# Retrieved context", sections, state);
+  return assemble("# Retrieved context", sections, state, maxChars);
 }
 
 /** Render any response whose payload is (or contains) a list of nodes —
@@ -432,6 +475,7 @@ export function renderNodeList(
   response: unknown,
   title: string,
   limit?: number,
+  maxChars?: number,
 ): string | undefined {
   let candidates: unknown[] = [];
   if (Array.isArray(response)) {
@@ -452,10 +496,11 @@ export function renderNodeList(
     .filter((node): node is Rec => Boolean(node));
   if (nodes.length === 0) return undefined; // caller falls back to raw JSON
   const total = nodes.length;
-  const state = { bounded: false };
+  const state: RenderState = { bounded: false, omitted: 0 };
   // The server ignores limit for several unscoped structured queries (up to
   // its 200-row cap) — honor the caller's bound here.
   if (limit !== undefined && limit > 0 && nodes.length > limit) {
+    state.omitted += nodes.length - limit;
     nodes = nodes.slice(0, limit);
     state.bounded = true;
   }
@@ -465,20 +510,25 @@ export function renderNodeList(
     `# ${title} (${shown === total ? total : `${shown} of ${total}`})`,
     sections,
     state,
+    maxChars,
   );
 }
 
 /** Render a traversal response: nodes + edges, and paths.
  * top_k_paths wire: `{paths: [{node_uids, labels, cost}]}`. */
-export function renderTraversal(response: unknown): string | undefined {
+export function renderTraversal(response: unknown, maxChars?: number): string | undefined {
+  const directSteps = Array.isArray(response) ? response : undefined;
   const payload = obj(response);
-  if (!payload) return undefined;
-  const container = obj(payload.graph) ?? payload;
+  if (!payload && !directSteps) return undefined;
+  const body = payload ?? {};
+  const container = obj(body.graph) ?? body;
   const rawNodes = Array.isArray(container.nodes) ? container.nodes : [];
   const nodes = rawNodes.filter(isNodeShaped);
-  const paths = Array.isArray(payload.paths) ? payload.paths : [];
-  if (nodes.length === 0 && paths.length === 0) return undefined;
-  const state = { bounded: false };
+  const paths = Array.isArray(body.paths) ? body.paths : [];
+  const hasSteps = directSteps !== undefined || Object.hasOwn(body, "steps");
+  const rawSteps = directSteps ?? (Array.isArray(body.steps) ? body.steps : []);
+  if (nodes.length === 0 && paths.length === 0 && !hasSteps) return undefined;
+  const state: RenderState = { bounded: false, omitted: 0 };
   const sections: Section[] = [];
   const labelByUid = new Map<string, string>();
   for (const node of nodes) labelByUid.set(str(node.uid)!, str(node.label) || "?");
@@ -516,6 +566,48 @@ export function renderTraversal(response: unknown): string | undefined {
       });
     sections.push({ heading: "## Paths", items });
   }
+  if (hasSteps) {
+    const stepItems = rawSteps
+      .map((raw) => obj(raw))
+      .filter((step): step is Rec => Boolean(step))
+      .map((step) => {
+        const depth = num(step.depth);
+        const uid = str(step.node_uid) ?? str(step.uid) ?? str(step.edge_to_uid) ?? "?";
+        const parent = str(step.parent_uid) ?? str(step.edge_from_uid);
+        const label = str(step.label) || "(unlabeled)";
+        const relation = edgeTypeName(step.edge_type);
+        const role = str(step.traversal_role);
+        const type = str(step.node_type) ?? str(obj(step.node_type)?.Custom);
+        const cost = num(step.path_cost);
+        const confidence = num(step.path_confidence);
+        const prefix = [
+          depth !== undefined ? `depth ${depth}` : undefined,
+          role,
+          relation ? `—${relation}→` : undefined,
+        ].filter(Boolean).join(" ");
+        const meta = [
+          type,
+          parent ? `parent ${parent}` : undefined,
+          cost !== undefined ? `cost ${cost}` : undefined,
+          confidence !== undefined ? `confidence ${confidence}` : undefined,
+        ].filter(Boolean).join(", ");
+        return `- ${prefix ? `${prefix}: ` : ""}**${label}** [${uid}]${meta ? ` (${meta})` : ""}`;
+      });
+    if (stepItems.length > 0) {
+      sections.push({ heading: "## Traversal steps", items: stepItems });
+    } else {
+      const start = str(body.start_uid) || "?";
+      const end = str(body.end_uid);
+      const mode = str(body.mode);
+      sections.push({
+        heading:
+          mode === "path" && end
+            ? `No path found from [${start}] to [${end}].`
+            : `No traversal steps returned from [${start}].`,
+        items: [],
+      });
+    }
+  }
   if (nodes.length > 0) {
     sections.push(...groupedNodeSections(nodes, state, "## Nodes\n\n"));
     const relationships = relationshipItems(
@@ -527,7 +619,13 @@ export function renderTraversal(response: unknown): string | undefined {
       sections.push({ heading: "## Relationships", items: relationships });
     }
   }
-  return assemble("# Graph traversal", sections, state);
+  const mode = str(body.mode);
+  return assemble(
+    `# Graph traversal${mode ? ` (${mode})` : ""}`,
+    sections,
+    state,
+    maxChars,
+  );
 }
 
 // ── Ontology (Layer 7) rendering ─────────────────────────────────────
@@ -568,7 +666,7 @@ export function renderOntologyAnswer(response: unknown): string | undefined {
     // falls back to raw.
     return hasQuerySignature ? "No matching domain objects." : undefined;
   }
-  const state = { bounded: false };
+  const state: RenderState = { bounded: false, omitted: 0 };
   const sections: Section[] = [];
   if (objects.length > 0) {
     sections.push(...groupedNodeSections(objects, state));
@@ -656,7 +754,7 @@ export function renderObjectList(response: unknown, title: string): string | und
     // Distinguish a legitimately empty page from an unknown shape.
     return rawItems ? `# ${title} (0 results)` : undefined;
   }
-  const state = { bounded: false };
+  const state: RenderState = { bounded: false, omitted: 0 };
   const sections = groupedNodeSections(items, state);
   const total = num(payload.total_count);
   const truncations = Array.isArray(payload.truncation_reasons)
@@ -681,7 +779,7 @@ export function renderJobs(response: unknown): string | undefined {
   const jobs = Array.isArray(response) ? response : obj(response)?.jobs;
   if (!Array.isArray(jobs)) return undefined;
   if (jobs.length === 0) return "No ingestion jobs.";
-  const state = { bounded: false };
+  const state: RenderState = { bounded: false, omitted: 0 };
   const sorted = jobs
     .map((raw) => obj(raw))
     .filter((job): job is Rec => Boolean(job))
@@ -712,7 +810,7 @@ export function renderJobs(response: unknown): string | undefined {
 export function renderSignals(response: unknown): string | undefined {
   const payload = obj(response);
   if (!payload) return undefined;
-  const state = { bounded: false };
+  const state: RenderState = { bounded: false, omitted: 0 };
   const sections: Section[] = [];
   for (const [key, value] of Object.entries(payload)) {
     if (!Array.isArray(value) || value.length === 0) continue;

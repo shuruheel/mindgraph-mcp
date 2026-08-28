@@ -213,6 +213,122 @@ describe("renderTraversal", () => {
   it("returns undefined for unrecognized shapes", () => {
     expect(renderTraversal({ something: true })).toBeUndefined();
   });
+
+  it("renders the live PathStep wire shape and unwraps custom edge types", () => {
+    // Captured from a live mindgraph-server neighborhood response during R13.
+    const text = renderTraversal({
+      mode: "neighborhood",
+      start_uid: "decision-uid",
+      steps: [
+        {
+          depth: 1,
+          edge_from_uid: "decision-uid",
+          edge_to_uid: "evidence-uid",
+          edge_type: { Custom: "SUPPORTED_BY" },
+          edge_uid: "edge-uid",
+          label: "benchmark p99_latency_ms=180",
+          node_type: "Observation",
+          node_uid: "evidence-uid",
+          parent_uid: "decision-uid",
+          path_confidence: 1,
+          path_cost: 0.6931471824645996,
+          traversal_role: "outgoing",
+        },
+      ],
+    })!;
+
+    expect(text).toContain("# Graph traversal (neighborhood)");
+    expect(text).toContain("depth 1 outgoing —SUPPORTED_BY→");
+    expect(text).toContain("**benchmark p99_latency_ms=180** [evidence-uid]");
+    expect(text).toContain("parent decision-uid");
+    expect(text).toContain("cost 0.6931471824645996");
+    expect(text).not.toContain('"Custom"');
+  });
+
+  it.each(["chain", "path", "subgraph"])(
+    "renders live %s PathStep responses without raw fallback",
+    (mode) => {
+      const text = renderTraversal({
+        mode,
+        start_uid: "start-uid",
+        end_uid: mode === "path" ? "end-uid" : undefined,
+        steps: [
+          {
+            depth: 1,
+            edge_from_uid: "start-uid",
+            edge_to_uid: "end-uid",
+            edge_type: "DependsOn",
+            label: "End node",
+            node_type: "Entity",
+            node_uid: "end-uid",
+            parent_uid: "start-uid",
+            path_confidence: 0.9,
+            path_cost: 0.2,
+            traversal_role: "outgoing",
+          },
+        ],
+      })!;
+
+      expect(text).toContain(`# Graph traversal (${mode})`);
+      expect(text).toContain("depth 1 outgoing —DependsOn→");
+      expect(text).toContain("**End node** [end-uid]");
+      expect(() => JSON.parse(text)).toThrow();
+    },
+  );
+
+  it("unwraps custom edge types in nodes-and-edges traversal responses", () => {
+    const text = renderTraversal({
+      nodes: [
+        { uid: "a", label: "Start", node_type: "Entity", props: {} },
+        { uid: "b", label: "End", node_type: "Entity", props: {} },
+      ],
+      edges: [
+        {
+          uid: "edge-1",
+          edge_type: { Custom: "SUPPORTED_BY" },
+          from_uid: "a",
+          to_uid: "b",
+          props: {},
+        },
+      ],
+    })!;
+
+    expect(text).toContain("Start —SUPPORTED_BY→ End");
+    expect(text).not.toContain("—?→");
+  });
+
+  it("renders an empty live path response as a result, not raw JSON", () => {
+    expect(renderTraversal({
+      mode: "path",
+      start_uid: "a",
+      end_uid: "z",
+      steps: null,
+    })).toContain("No path found from [a] to [z].");
+  });
+
+  it("honors a hard rendered-output budget and reports omitted steps", () => {
+    const steps = Array.from({ length: 30 }, (_, index) => ({
+      depth: index + 1,
+      edge_from_uid: `node-${index}`,
+      edge_to_uid: `node-${index + 1}`,
+      edge_type: { Custom: "DEPENDS_ON" },
+      label: `Dependency ${index} ${"detail ".repeat(8)}`,
+      node_type: "Observation",
+      node_uid: `node-${index + 1}`,
+      parent_uid: `node-${index}`,
+      traversal_role: "outgoing",
+    }));
+
+    const text = renderTraversal(
+      { mode: "neighborhood", start_uid: "node-0", steps },
+      700,
+    )!;
+
+    expect(text.length).toBeLessThanOrEqual(700);
+    expect(text).toContain("rendered context bounded to 700 chars");
+    expect(text).toMatch(/\d+ item\(s\) omitted/);
+    expect(text).not.toContain('"Custom"');
+  });
 });
 
 // Dispatch-level format contract lives here to keep all renderer behavior in
@@ -255,6 +371,38 @@ describe("retrieve format contract", () => {
     expect(parsed.graph.nodes[0].uid).toBe("n1");
   });
 
+  it("passes max_output_chars to text rendering but never rewrites raw JSON", async () => {
+    const largeResponse = {
+      graph: {
+        nodes: Array.from({ length: 20 }, (_, index) => ({
+          uid: `n${index}`,
+          label: `Node ${index} ${"description ".repeat(12)}`,
+          node_type: "Observation",
+          props: {},
+        })),
+        edges: [],
+      },
+    };
+    const client = {
+      retrieveContext: vi.fn().mockResolvedValue(largeResponse),
+    } as unknown as MindGraph;
+    const textResult = await handleTool(client, "mindgraph_retrieve", {
+      action: "context",
+      query: "node",
+      max_output_chars: 700,
+    });
+    const jsonResult = await handleTool(client, "mindgraph_retrieve", {
+      action: "context",
+      query: "node",
+      format: "json",
+      max_output_chars: 700,
+    });
+
+    expect(textResult.content[0].text.length).toBeLessThanOrEqual(700);
+    expect(textResult.content[0].text).toContain("bounded to 700 chars");
+    expect(JSON.parse(jsonResult.content[0].text)).toEqual(largeResponse);
+  });
+
   it("falls back to raw JSON when the renderer does not recognize the shape", async () => {
     const client = {
       retrieve: vi.fn().mockResolvedValue({ counts: { merge_candidates: 3 } }),
@@ -264,6 +412,37 @@ describe("retrieve format contract", () => {
     });
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.counts.merge_candidates).toBe(3);
+  });
+
+  it("dispatch renders live traversal steps instead of returning raw wire JSON", async () => {
+    const client = {
+      traverse: vi.fn().mockResolvedValue({
+        mode: "neighborhood",
+        start_uid: "decision-uid",
+        steps: [
+          {
+            depth: 1,
+            edge_from_uid: "decision-uid",
+            edge_to_uid: "evidence-uid",
+            edge_type: { Custom: "SUPPORTED_BY" },
+            label: "Decision evidence",
+            node_type: "Observation",
+            node_uid: "evidence-uid",
+            parent_uid: "decision-uid",
+            traversal_role: "outgoing",
+          },
+        ],
+      }),
+    } as unknown as MindGraph;
+
+    const result = await handleTool(client, "mindgraph_retrieve", {
+      action: "neighborhood",
+      start_uid: "decision-uid",
+    });
+
+    expect(result.content[0].text).toContain("# Graph traversal (neighborhood)");
+    expect(result.content[0].text).toContain("—SUPPORTED_BY→");
+    expect(() => JSON.parse(result.content[0].text)).toThrow();
   });
 });
 

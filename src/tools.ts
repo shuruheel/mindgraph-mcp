@@ -656,6 +656,13 @@ export const TOOLS: Tool[] = [
           description:
             "Output format (default 'text'): a compact rendered context block — labels, uids, summaries, status tags, relationships. Pass 'json' for the raw server response (full props, source-chunk offsets, retrieval metadata).",
         },
+        max_output_chars: {
+          type: "integer",
+          minimum: 512,
+          maximum: 24_000,
+          description:
+            "Hard character budget for rendered text output (512-24000; default 24000). Normal per-field clipping still applies. Whole evidence items are then kept or omitted rather than cut to satisfy this budget; the final marker reports omissions. Ignored when format='json'.",
+        },
         query: {
           type: "string",
           description:
@@ -2014,6 +2021,7 @@ async function handleRetrieve(
   const {
     action,
     format,
+    max_output_chars,
     query,
     start_uid,
     end_uid,
@@ -2045,6 +2053,7 @@ async function handleRetrieve(
   } = args as {
     action: string;
     format?: string;
+    max_output_chars?: number;
     query?: string;
     start_uid?: string;
     end_uid?: string;
@@ -2111,7 +2120,7 @@ async function handleRetrieve(
           graph_expansion_limit: graph_expansion_limit ?? 3,
           graph_max_depth: graph_max_depth ?? 2,
         } as any),
-        renderContext,
+        (raw) => renderContext(raw, max_output_chars),
       );
 
     case "text":
@@ -2126,7 +2135,7 @@ async function handleRetrieve(
           explain,
           agent_id,
         } as any),
-        (raw) => renderNodeList(raw, `Text search: ${query}`),
+        (raw) => renderNodeList(raw, `Text search: ${query}`, undefined, max_output_chars),
       );
 
     case "semantic":
@@ -2141,7 +2150,7 @@ async function handleRetrieve(
           explain,
           agent_id,
         } as any),
-        (raw) => renderNodeList(raw, `Semantic search: ${query}`),
+        (raw) => renderNodeList(raw, `Semantic search: ${query}`, undefined, max_output_chars),
       );
 
     case "hybrid":
@@ -2157,7 +2166,9 @@ async function handleRetrieve(
           agent_id,
         } as any),
         // With explain, per-leg scoring must survive — raw JSON only.
-        explain ? () => undefined : (raw) => renderNodeList(raw, `Hybrid search: ${query}`),
+        explain
+          ? () => undefined
+          : (raw) => renderNodeList(raw, `Hybrid search: ${query}`, undefined, max_output_chars),
       );
 
     // Structured queries. These go through the generic /retrieve action
@@ -2176,7 +2187,7 @@ async function handleRetrieve(
           offset,
           agent_id,
         } as any),
-        (raw) => renderNodeList(raw, action.replace(/_/g, " "), limit),
+        (raw) => renderNodeList(raw, action.replace(/_/g, " "), limit, max_output_chars),
       );
 
     case "stale_derivations":
@@ -2186,7 +2197,7 @@ async function handleRetrieve(
           limit,
           offset,
         } as any),
-        (raw) => renderNodeList(raw, "stale derivations", limit),
+        (raw) => renderNodeList(raw, "stale derivations", limit, max_output_chars),
       );
 
     case "preferences":
@@ -2200,7 +2211,7 @@ async function handleRetrieve(
           limit,
           agent_id,
         } as any),
-        (raw) => renderNodeList(raw, "Preferences", limit),
+        (raw) => renderNodeList(raw, "Preferences", limit, max_output_chars),
       );
 
     case "layer":
@@ -2213,7 +2224,7 @@ async function handleRetrieve(
           node_types,
           agent_id,
         } as any),
-        (raw) => renderNodeList(raw, `Layer: ${layer}`, limit),
+        (raw) => renderNodeList(raw, `Layer: ${layer}`, limit, max_output_chars),
       );
 
     case "recent":
@@ -2228,7 +2239,7 @@ async function handleRetrieve(
           created_before,
           agent_id,
         } as any),
-        (raw) => renderNodeList(raw, "Recently ingested", limit),
+        (raw) => renderNodeList(raw, "Recently ingested", limit, max_output_chars),
       );
 
     // Document inventory
@@ -2238,7 +2249,7 @@ async function handleRetrieve(
           node_type: "Document",
           limit: limit ?? 100,
         }),
-        (raw) => renderNodeList(raw, "Ingested documents"),
+        (raw) => renderNodeList(raw, "Ingested documents", undefined, max_output_chars),
       );
 
     // Graph traversal
@@ -2253,7 +2264,7 @@ async function handleRetrieve(
           include_provenance,
           max_nodes,
         } as any),
-        renderTraversal,
+        (raw) => renderTraversal(raw, max_output_chars),
       );
 
     case "neighborhood":
@@ -2269,7 +2280,7 @@ async function handleRetrieve(
           include_provenance,
           max_nodes,
         } as any),
-        renderTraversal,
+        (raw) => renderTraversal(raw, max_output_chars),
       );
 
     case "path":
@@ -2287,7 +2298,7 @@ async function handleRetrieve(
           include_provenance,
           max_nodes,
         } as any),
-        renderTraversal,
+        (raw) => renderTraversal(raw, max_output_chars),
       );
 
     case "subgraph":
@@ -2303,7 +2314,7 @@ async function handleRetrieve(
           include_provenance,
           max_nodes,
         } as any),
-        renderTraversal,
+        (raw) => renderTraversal(raw, max_output_chars),
       );
 
     case "top_k_paths":
@@ -2320,7 +2331,7 @@ async function handleRetrieve(
           edge_types,
           exclude_edge_types,
         } as any),
-        renderTraversal,
+        (raw) => renderTraversal(raw, max_output_chars),
       );
 
     default:

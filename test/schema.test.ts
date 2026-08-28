@@ -83,6 +83,18 @@ describe("generated tool schemas — structural sanity", () => {
     expect(props.chunk_overlap.description).toContain("Fractional");
   });
 
+  it("publishes a deterministic rendered-output budget for retrieval", () => {
+    const props = (toolByName("mindgraph_retrieve").inputSchema as JsonSchema)
+      .properties!;
+    expect(props.max_output_chars).toMatchObject({
+      type: "integer",
+      minimum: 512,
+      maximum: 24_000,
+    });
+    expect(props.max_output_chars.description).toContain("Whole evidence items");
+    expect(props.max_output_chars.description).toContain("format='json'");
+  });
+
   it("exposes the expected 9 static cognitive tools", () => {
     const names = new Set(TOOLS.map((t) => t.name));
     for (const expected of [

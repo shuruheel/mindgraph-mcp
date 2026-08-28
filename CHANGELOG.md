@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `mindgraph_retrieve max_output_chars` sets a deterministic 512–24,000
+  character budget for rendered text. Whole evidence items are packed under
+  the bound and the final marker reports omissions; `format: "json"` remains
+  the unmodified raw escape hatch.
+
+### Fixed
+
+- Chain, neighborhood, path, and subgraph responses using the live
+  `{mode, start_uid, steps}` wire shape now render as compact traversal lines
+  instead of falling back to raw JSON. Serde-tagged custom relations such as
+  `{Custom: "SUPPORTED_BY"}` render as their semantic relation name on both
+  step and nodes/edges responses.
+
 ## 0.19.0 (2026-08-17)
 
 This release turns governed skills and dense measurements into first-class MCP
