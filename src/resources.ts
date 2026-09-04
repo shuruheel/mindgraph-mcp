@@ -9,8 +9,16 @@
 
 import { MindGraph } from "mindgraph";
 import { checkMcpGovernance, type GovernanceConfig } from "./governance.js";
+import { memoryStatus, type MemoryRuntimeConfig } from "./memory-tool.js";
 
 export const RESOURCES = [
+  {
+    uri: "mindgraph://memory/status",
+    name: "Memory Integration Status",
+    description:
+      "Portable memory profile, adapter state, supported capabilities, and explicit limitations",
+    mimeType: "application/json",
+  },
   {
     uri: "mindgraph://stats",
     name: "Graph Statistics",
@@ -88,8 +96,11 @@ function json(uri: string, data: unknown): ResourceContents {
 export async function readResource(
   client: MindGraph,
   uri: string,
+  memoryConfig: MemoryRuntimeConfig = {},
 ): Promise<ResourceContents> {
   switch (uri) {
+    case "mindgraph://memory/status":
+      return json(uri, memoryStatus(memoryConfig));
     case "mindgraph://stats":
       return json(uri, await client.stats());
     case "mindgraph://goals":
@@ -134,14 +145,17 @@ export async function readGovernedResource(
   client: MindGraph,
   uri: string,
   governanceConfig: GovernanceConfig,
+  memoryConfig: MemoryRuntimeConfig = {},
 ): Promise<ResourceContents> {
+  const toolName = uri === "mindgraph://memory/status" ? "mindgraph_memory" : RESOURCE_GOVERNANCE_TOOL;
+  const toolArgs = uri === "mindgraph://memory/status" ? { action: "status" } : {};
   const governance = await checkMcpGovernance(
-    RESOURCE_GOVERNANCE_TOOL,
-    {},
+    toolName,
+    toolArgs,
     { ...governanceConfig, context: { resource_uri: uri } },
   );
   if (!governance.allowed) {
     throw new Error(governance.message);
   }
-  return readResource(client, uri);
+  return readResource(client, uri, memoryConfig);
 }

@@ -1,9 +1,28 @@
 # Changelog
 
-## Unreleased
+## 0.20.0 (2026-09-04)
+
+This release adds an honest, portable M0 memory workflow without changing the
+existing typed write surface. It also ships the bounded traversal rendering and
+write-time graph-hygiene controls accumulated since 0.19.0.
 
 ### Added
 
+- A read-only `mindgraph_memory(status|context)` M0 workflow now reports honest
+  integration limitations and returns bounded topic or authoritative task-first
+  resume context as model-ready text plus schema-declared structured content.
+  Context envelopes include a stable id, exact rendered hash, effective scope,
+  compact visible items, retrieval trace, character budget, freshness, and
+  warnings; retrieval is explicitly not represented as verified host delivery.
+- `mindgraph://memory/status` exposes the same M0 profile and capability facts
+  through the governed resource surface.
+- Conformance coverage locks the read-only action boundary, tool-selection
+  distinctions, output hashes and bounds, authoritative resume routing, and
+  resource governance parity.
+- Capture, reasoning, and commitment writes now expose explicit duplicate
+  dispositions (`reuse_uid`, `supersedes_uid`, `contradicts_uid`, or confirmed
+  new), reject conflicting dispositions, and derive stable retry keys from
+  hook-bound session and turn identity when the caller omits one.
 - `mindgraph_retrieve max_output_chars` sets a deterministic 512–24,000
   character budget for rendered text. Whole evidence items are packed under
   the bound and the final marker reports omissions; `format: "json"` remains
@@ -16,6 +35,8 @@
   instead of falling back to raw JSON. Serde-tagged custom relations such as
   `{Custom: "SUPPORTED_BY"}` render as their semantic relation name on both
   step and nodes/edges responses.
+- Code-reference identity no longer changes when source lines move, and reused
+  code anchors no longer receive duplicate repository relationships.
 
 ## 0.19.0 (2026-08-17)
 

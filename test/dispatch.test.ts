@@ -98,6 +98,23 @@ beforeEach(() => {
   client = makeClient();
 });
 
+describe("mindgraph_memory dispatch", () => {
+  it("routes through the consolidated dispatcher with runtime identity", async () => {
+    const result = await handleTool(
+      client,
+      "mindgraph_memory",
+      { action: "status", agent_id: "agent-1" },
+      { serverVersion: "0.test", harness: "codex", orgId: "org-1" },
+    );
+    expect(result.structuredContent).toMatchObject({
+      action: "status",
+      profile: "M0",
+      scope: { org_id: "org-1", agent_id: "agent-1" },
+      integration: { harness: "codex" },
+    });
+  });
+});
+
 // Helper: parse the ok() text payload back to JSON.
 function payload(result: { content: Array<{ text: string }>; isError?: boolean }) {
   return JSON.parse(result.content[0].text);

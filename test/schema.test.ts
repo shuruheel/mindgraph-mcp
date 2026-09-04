@@ -95,7 +95,7 @@ describe("generated tool schemas — structural sanity", () => {
     expect(props.max_output_chars.description).toContain("format='json'");
   });
 
-  it("exposes the expected 9 static cognitive tools", () => {
+  it("exposes the expected static cognitive tools", () => {
     const names = new Set(TOOLS.map((t) => t.name));
     for (const expected of [
       "mindgraph_capture",
@@ -103,6 +103,7 @@ describe("generated tool schemas — structural sanity", () => {
       "mindgraph_commit",
       "mindgraph_plan",
       "mindgraph_retrieve",
+      "mindgraph_memory",
       "mindgraph_series_query",
       "mindgraph_ingest",
       "mindgraph_synthesize",

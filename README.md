@@ -174,7 +174,7 @@ and never block the coding session.
 
 ## What You Get
 
-**9 tools** covering the full knowledge-graph workflow (**11** in the coding
+**10 tools** covering the full knowledge-graph workflow (**12** in the coding
 profile):
 
 | Tool | Purpose |
@@ -184,6 +184,7 @@ profile):
 | `mindgraph_commit` | Goals, projects, decisions, options, milestones, and dated decision-context linkage |
 | `mindgraph_plan` | Plans, tasks, procedures, governance policies, risk assessments, executions |
 | `mindgraph_retrieve` | Context retrieval with bounded graph expansion, search, min-cost traversal, document index. Read results return as compact rendered text (labels, uids, summaries, epistemic status tags, relationships, traversal depth/cost); set `max_output_chars` for a hard whole-item character budget, or pass `format: "json"` for the raw server response |
+| `mindgraph_memory` | Read-only M0 memory workflow: inspect honest integration status, retrieve bounded topic context, or recover authoritative task-first resume/continuity context. Returns model-ready text plus a structured envelope with scope, hashes, trace, budget, freshness, and warnings |
 | `mindgraph_series_query` | Bounded, read-only dense-measurement queries: list an entity's Series, inspect latest values, page a time window, or calculate calendar aggregates |
 | `mindgraph_ingest` | Chunk / document / session ingestion with LLM-powered extraction. `job_status` without an id renders the 20 most recent jobs (`format: "json"` for the full list) |
 | `mindgraph_synthesize` | Project-scoped cross-document synthesis — mine signals (rendered as sections since 0.17.0), spawn Article-generation jobs |
@@ -205,6 +206,7 @@ Plus **dynamically generated read tools**: when the tenant's active schema decla
 
 **Resources** (static + dynamic URIs):
 
+- `mindgraph://memory/status` — M0 capabilities, adapter state, and explicit automatic-delivery/curator limitations
 - `mindgraph://stats`, `mindgraph://goals`, `mindgraph://questions`, `mindgraph://contradictions`, `mindgraph://decisions`
 - `mindgraph://node/{uid}` — a node with all its outgoing and incoming edges
 - `mindgraph://search/{query}` — BM25 search results
@@ -258,11 +260,29 @@ Once installed, start asking Claude about your knowledge graph naturally:
 > "Ingest this PDF and extract the main claims."
 > "Find entities mentioned across multiple project documents, then spin up a synthesis."
 
+The portable memory workflow can also be invoked explicitly:
+
+```text
+mindgraph_memory {"action":"status"}
+mindgraph_memory {"action":"context","mode":"topic","query":"graph continuation"}
+mindgraph_memory {"action":"context","mode":"resume","project_uid":"project-uid"}
+```
+
+`mindgraph_memory` is intentionally read-only. Existing typed write tools remain
+available for durable facts, corrections, decisions, work transitions, lessons,
+and ingestion. Automatic lifecycle observation and curator mutation are not part
+of M0, and a successful MCP read does not prove the host injected the context.
+
 The server auto-injects your agent identity on every write so you always know which nodes came from your MCP sessions — the same identity the session hooks use for durable-work leases, so work claimed in one harness resumes in the other.
 
 ## Architecture
 
 This MCP server is a thin wrapper over the [mindgraph](https://www.npmjs.com/package/mindgraph) TypeScript SDK. It exposes cognitive-layer abstractions (Reality, Epistemic, Intent, Action, Memory, Agent) as consolidated tools rather than one-tool-per-endpoint, which keeps the tool surface compact enough for high-quality tool selection by the model.
+
+The proposed application-independent memory contract and its staged delivery plan
+live in [Memory Integration Profile V1](docs/MEMORY-INTEGRATION-PROFILE-V1.md). It
+distinguishes portable MCP compatibility from integrations that provide automatic
+lifecycle observation, context delivery, and managed curation.
 
 Search strategy is **keyword-first**: `mindgraph_retrieve` defaults to `action: "context"`, which seeds bounded cheapest-first graph expansion from BM25/hybrid recall. Escalate to `semantic` or `hybrid` only when keywords fail. Set `graph_expansion_limit: 0` when direct-only retrieval is required. For model-facing reads, `max_output_chars` bounds the rendered response from 512 to 24,000 characters while preserving whole evidence items and reporting omissions; `format: "json"` deliberately bypasses that rendering contract.
 

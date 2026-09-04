@@ -105,6 +105,7 @@ export function toolMutability(
   toolName: string,
   action: string | undefined,
 ): ToolMutability {
+  if (toolName === "mindgraph_memory") return "read";
   if (toolName === "mindgraph_retrieve") return "read";
   if (toolName === "mindgraph_series_query") return "read";
   if (toolName === "mindgraph_plan") {

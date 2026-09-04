@@ -21,6 +21,8 @@ describe("MCP governance checkpoint", () => {
     expect(toolMutability("mindgraph_plan", "create_task")).toBe("write");
     expect(toolMutability("mindgraph_plan", undefined)).toBe("write");
     expect(toolMutability("mindgraph_retrieve", "context")).toBe("read");
+    expect(toolMutability("mindgraph_memory", "context")).toBe("read");
+    expect(toolMutability("mindgraph_memory", "status")).toBe("read");
   });
 
   it("builds an action-aware target with deduplicated graph UIDs", () => {

@@ -469,6 +469,146 @@ export function renderContext(response: unknown, maxChars?: number): string | un
   return assemble("# Retrieved context", sections, state, maxChars);
 }
 
+function resumeEntry(raw: unknown, state: RenderState, fallbackType: string): string | undefined {
+  const wrapper = obj(raw);
+  if (!wrapper) return undefined;
+  const value = obj(wrapper.node) ?? wrapper;
+  if (isNodeShaped(value as unknown)) return nodeLines(value, state);
+
+  const uid = str(value.uid);
+  const props = obj(value.props);
+  const label =
+    clip(value.label, LABEL_MAX, state) ??
+    clip(value.name, LABEL_MAX, state) ??
+    clip(value.title, LABEL_MAX, state) ??
+    clip(value.action, LABEL_MAX, state) ??
+    fallbackType;
+  const status = str(value.status) ?? str(props?.status);
+  const summary =
+    clip(value.summary, SUMMARY_MAX, state) ??
+    clip(value.description, SUMMARY_MAX, state) ??
+    clip(value.content, SUMMARY_MAX, state) ??
+    clip(value.outcome_summary, SUMMARY_MAX, state) ??
+    clip(props?.summary, SUMMARY_MAX, state);
+  const details = [
+    status ? `status ${status}` : undefined,
+    str(value.path) ? `path ${str(value.path)}` : undefined,
+    str(value.symbol) ? `symbol ${str(value.symbol)}` : undefined,
+  ].filter(Boolean);
+  const head = `- **${label}**${uid ? ` [${uid}]` : ""}${details.length > 0 ? ` (${details.join(", ")})` : ""}`;
+  return summary && summary !== label ? `${head}: ${summary}` : head;
+}
+
+function resumeSection(
+  heading: string,
+  values: unknown[],
+  state: RenderState,
+  fallbackType: string,
+): Section | undefined {
+  const items = values
+    .map((value) => resumeEntry(value, state, fallbackType))
+    .filter((value): value is string => Boolean(value));
+  return items.length > 0 ? { heading, items } : undefined;
+}
+
+/** Render the authoritative task-first `mindgraph_plan(resume_work)` response.
+ * This deliberately preserves its task, lease, blocker, and execution ordering
+ * instead of turning continuation into a recency search. */
+export function renderResumeContext(response: unknown, maxChars?: number): string | undefined {
+  const payload = obj(response);
+  if (!payload) return undefined;
+  const state: RenderState = { bounded: false, omitted: 0 };
+  const status = str(payload.status);
+  if (!payload.task && status === "no_eligible_work") {
+    const scopedOut = Array.isArray(payload.scoped_out_tasks)
+      ? payload.scoped_out_tasks.length
+      : 0;
+    const note = scopedOut > 0 ? ` ${scopedOut} task(s) exist outside the requested scope.` : "";
+    return assemble(
+      "# Resume context",
+      [{ heading: `No eligible work was found in the requested scope.${note}`, items: [] }],
+      state,
+      maxChars,
+    );
+  }
+
+  const sections: Section[] = [];
+  const push = (section: Section | undefined): void => {
+    if (section) sections.push(section);
+  };
+  push(resumeSection("## Current task", [payload.task], state, "Task"));
+  push(
+    resumeSection(
+      "## Goal and project",
+      [payload.goal, payload.project].filter(Boolean),
+      state,
+      "Scope",
+    ),
+  );
+  push(resumeSection("## Plan", [payload.plan], state, "Plan"));
+  push(
+    resumeSection(
+      "## Next steps",
+      Array.isArray(payload.next_steps) ? payload.next_steps : [],
+      state,
+      "Next step",
+    ),
+  );
+  push(
+    resumeSection(
+      "## Blockers",
+      Array.isArray(payload.blockers) ? payload.blockers : [],
+      state,
+      "Blocker",
+    ),
+  );
+  const knowledge = obj(payload.knowledge);
+  push(
+    resumeSection(
+      "## Relevant lessons and risks",
+      [
+        ...(Array.isArray(knowledge?.lessons) ? knowledge.lessons : []),
+        ...(Array.isArray(knowledge?.risks) ? knowledge.risks : []),
+      ],
+      state,
+      "Knowledge",
+    ),
+  );
+  push(
+    resumeSection(
+      "## Active execution",
+      [payload.active_execution].filter(Boolean),
+      state,
+      "Execution",
+    ),
+  );
+  push(
+    resumeSection(
+      "## Recent executions",
+      Array.isArray(payload.recent_executions) ? payload.recent_executions : [],
+      state,
+      "Execution",
+    ),
+  );
+  push(
+    resumeSection(
+      "## Code targets",
+      Array.isArray(payload.code_targets) ? payload.code_targets : [],
+      state,
+      "Code target",
+    ),
+  );
+  push(resumeSection("## Lease", [payload.lease].filter(Boolean), state, "Lease"));
+  const warning = clip(payload.warning, SUMMARY_MAX, state);
+  if (warning) sections.push({ heading: "## Warning", items: [`- ${warning}`] });
+  const selectionReason = clip(payload.selection_reason, SUMMARY_MAX, state);
+  if (selectionReason) {
+    sections.push({ heading: "## Selection", items: [`- ${selectionReason}`] });
+  }
+  if (sections.length === 0) return undefined;
+  return assemble("# Resume context", sections, state, maxChars);
+}
+
 /** Render any response whose payload is (or contains) a list of nodes —
  * bare GraphNode arrays and SearchResult `{node, score}` arrays alike. */
 export function renderNodeList(

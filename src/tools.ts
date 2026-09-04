@@ -12,6 +12,11 @@ import {
 import { CodegraphAdapter } from "./codegraph.js";
 import { handleSyncTool, SYNC_TOOL } from "./sync-tool.js";
 import {
+  handleMemoryTool,
+  MEMORY_TOOL,
+  type MemoryRuntimeConfig,
+} from "./memory-tool.js";
+import {
   renderContext,
   renderJobs,
   renderNodeList,
@@ -1186,6 +1191,7 @@ export const TOOLS: Tool[] = [
       required: ["action"],
     },
   },
+  MEMORY_TOOL,
   SYNC_TOOL,
   CODE_TOOL,
 ];
@@ -1209,7 +1215,7 @@ const INVOCATION_CONTEXT_SCHEMA = {
 };
 
 for (const tool of TOOLS) {
-  if (tool.name === "mindgraph_retrieve") continue;
+  if (tool.name === "mindgraph_retrieve" || tool.name === "mindgraph_memory") continue;
   const schema = tool.inputSchema as {
     properties?: Record<string, unknown>;
   };
@@ -1231,6 +1237,7 @@ export function toolsForProfile(
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
+  structuredContent?: Record<string, unknown>;
   isError?: boolean;
 };
 
@@ -1264,7 +1271,8 @@ function err(message: string): ToolResult {
 export async function handleTool(
   client: MindGraph,
   name: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  memoryConfig: MemoryRuntimeConfig = {},
 ): Promise<ToolResult> {
   try {
     if (
@@ -1300,6 +1308,9 @@ export async function handleTool(
         break;
       case "mindgraph_retrieve":
         result = await handleRetrieve(client, args);
+        break;
+      case "mindgraph_memory":
+        result = await handleMemoryTool(client, args, memoryConfig);
         break;
       case "mindgraph_series_query":
         result = await handleSeriesQuery(client, args);

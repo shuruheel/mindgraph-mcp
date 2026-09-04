@@ -63,6 +63,7 @@ describe("MCP resource surface", () => {
     } as unknown as MindGraph;
 
     const uris = [
+      "mindgraph://memory/status",
       "mindgraph://stats",
       "mindgraph://goals",
       "mindgraph://questions",
@@ -107,6 +108,30 @@ describe("MCP resource surface", () => {
     });
   });
 
+  it("governs memory status under the same read-only tool contract", async () => {
+    const fetchImpl = permitting();
+    const client = {} as MindGraph;
+
+    const result = await readGovernedResource(
+      client,
+      "mindgraph://memory/status",
+      { ...governance, fetchImpl },
+      { serverVersion: "0.test", harness: "generic", agentId: "agent-1" },
+    );
+
+    expect(JSON.parse(result.contents[0].text)).toMatchObject({
+      action: "status",
+      profile: "M0",
+    });
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body as string);
+    expect(body.target).toEqual({
+      tool_name: "mindgraph_memory",
+      action: "status",
+      mutability: "read",
+      target_uids: [],
+    });
+  });
+
   it("still dispatches each uri shape to its SDK method", async () => {
     const getNode = vi.fn(async () => ({ uid: "node-1" }));
     const getEdges = vi.fn(async () => []);
@@ -124,6 +149,18 @@ describe("MCP resource surface", () => {
 
     await readResource(client, "mindgraph://layer/reality");
     expect(getNodes).toHaveBeenCalledWith({ layer: "reality", limit: 50 });
+
+    const status = await readResource(client, "mindgraph://memory/status", {
+      serverVersion: "0.test",
+      harness: "generic",
+      agentId: "agent-1",
+    });
+    expect(JSON.parse(status.contents[0].text)).toMatchObject({
+      schema_version: "mindgraph.memory.result.v1",
+      action: "status",
+      profile: "M0",
+      integration: { automatic_delivery: false, curator_mode: "disabled" },
+    });
 
     await expect(readResource(client, "mindgraph://nope")).rejects.toThrow(
       "Unknown resource",
