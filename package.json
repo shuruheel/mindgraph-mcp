@@ -1,7 +1,7 @@
 {
   "name": "mindgraph-mcp",
   "version": "0.20.0",
-  "description": "MCP server for MindGraph — connect Claude Desktop, Claude Code, and any MCP client to your knowledge graph",
+  "description": "MCP server for MindGraph \u2014 connect Claude Desktop, Claude Code, and any MCP client to your knowledge graph",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/shuruheel/mindgraph-mcp.git"
@@ -32,7 +32,7 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "mindgraph": "^0.15.0"
+    "mindgraph": "git+https://github.com/shuruheel/mindgraph-ts.git#a8f0a242704b3c5d49336976bcecc7033b52ff15"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

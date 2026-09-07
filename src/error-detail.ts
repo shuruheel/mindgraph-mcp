@@ -35,3 +35,22 @@ export function conflictState(e: unknown): Record<string, unknown> {
   }
   return lifted;
 }
+
+/** Works with older SDKs too: inspect the preserved body, not new SDK getters. */
+export function toolError(e: unknown, fallbackCode?: string) {
+  const body = e instanceof MindGraphError && e.body && typeof e.body === "object" && !Array.isArray(e.body)
+    ? e.body as Record<string, unknown> : {};
+  const code = typeof body.code === "string" ? body.code : fallbackCode;
+  const payload = {
+    error: errorDetail(e),
+    ...conflictState(e),
+    ...(e instanceof MindGraphError ? { status: e.status } : {}),
+    ...(code !== undefined ? { code } : {}),
+    ...(typeof body.retriable === "boolean" ? { retriable: body.retriable } : {}),
+  };
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(payload) }],
+    structuredContent: payload,
+    isError: true as const,
+  };
+}

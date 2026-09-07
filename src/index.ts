@@ -79,11 +79,13 @@ let INSTRUCTIONS = `You have access to a persistent knowledge graph via MindGrap
 
 **Answer from the bounded result.** Treat superseded, refuted, or out-of-validity items as warnings, not current facts. Retrieval proves only that the server returned context; it does not prove that a host automatically injected or used it.
 
+**Respect failed tool results.** An isError result is a failed operation, not evidence that the graph has no matches. Preserve its code and retry guidance. If retriable is false, do not automatically repeat the unchanged call or silently substitute another retrieval mode. Explain the failure; a narrower query or a later user-requested retry is a separate decision.
+
 **Preserve selectively after material durable change.** Use the existing typed write tool for a fact, correction, decision, work-state transition, or reusable lesson. Do not write ephemeral conversation, routine mechanics, unsupported guesses, or information already represented accurately. An explicit no-write is the correct outcome when nothing durable changed.
 
 ## Topic retrieval details
 
-Topic context is graph-only by default. Set \`include_chunks: true\` only for source text needed for quotes, citations, or missing detail. Query with a few proper nouns or technical terms rather than a full sentence. If keyword retrieval fails, use \`mindgraph_retrieve\` with \`semantic\` or \`hybrid\`; use \`document_index\` to inspect ingested sources.
+Topic context is graph-only by default. Set \`include_chunks: true\` only for source text needed for quotes, citations, or missing detail. Query with a few proper nouns or technical terms rather than a full sentence. If keyword retrieval succeeds but returns no matches, use \`mindgraph_retrieve\` with \`semantic\` or \`hybrid\`; use \`document_index\` to inspect ingested sources.
 
 ## Comprehensive read tools
 

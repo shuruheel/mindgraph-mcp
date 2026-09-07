@@ -9,7 +9,7 @@ import {
   pathContains,
   type RepositoryIdentity,
 } from "./codegraph.js";
-import { errorDetail } from "./error-detail.js";
+import { toolError } from "./error-detail.js";
 
 type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -247,7 +247,7 @@ export async function handleSyncTool(
     }
     return ok(await remote.memorySync(request));
   } catch (error) {
-    return err("sync_failed", errorDetail(error));
+    return toolError(error, "sync_failed");
   }
 }
 

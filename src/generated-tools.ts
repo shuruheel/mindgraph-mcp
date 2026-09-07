@@ -1,3 +1,4 @@
+import { toolError } from "./error-detail.js";
 // Dynamic, per-object-type read tools generated from the active ontology.
 //
 // The cloud emits schema-qualified descriptors (GET /v1/ontology/tools) for
@@ -295,6 +296,6 @@ export async function handleGeneratedTool(
         return err(`unknown generated tool mapping: ${desc.maps_to}`);
     }
   } catch (e: unknown) {
-    return err(e instanceof Error ? e.message : String(e));
+    return toolError(e);
   }
 }
