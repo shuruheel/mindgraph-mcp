@@ -123,6 +123,18 @@ describe("renderJobs", () => {
   it("handles the empty list", () => {
     expect(renderJobs([])).toBe("No ingestion jobs.");
   });
+
+  it("does not infer retry guidance from legacy text or malformed metadata", () => {
+    const job = { id: "legacy", status: "failed", error: "query_timeout retriable: false" };
+    const text = renderJobs([job])!;
+    expect(text).toContain("error: query_timeout retriable: false");
+    expect(text).not.toContain("code:");
+    expect(renderJobs([{ ...job, error_details: { code: 42, message: [], status: "504", retriable: "false" } }])).toBe(text);
+    expect(renderJobs([{ ...job, error_details: [] }])).toBe(text);
+    const bounded = renderJobs([{ ...job, error_details: { message: "x".repeat(1000), code: "query_timeout", status: 504, retriable: false } }])!;
+    expect(bounded).toContain("code: query_timeout, status: 504, retriable: false");
+    expect(bounded).toContain("…[rendered context bounded");
+  });
 });
 
 describe("renderSignals", () => {
