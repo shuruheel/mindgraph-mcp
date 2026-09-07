@@ -8,6 +8,37 @@ afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("engine errors through MCP", () => {
   it.each([
+    [503, "query_admission_busy"], [422, "query_memory_budget_exceeded"],
+    [504, "query_timeout"], [409, "query_cancelled"],
+  ])("preserves %s/%s job failures through list rendering and raw status reads", async (status, code) => {
+    const job = {
+      id: "failed-job", title: "Example queries", status: "failed", created_at: 1,
+      progress: { processed_chunks: 2, total_chunks: 5 },
+      error: "legacy diagnostic",
+      error_details: { message: "Safe terminal reason", code, status, retriable: false },
+    };
+    const fetcher = vi.fn(async (url: string | URL | Request, _options: RequestInit) => new Response(JSON.stringify(
+      String(url).endsWith("/jobs/failed-job") ? job : [job],
+    ), { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
+    const client = new MindGraph({ baseUrl: "https://offline.invalid" });
+    const rendered = await handleTool(client, "mindgraph_ingest", { action: "job_status" });
+    expect(rendered.isError).not.toBe(true); // The status read succeeded; execution failed.
+    expect(rendered.content[0].text).toContain("[failed-job]");
+    expect(rendered.content[0].text).toContain("2/5 chunks");
+    expect(rendered.content[0].text).toContain(`error: Safe terminal reason, code: ${code}, status: ${status}, retriable: false`);
+    expect(rendered.content[0].text).not.toContain("legacy diagnostic");
+    const raw = await handleTool(client, "mindgraph_ingest", { action: "job_status", format: "json" });
+    expect(JSON.parse(raw.content[0].text)[0].error_details).toEqual(job.error_details);
+    const single = await handleTool(client, "mindgraph_ingest", { action: "job_status", job_id: job.id });
+    expect(JSON.parse(single.content[0].text).error_details).toEqual(job.error_details);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    for (const [, options] of fetcher.mock.calls) {
+      expect(options.method).toBe("GET");
+    }
+  });
+
+  it.each([
     [503, "vector_index_rebuilding"], [503, "query_admission_busy"],
     [422, "query_memory_budget_exceeded"], [504, "query_timeout"], [409, "query_cancelled"],
   ])("keeps %s/%s as a structured failure with one transport attempt", async (status, code) => {
