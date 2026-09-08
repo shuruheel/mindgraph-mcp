@@ -300,3 +300,17 @@ npm run dev              # tsup --watch
 ## License
 
 MIT
+
+### Engine failures and retries
+
+Tool failures carry `isError: true`; `code`, `status`, and optional `retriable`
+are preserved in both the JSON text and structured content. Lease-conflict fields
+remain available to hooks. A failed retrieval is not an empty successful result.
+Explicit `retriable: false` stops automatic retries, including index maintenance.
+Other 503 responses retry only reviewed reads or atomically keyed work operations.
+
+This adoption branch pins the TypeScript SDK to immutable source commit
+`02bad10728836bf55129c08efabf71386432deee` so installs and CI exercise the same
+retry implementation. Git installation builds the SDK through its `prepare` hook.
+Replace this source pin and regenerate the lockfile only after a registry release
+containing that implementation is verified; older SDK releases retry all 503s.

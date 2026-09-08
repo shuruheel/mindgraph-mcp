@@ -1,6 +1,6 @@
 import { MindGraph } from "mindgraph";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { errorDetail } from "./error-detail.js";
+import { errorDetail, toolError } from "./error-detail.js";
 import {
   CodegraphAdapter,
   UnknownRepositoryError,
@@ -344,7 +344,7 @@ export async function handleCodeTool(
     if (cause instanceof UnknownRepositoryError) {
       return err("unknown_repository", cause.message);
     }
-    return err("code_tool_failed", errorDetail(cause));
+    return toolError(cause, "code_tool_failed");
   }
 }
 
