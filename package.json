@@ -32,7 +32,7 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "mindgraph": "git+https://github.com/shuruheel/mindgraph-ts.git#02bad10728836bf55129c08efabf71386432deee"
+    "mindgraph": "git+https://github.com/shuruheel/mindgraph-ts.git#4f3a420e9b28b07f07fbbe9c177a51f9715c8aee"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

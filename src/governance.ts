@@ -107,6 +107,8 @@ export function toolMutability(
 ): ToolMutability {
   if (toolName === "mindgraph_memory") return "read";
   if (toolName === "mindgraph_retrieve") return "read";
+  // Both actions mutate: remember writes/upserts, forget tombstones.
+  if (toolName === "mindgraph_remember") return "write";
   if (toolName === "mindgraph_series_query") return "read";
   if (toolName === "mindgraph_plan") {
     return action && PLAN_READ_ACTIONS.has(action) ? "read" : "write";

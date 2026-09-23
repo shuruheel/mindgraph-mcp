@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `mindgraph_remember(remember|forget)`: the small-text memory fast path over
+  the new server routes `POST /memory/remember` and `POST /memory/forget`.
+  `remember` stores one fact, preference or decision synchronously and reports
+  whether it is BM25- and vector-searchable on return; a stable `custom_id`
+  makes re-sends an upsert of the same node instead of a duplicate. `forget`
+  tombstones by uid or custom_id, with `dry_run` previewing the affected edge
+  uids and `/evolve restore` + `restore_edge` as the undo path. Both actions are
+  classified `write` for governance; no idempotency key is injected because
+  `custom_id` is the contract.
+
+### Changed
+
+- Depends on the `mindgraph` TS SDK commit that adds `remember()`/`forget()`
+  and the remember-instructions helpers.
+
 ## 0.20.0 (2026-09-04)
 
 This release adds an honest, portable M0 memory workflow without changing the
