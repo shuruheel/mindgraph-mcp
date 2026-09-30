@@ -104,6 +104,7 @@ describe("generated tool schemas — structural sanity", () => {
       "mindgraph_plan",
       "mindgraph_retrieve",
       "mindgraph_memory",
+      "mindgraph_remember",
       "mindgraph_series_query",
       "mindgraph_ingest",
       "mindgraph_synthesize",

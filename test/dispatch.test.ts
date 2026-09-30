@@ -84,6 +84,8 @@ function makeClient() {
     "linkDomainObjects",
     "extractOntology",
     "series",
+    "remember",
+    "forget",
   ] as const;
 
   const client = {} as Record<string, ReturnType<typeof vi.fn>>;
@@ -140,6 +142,76 @@ it("derives stable retry keys only from harness-bound sessions", () => {
     action: "observation",
     label: "A",
   })).toBeUndefined();
+});
+
+describe("mindgraph_remember dispatch", () => {
+  it("remember -> client.remember(text, options) with custom_id as the upsert key", async () => {
+    await handleTool(client, "mindgraph_remember", {
+      action: "remember",
+      text: "User prefers dark mode",
+      custom_id: "pref:theme",
+      agent_id: "mcp",
+      invocation_context: { harness: "claude-code" },
+    });
+    expect(client.remember).toHaveBeenCalledTimes(1);
+    expect(client.remember.mock.calls[0]).toEqual([
+      "User prefers dark mode",
+      { custom_id: "pref:theme", agent_id: "mcp" },
+    ]);
+  });
+
+  it("remember never injects an idempotency_key (custom_id is the contract)", async () => {
+    await handleTool(client, "mindgraph_remember", {
+      action: "remember",
+      text: "Deploy target is mg-prod",
+    });
+    const [, options] = client.remember.mock.calls[0];
+    expect(options).not.toHaveProperty("idempotency_key");
+    expect(options).not.toHaveProperty("invocation_context");
+  });
+
+  it("remember rejects empty text without calling the client", async () => {
+    const r = await handleTool(client, "mindgraph_remember", { action: "remember", text: "  " });
+    expect(r.isError).toBe(true);
+    expect(client.remember).not.toHaveBeenCalled();
+  });
+
+  it("forget by custom_id with dry_run -> client.forget({custom_id}, {dry_run})", async () => {
+    await handleTool(client, "mindgraph_remember", {
+      action: "forget",
+      custom_id: "pref:theme",
+      dry_run: true,
+      agent_id: "mcp",
+    });
+    expect(client.forget.mock.calls[0]).toEqual([
+      { custom_id: "pref:theme" },
+      { dry_run: true, agent_id: "mcp" },
+    ]);
+  });
+
+  it("forget by uid takes precedence over custom_id", async () => {
+    await handleTool(client, "mindgraph_remember", {
+      action: "forget",
+      uid: "n1",
+      custom_id: "pref:theme",
+      cascade: false,
+      reason: "stale",
+    });
+    expect(client.forget.mock.calls[0]).toEqual([
+      { uid: "n1" },
+      { cascade: false, reason: "stale" },
+    ]);
+  });
+
+  it("forget without a target is an error", async () => {
+    const r = await handleTool(client, "mindgraph_remember", { action: "forget" });
+    expect(r.isError).toBe(true);
+    expect(client.forget).not.toHaveBeenCalled();
+  });
+
+  it("advertises exactly the two actions", () => {
+    expect(actionEnum("mindgraph_remember")).toEqual(["remember", "forget"]);
+  });
 });
 
 describe("mindgraph_capture dispatch", () => {

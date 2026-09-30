@@ -174,7 +174,7 @@ and never block the coding session.
 
 ## What You Get
 
-**10 tools** covering the full knowledge-graph workflow (**12** in the coding
+**11 tools** covering the full knowledge-graph workflow (**13** in the coding
 profile):
 
 | Tool | Purpose |
@@ -185,6 +185,7 @@ profile):
 | `mindgraph_plan` | Plans, tasks, procedures, governance policies, risk assessments, executions |
 | `mindgraph_retrieve` | Context retrieval with bounded graph expansion, search, min-cost traversal, document index. Read results return as compact rendered text (labels, uids, summaries, epistemic status tags, relationships, traversal depth/cost); set `max_output_chars` for a hard whole-item character budget, or pass `format: "json"` for the raw server response |
 | `mindgraph_memory` | Read-only M0 memory workflow: inspect honest integration status, retrieve bounded topic context, or recover authoritative task-first resume/continuity context. Returns model-ready text plus a structured envelope with scope, hashes, trace, budget, freshness, and warnings |
+| `mindgraph_remember` | Small-text fast path: `remember` stores one fact/preference/decision synchronously and it is BM25- and vector-searchable on return; a stable `custom_id` makes re-sends an upsert of the same memory. `forget` reversibly removes by uid or custom_id, with `dry_run` previewing the affected edge uids |
 | `mindgraph_series_query` | Bounded, read-only dense-measurement queries: list an entity's Series, inspect latest values, page a time window, or calculate calendar aggregates |
 | `mindgraph_ingest` | Chunk / document / session ingestion with LLM-powered extraction. `job_status` without an id renders the 20 most recent jobs (`format: "json"` for the full list) |
 | `mindgraph_synthesize` | Project-scoped cross-document synthesis — mine signals (rendered as sections since 0.17.0), spawn Article-generation jobs |

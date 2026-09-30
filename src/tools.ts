@@ -1191,6 +1191,69 @@ export const TOOLS: Tool[] = [
       required: ["action"],
     },
   },
+  {
+    name: "mindgraph_remember",
+    description:
+      "Small-text memory fast path. 'remember' stores one fact, preference, decision or note synchronously; it is BM25- and vector-searchable the moment the call returns (the response says which). Pass a stable custom_id (e.g. 'pref:theme', 'deploy:target') so re-sending the same key UPDATES the same memory instead of creating a duplicate — that is the idempotency contract; without custom_id an exact duplicate is reused. 'forget' reversibly removes a memory by uid or custom_id (tombstone plus connected edges): call it with dry_run=true first to see the edge uids it would remove, then without. Undo with mindgraph_capture-independent server actions /evolve restore and restore_edge. Use mindgraph_capture for typed entities, sources and skills, and mindgraph_ingest for documents longer than a few paragraphs.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        action: {
+          type: "string",
+          enum: ["remember", "forget"],
+          description: "remember = store/upsert one small text; forget = reversible removal",
+        },
+        text: {
+          type: "string",
+          description: "remember: the memory text (≤ 8 KiB). Use mindgraph_ingest for longer content.",
+        },
+        custom_id: {
+          type: "string",
+          description:
+            "Caller-owned key. remember: re-sending it edits the same memory (version bump, history kept). forget: the memory to remove.",
+        },
+        label: {
+          type: "string",
+          description: "remember: optional short title; defaults to the first line of text",
+        },
+        uid: {
+          type: "string",
+          description: "forget: node uid to remove (alternative to custom_id)",
+        },
+        dry_run: {
+          type: "boolean",
+          description: "forget: preview the affected edge uids without changing anything",
+        },
+        cascade: {
+          type: "boolean",
+          description: "forget: also tombstone connected edges (default true)",
+        },
+        reason: {
+          type: "string",
+          description: "forget: why (recorded on the tombstone)",
+        },
+        space_uid: {
+          type: "string",
+          description: "remember: explicit target Space (default: the org space)",
+        },
+        on_near_duplicate: {
+          type: "string",
+          enum: ["reuse", "create"],
+          description:
+            "remember without custom_id: on an exact duplicate, reuse the existing memory (default) or create anyway",
+        },
+        props: {
+          type: "object",
+          description: "remember: extra Observation props",
+        },
+        agent_id: {
+          type: "string",
+          description: "Agent identifier (default: configured agent)",
+        },
+      },
+      required: ["action"],
+    },
+  },
   MEMORY_TOOL,
   SYNC_TOOL,
   CODE_TOOL,
@@ -1312,6 +1375,9 @@ export async function handleTool(
       case "mindgraph_memory":
         result = await handleMemoryTool(client, args, memoryConfig);
         break;
+      case "mindgraph_remember":
+        result = await handleRemember(client, args);
+        break;
       case "mindgraph_series_query":
         result = await handleSeriesQuery(client, args);
         break;
@@ -1386,6 +1452,73 @@ async function handleSeriesQuery(
 }
 
 // ── Capture (+ Journal) ──────────────────────────────────────────────
+
+/**
+ * `mindgraph_remember`: the small-text fast path. `remember` maps 1:1 onto
+ * the SDK's `remember(text, options)` (POST /memory/remember); `forget` onto
+ * `forget(target, options)` (POST /memory/forget). No idempotency key is
+ * injected here: `custom_id` IS the idempotency contract, and a forget is
+ * naturally idempotent (a second call is a 404 `already_forgotten`).
+ */
+async function handleRemember(
+  client: MindGraph,
+  args: Record<string, unknown>
+): Promise<ToolResult> {
+  const {
+    action,
+    text,
+    custom_id,
+    label,
+    uid,
+    dry_run,
+    cascade,
+    reason,
+    space_uid,
+    on_near_duplicate,
+    props,
+    agent_id,
+    // Adapter-owned; consumed locally, never sent to the API.
+    invocation_context: _invocationContext,
+    ...rest
+  } = args as Record<string, unknown>;
+  void _invocationContext;
+  void rest;
+
+  switch (action) {
+    case "remember": {
+      if (typeof text !== "string" || !text.trim()) {
+        return err("remember requires non-empty text");
+      }
+      const options: Record<string, unknown> = {};
+      if (typeof custom_id === "string" && custom_id.trim()) options.custom_id = custom_id.trim();
+      if (typeof label === "string" && label.trim()) options.label = label;
+      if (typeof space_uid === "string" && space_uid.trim()) options.space_uid = space_uid;
+      if (on_near_duplicate === "reuse" || on_near_duplicate === "create") {
+        options.on_near_duplicate = on_near_duplicate;
+      }
+      if (props && typeof props === "object") options.props = props;
+      if (typeof agent_id === "string") options.agent_id = agent_id;
+      return ok(await client.remember(text, options));
+    }
+    case "forget": {
+      const target =
+        typeof uid === "string" && uid.trim()
+          ? { uid: uid.trim() }
+          : typeof custom_id === "string" && custom_id.trim()
+            ? { custom_id: custom_id.trim() }
+            : null;
+      if (!target) return err("forget requires uid or custom_id");
+      const options: Record<string, unknown> = {};
+      if (dry_run === true) options.dry_run = true;
+      if (typeof cascade === "boolean") options.cascade = cascade;
+      if (typeof reason === "string" && reason.trim()) options.reason = reason;
+      if (typeof agent_id === "string") options.agent_id = agent_id;
+      return ok(await client.forget(target, options));
+    }
+    default:
+      return err(`Unknown remember action: ${String(action)}`);
+  }
+}
 
 async function handleCapture(
   client: MindGraph,
