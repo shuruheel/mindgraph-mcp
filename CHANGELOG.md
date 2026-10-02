@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.21.0 (2026-10-02)
+
+Adds the `mindgraph_remember` fast-path tool (11 tools; 13 in the coding
+profile). Requires MindGraph Cloud or `mindgraph-server` 1.14.0 for the two new
+routes; every other tool is unchanged.
+
 ### Added
 
 - `mindgraph_remember(remember|forget)`: the small-text memory fast path over
@@ -16,8 +22,12 @@
 
 ### Changed
 
-- Depends on the `mindgraph` TS SDK commit that adds `remember()`/`forget()`
-  and the remember-instructions helpers.
+- Depends on the `mindgraph` TS SDK `^0.16.0`, which adds `remember()`,
+  `forget()` and the remember-instructions helpers.
+- Tool errors preserve the server's engine failure `code`, status and `retriable`
+  guidance instead of flattening them to a message, for generated ontology
+  tools, sync and the static tools alike; legacy errors without guidance gain
+  none.
 
 ## 0.20.0 (2026-09-04)
 
