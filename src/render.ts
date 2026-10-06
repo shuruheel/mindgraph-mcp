@@ -928,6 +928,10 @@ export function renderJobs(response: unknown): string | undefined {
   if (shown.length < sorted.length) state.bounded = true;
   const items = shown.map((job) => {
     const progress = obj(job.progress);
+    // Preserve the server's terminal reason even with an older SDK's Job type.
+    // Legacy text alone must never imply an engine code or retry permission.
+    const failure = obj(job.error_details);
+    const message = str(failure?.message) ?? str(job.error);
     const done = num(progress?.processed_chunks);
     const totalChunks = num(progress?.total_chunks);
     const bits = [
@@ -935,7 +939,10 @@ export function renderJobs(response: unknown): string | undefined {
       done !== undefined && totalChunks !== undefined ? `${done}/${totalChunks} chunks` : undefined,
       num(progress?.nodes_created) !== undefined ? `${num(progress?.nodes_created)} nodes` : undefined,
       num(job.queue_position) !== undefined ? `queue #${num(job.queue_position)}` : undefined,
-      str(job.error) ? `error: ${clip(job.error, 160, state)}` : undefined,
+      message ? `error: ${clip(message, 160, state)}` : undefined,
+      str(failure?.code) ? `code: ${clip(failure?.code, 80, state)}` : undefined,
+      num(failure?.status) !== undefined ? `status: ${num(failure?.status)}` : undefined,
+      typeof failure?.retriable === "boolean" ? `retriable: ${failure.retriable}` : undefined,
     ].filter(Boolean);
     return `- [${str(job.id) || "?"}] ${clip(job.title, 120, state) || "(untitled)"} — ${bits.join(", ")}`;
   });
