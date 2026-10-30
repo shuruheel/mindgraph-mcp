@@ -541,27 +541,25 @@ describe("R15 — coding profile scopes documents out of context by default", ()
   it("drops the article leg unless include_documents is passed", async () => {
     const retrieveContext = vi.fn().mockResolvedValue({ nodes: [] });
     const client = { retrieveContext } as unknown as MindGraph;
-    const prior = process.env.MINDGRAPH_PROFILE;
-    process.env.MINDGRAPH_PROFILE = "coding";
-    try {
-      await handleTool(client, "mindgraph_retrieve", { action: "context", query: "greet" });
-      expect(retrieveContext).toHaveBeenLastCalledWith(
-        expect.objectContaining({ article_limit: 0 })
-      );
-      await handleTool(client, "mindgraph_retrieve", {
-        action: "context", query: "PRD greet", include_documents: true,
-      });
-      expect(retrieveContext).toHaveBeenLastCalledWith(
-        expect.not.objectContaining({ article_limit: 0 })
-      );
-      process.env.MINDGRAPH_PROFILE = "general";
-      await handleTool(client, "mindgraph_retrieve", { action: "context", query: "greet" });
-      expect(retrieveContext).toHaveBeenLastCalledWith(
-        expect.not.objectContaining({ article_limit: 0 })
-      );
-    } finally {
-      process.env.MINDGRAPH_PROFILE = prior;
-    }
+    // The profile reaches the handler through the runtime config (the stdio
+    // entry builds it from MINDGRAPH_PROFILE; the hosted server passes it).
+    const coding = { profile: "coding" };
+    await handleTool(client, "mindgraph_retrieve", { action: "context", query: "greet" }, coding);
+    expect(retrieveContext).toHaveBeenLastCalledWith(
+      expect.objectContaining({ article_limit: 0 })
+    );
+    await handleTool(client, "mindgraph_retrieve", {
+      action: "context", query: "PRD greet", include_documents: true,
+    }, coding);
+    expect(retrieveContext).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ article_limit: 0 })
+    );
+    await handleTool(client, "mindgraph_retrieve", { action: "context", query: "greet" }, {
+      profile: "general",
+    });
+    expect(retrieveContext).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ article_limit: 0 })
+    );
   });
 });
 

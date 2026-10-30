@@ -9,7 +9,6 @@ export type GovernanceGateResult =
     };
 
 type Capability = "unknown" | "supported" | "unsupported";
-let capability: Capability = "unknown";
 
 // An "unsupported" verdict is a fail-open: we stop gating because the server
 // told us it has no governance to gate with. Latching that for the life of the
@@ -17,8 +16,23 @@ let capability: Capability = "unknown";
 // by a broken deployment — never starts being enforced again. The latch is
 // therefore a lease, not a decision, and re-probes when it expires.
 const UNSUPPORTED_LEASE_MS = 5 * 60 * 1000;
-let unsupportedUntil = 0;
-let unsupportedLogged = false;
+
+/**
+ * The capability latch. The stdio server has one per process; the hosted
+ * server keeps one per org so a governance-less tenant never fails another
+ * tenant open.
+ */
+export interface GovernanceLatch {
+  capability: Capability;
+  unsupportedUntil: number;
+  unsupportedLogged: boolean;
+}
+
+export function createGovernanceLatch(): GovernanceLatch {
+  return { capability: "unknown", unsupportedUntil: 0, unsupportedLogged: false };
+}
+
+const DEFAULT_LATCH = createGovernanceLatch();
 
 // A blip on the probe must not read as a policy verdict. Transient conditions
 // are retried before the gate fails closed; anything still failing after the
@@ -61,9 +75,7 @@ function unsupportedResponse(status: number, body: string): boolean {
 
 /** Reset only for deterministic tests. */
 export function resetGovernanceCapability(): void {
-  capability = "unknown";
-  unsupportedUntil = 0;
-  unsupportedLogged = false;
+  Object.assign(DEFAULT_LATCH, createGovernanceLatch());
 }
 
 export interface GovernanceConfig {
@@ -77,6 +89,8 @@ export interface GovernanceConfig {
   context?: Record<string, unknown>;
   /** Overridden only by tests, to keep the retry path fast. */
   retryDelaysMs?: number[];
+  /** Capability latch to use; defaults to the process-wide one. */
+  latch?: GovernanceLatch;
 }
 
 export type ToolMutability = "read" | "write";
@@ -213,10 +227,11 @@ export async function checkMcpGovernance(
   config: GovernanceConfig
 ): Promise<GovernanceGateResult> {
   if (config.disabled) return { allowed: true };
-  if (capability === "unsupported") {
-    if (Date.now() < unsupportedUntil) return { allowed: true };
+  const latch = config.latch ?? DEFAULT_LATCH;
+  if (latch.capability === "unsupported") {
+    if (Date.now() < latch.unsupportedUntil) return { allowed: true };
     // Lease expired — probe again rather than stay ungoverned forever.
-    capability = "unknown";
+    latch.capability = "unknown";
   }
   const fetchImpl = config.fetchImpl ?? fetch;
   const retryDelays = config.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
@@ -278,11 +293,11 @@ export async function checkMcpGovernance(
   }
 
   if (!response.ok) {
-    if (capability === "unknown" && unsupportedResponse(response.status, body)) {
-      capability = "unsupported";
-      unsupportedUntil = Date.now() + UNSUPPORTED_LEASE_MS;
-      if (!unsupportedLogged) {
-        unsupportedLogged = true;
+    if (latch.capability === "unknown" && unsupportedResponse(response.status, body)) {
+      latch.capability = "unsupported";
+      latch.unsupportedUntil = Date.now() + UNSUPPORTED_LEASE_MS;
+      if (!latch.unsupportedLogged) {
+        latch.unsupportedLogged = true;
         console.error(
           `[mindgraph-mcp] This MindGraph server does not implement the governance ` +
             `checkpoint (HTTP ${response.status}); tool calls proceed ungoverned. ` +
@@ -308,8 +323,8 @@ export async function checkMcpGovernance(
       message: `MindGraph governance check failed (${response.status})`,
     };
   }
-  capability = "supported";
-  unsupportedLogged = false;
+  latch.capability = "supported";
+  latch.unsupportedLogged = false;
 
   let decision: Record<string, unknown>;
   try {

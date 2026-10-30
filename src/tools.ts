@@ -1370,7 +1370,7 @@ export async function handleTool(
         result = await handlePlan(client, args);
         break;
       case "mindgraph_retrieve":
-        result = await handleRetrieve(client, args);
+        result = await handleRetrieve(client, args, memoryConfig.profile);
         break;
       case "mindgraph_memory":
         result = await handleMemoryTool(client, args, memoryConfig);
@@ -2283,7 +2283,8 @@ async function handlePlan(
 
 async function handleRetrieve(
   client: MindGraph,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  profile?: string,
 ): Promise<ToolResult> {
   const {
     action,
@@ -2379,7 +2380,7 @@ async function handleRetrieve(
           ...(article_limit !== undefined
             ? { article_limit }
             : include_documents === false ||
-                (process.env.MINDGRAPH_PROFILE === "coding" && !include_documents)
+                (profile === "coding" && !include_documents)
               ? { article_limit: 0 }
               : {}),
           valid_at,
