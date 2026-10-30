@@ -61,9 +61,23 @@ interface Cache {
   byName: Map<string, GeneratedToolDescriptor>;
   fetchedAt: number;
 }
-/** Last manifest the server actually answered with. */
-let cache: Cache | null = null;
-let retryNotBefore = 0;
+
+/**
+ * One manifest cache. The stdio server owns a single process-wide entry (one
+ * key, one org); the hosted server keeps one per org in a Map so tenants never
+ * see each other's ontology tools.
+ */
+export interface GeneratedToolsEntry {
+  /** Last manifest the server actually answered with. */
+  cache: Cache | null;
+  retryNotBefore: number;
+}
+
+export function createGeneratedToolsEntry(): GeneratedToolsEntry {
+  return { cache: null, retryNotBefore: 0 };
+}
+
+const DEFAULT_ENTRY = createGeneratedToolsEntry();
 
 const EMPTY = {
   tools: [] as Tool[],
@@ -73,8 +87,8 @@ const EMPTY = {
 class DuplicateGeneratedToolError extends Error {}
 
 export function clearGeneratedToolCache(): void {
-  cache = null;
-  retryNotBefore = 0;
+  DEFAULT_ENTRY.cache = null;
+  DEFAULT_ENTRY.retryNotBefore = 0;
 }
 
 /**
@@ -85,12 +99,14 @@ export function clearGeneratedToolCache(): void {
  */
 export async function getGeneratedTools(
   client: MindGraph,
+  entry: GeneratedToolsEntry = DEFAULT_ENTRY,
 ): Promise<{ tools: Tool[]; byName: Map<string, GeneratedToolDescriptor> }> {
   const now = Date.now();
+  const { cache } = entry;
   if (cache && now - cache.fetchedAt < CACHE_TTL_MS) {
     return { tools: cache.tools, byName: cache.byName };
   }
-  if (now < retryNotBefore) {
+  if (now < entry.retryNotBefore) {
     // Recently failed. Serve the stale manifest if we have one — a stale tool
     // that no longer exists fails at dispatch, which is a better answer than
     // silently having no ontology tools at all.
@@ -103,8 +119,8 @@ export async function getGeneratedTools(
       listOntologyTools?: () => Promise<{ tools: GeneratedToolDescriptor[] }>;
     };
     if (typeof c.listOntologyTools !== "function") {
-      cache = { tools: [], byName: new Map(), fetchedAt: Date.now() };
-      return { tools: cache.tools, byName: cache.byName };
+      entry.cache = { tools: [], byName: new Map(), fetchedAt: Date.now() };
+      return { tools: entry.cache.tools, byName: entry.cache.byName };
     }
     const resp = await c.listOntologyTools();
     const byName = new Map<string, GeneratedToolDescriptor>();
@@ -139,14 +155,14 @@ export async function getGeneratedTools(
         inputSchema,
       });
     }
-    cache = { tools, byName, fetchedAt: Date.now() };
-    retryNotBefore = 0;
+    entry.cache = { tools, byName, fetchedAt: Date.now() };
+    entry.retryNotBefore = 0;
     return { tools, byName };
   } catch (error) {
     if (error instanceof DuplicateGeneratedToolError) throw error;
     // Unreachable or erroring. Back off briefly, but do not record an empty
     // manifest as if the server had answered with one.
-    retryNotBefore = Date.now() + FAILURE_COOLDOWN_MS;
+    entry.retryNotBefore = Date.now() + FAILURE_COOLDOWN_MS;
     return cache ? { tools: cache.tools, byName: cache.byName } : EMPTY;
   }
 }

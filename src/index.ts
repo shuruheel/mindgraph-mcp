@@ -1,24 +1,7 @@
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  ListResourcesRequestSchema,
-  ListResourceTemplatesRequestSchema,
-  ReadResourceRequestSchema,
-  ListPromptsRequestSchema,
-  GetPromptRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
 import { MindGraph } from "mindgraph";
 import { loadHookEnv, stableAgentId } from "./hook-env.js";
-import { handleTool, toolsForProfile } from "./tools.js";
-import { getGeneratedTools, handleGeneratedTool } from "./generated-tools.js";
-import { checkMcpGovernance } from "./governance.js";
-import {
-  RESOURCES,
-  RESOURCE_TEMPLATES,
-  readGovernedResource,
-} from "./resources.js";
+import { buildMindGraphServer } from "./server.js";
 import path from "node:path";
 import {
   refreshHookRunner,
@@ -198,30 +181,6 @@ if (HOOK_SKEW_NOTE) {
 
 // ── MCP Server ────────────────────────────────────────────────────────
 
-const server = new Server(
-  {
-    name: "mindgraph",
-    version: __PACKAGE_VERSION__,
-  },
-  {
-    capabilities: {
-      tools: {},
-      resources: {},
-      prompts: {},
-    },
-    instructions: INSTRUCTIONS,
-  }
-);
-
-// ── Tool Handlers ─────────────────────────────────────────────────────
-
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  // Static tools + per-object-type read tools generated from the active
-  // ontology (never throws — empty set if the manifest endpoint is absent).
-  const generated = await getGeneratedTools(client);
-  return { tools: [...toolsForProfile(PROFILE), ...generated.tools] };
-});
-
 const GOVERNANCE_CONFIG = {
   baseUrl: BASE_URL,
   apiKey: API_KEY,
@@ -241,225 +200,16 @@ const MEMORY_RUNTIME_CONFIG = {
   agentId: AGENT_ID,
 };
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-
-  const rawArgs = { ...((args as Record<string, unknown>) || {}) };
-  // Inject default agent_id if not provided. Static tools declare agent_id;
-  // generated ontology tools do not, and their schemas reject it — so the
-  // injected copy is kept separate from the args they receive.
-  const toolArgs = { ...rawArgs };
-  if (!toolArgs.agent_id) {
-    toolArgs.agent_id = AGENT_ID;
-  }
-
-  const governance = await checkMcpGovernance(name, toolArgs, GOVERNANCE_CONFIG);
-  if (!governance.allowed) {
-    return {
-      content: [{ type: "text", text: JSON.stringify({ error: governance.message, ...governance }) }],
-      isError: true,
-    };
-  }
-
-  // Route schema-qualified generated ontology tools, including relation-role
-  // reads and the structured composite.
-  const generated = await getGeneratedTools(client);
-  const desc = generated.byName.get(name);
-  if (desc) {
-    return handleGeneratedTool(client, desc, rawArgs);
-  }
-
-  return handleTool(client, name, toolArgs, MEMORY_RUNTIME_CONFIG);
-});
-
-// ── Prompts ───────────────────────────────────────────────────────────
-
-const PROMPTS = [
-  {
-    name: "graph-summary",
-    description:
-      "Get a comprehensive summary of what's in your knowledge graph — entities, claims, goals, and open questions.",
-    arguments: [],
-  },
-  {
-    name: "active-goals",
-    description:
-      "Review your active goals, projects, and milestones with their current status.",
-    arguments: [],
-  },
-  {
-    name: "open-questions",
-    description:
-      "List all open questions and hypotheses that need investigation.",
-    arguments: [],
-  },
-  {
-    name: "review-contradictions",
-    description:
-      "Find and analyze contradictions in your knowledge graph — claims that conflict with each other.",
-    arguments: [],
-  },
-  {
-    name: "knowledge-about",
-    description:
-      "Retrieve everything the knowledge graph knows about a specific topic.",
-    arguments: [
-      {
-        name: "topic",
-        description: "The topic to search for",
-        required: true,
-      },
-    ],
-  },
-  {
-    name: "daily-briefing",
-    description:
-      "Get a daily briefing: active goals, recent knowledge, open questions, and pending decisions.",
-    arguments: [],
-  },
-  {
-    name: "capture-conversation",
-    description:
-      "Analyze the current conversation and capture all important entities, claims, decisions, and action items into the knowledge graph.",
-    arguments: [
-      {
-        name: "conversation",
-        description: "The conversation text to analyze and capture",
-        required: true,
-      },
-    ],
-  },
-];
-
-server.setRequestHandler(ListPromptsRequestSchema, async () => {
-  return { prompts: PROMPTS };
-});
-
-server.setRequestHandler(GetPromptRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-
-  switch (name) {
-    case "graph-summary":
-      return {
-        messages: [
-          {
-            role: "user" as const,
-            content: {
-              type: "text" as const,
-              text: "Give me a comprehensive summary of my knowledge graph. Start by checking the graph stats, then retrieve my active goals, open questions, and any recent knowledge. Organize the summary by cognitive layer (Reality, Epistemic, Intent, Action, Memory).",
-            },
-          },
-        ],
-      };
-
-    case "active-goals":
-      return {
-        messages: [
-          {
-            role: "user" as const,
-            content: {
-              type: "text" as const,
-              text: "Review all my active goals, projects, and milestones. For each one, show its status, any linked decisions or tasks, and suggest next steps. Group them by project if applicable.",
-            },
-          },
-        ],
-      };
-
-    case "open-questions":
-      return {
-        messages: [
-          {
-            role: "user" as const,
-            content: {
-              type: "text" as const,
-              text: "List all my open questions and hypotheses. For each one, check if there's any related evidence or claims in the graph that might help answer them. Prioritize by salience and suggest which ones I should investigate first.",
-            },
-          },
-        ],
-      };
-
-    case "review-contradictions":
-      return {
-        messages: [
-          {
-            role: "user" as const,
-            content: {
-              type: "text" as const,
-              text: "Search my knowledge graph for contradictions — claims that conflict with each other, or evidence that undermines existing beliefs. Also look for weak claims (low confidence) that might need more evidence. For each contradiction found, explain the conflict and suggest how to resolve it.",
-            },
-          },
-        ],
-      };
-
-    case "knowledge-about": {
-      const topic = args?.topic || "general";
-      return {
-        messages: [
-          {
-            role: "user" as const,
-            content: {
-              type: "text" as const,
-              text: `Search my knowledge graph for everything related to "${topic}". Use context retrieval with short BM25 keyword queries (1–3 discriminating terms extracted from the topic, not full sentences). Try multiple keyword variations and synonyms to ensure broad coverage. Present a structured overview of what I know about this topic, highlighting any gaps or open questions.`,
-            },
-          },
-        ],
-      };
-    }
-
-    case "daily-briefing":
-      return {
-        messages: [
-          {
-            role: "user" as const,
-            content: {
-              type: "text" as const,
-              text: "Give me a daily briefing. Check:\n1. Active goals and their progress\n2. Open decisions that need resolution\n3. Recent knowledge added in the last few days\n4. Open questions worth investigating\n5. Any pending approvals\n6. Weak claims that need more evidence\n\nKeep it concise and actionable — highlight what needs my attention today.",
-            },
-          },
-        ],
-      };
-
-    case "capture-conversation": {
-      const conversation = args?.conversation || "";
-      return {
-        messages: [
-          {
-            role: "user" as const,
-            content: {
-              type: "text" as const,
-              text: `Analyze the following conversation and capture all important information into my knowledge graph. Extract:\n- Named entities (people, organizations, places, events) → mindgraph_capture action "entity"\n- Factual claims and observations → mindgraph_capture action "observation" or mindgraph_reason action "claim"\n- Decisions made or pending → mindgraph_commit action "open_decision"\n- Goals or commitments mentioned → mindgraph_commit action "goal"/"project"\n- Open questions raised → mindgraph_reason action "open_question"\n- Any hypotheses or theories discussed → mindgraph_reason action "hypothesis"/"theory"\n\nConversation:\n${conversation}`,
-            },
-          },
-        ],
-      };
-    }
-
-    default:
-      throw new Error(`Unknown prompt: ${name}`);
-  }
-});
-
-// ── Static Resources ──────────────────────────────────────────────────
-
-server.setRequestHandler(ListResourcesRequestSchema, async () => {
-  return { resources: RESOURCES };
-});
-
-// ── Resource Templates ────────────────────────────────────────────────
-
-server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
-  return { resourceTemplates: RESOURCE_TEMPLATES };
-});
-
-// ── Resource Reader (static + dynamic) ────────────────────────────────
-
-server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-  return readGovernedResource(
-    client,
-    request.params.uri,
-    GOVERNANCE_CONFIG,
-    MEMORY_RUNTIME_CONFIG,
-  );
+// Tools, prompts and resources are wired in server.ts, shared with the hosted
+// mode; this entry only supplies what it reads from the environment.
+const server = buildMindGraphServer({
+  client,
+  serverVersion: __PACKAGE_VERSION__,
+  instructions: INSTRUCTIONS,
+  profile: PROFILE,
+  agentId: AGENT_ID,
+  governance: GOVERNANCE_CONFIG,
+  memory: MEMORY_RUNTIME_CONFIG,
 });
 
 // ── Start ─────────────────────────────────────────────────────────────
