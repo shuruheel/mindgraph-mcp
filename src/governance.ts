@@ -121,6 +121,8 @@ export function toolMutability(
 ): ToolMutability {
   if (toolName === "mindgraph_memory") return "read";
   if (toolName === "mindgraph_retrieve") return "read";
+  // Hosted-mode search/fetch (D5) are graph reads.
+  if (toolName === "search" || toolName === "fetch") return "read";
   // Both actions mutate: remember writes/upserts, forget tombstones.
   if (toolName === "mindgraph_remember") return "write";
   if (toolName === "mindgraph_series_query") return "read";

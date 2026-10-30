@@ -287,6 +287,35 @@ lifecycle observation, context delivery, and managed curation.
 
 Search strategy is **keyword-first**: `mindgraph_retrieve` defaults to `action: "context"`, which seeds bounded cheapest-first graph expansion from BM25/hybrid recall. Escalate to `semantic` or `hybrid` only when keywords fail. Set `graph_expansion_limit: 0` when direct-only retrieval is required. For model-facing reads, `max_output_chars` bounds the rendered response from 512 to 24,000 characters while preserving whole evidence items and reporting omissions; `format: "json"` deliberately bypasses that rendering contract.
 
+## Hosted mode
+
+The same tool surface is importable as a library for a hosted Streamable HTTP
+endpoint (the `https://mindgraph.cloud/mcp` connector that claude.ai, Claude
+Code, ChatGPT and Cursor sign in to with OAuth). `mindgraph-mcp/server` exports
+a per-request factory and has no load-time side effects — it never exits for a
+missing key or touches hook files:
+
+```ts
+import { handleHostedRequest } from "mindgraph-mcp/server";
+
+// After the route has verified the OAuth bearer and exchanged it for an API token:
+return handleHostedRequest(request, {
+  client, bearer, baseUrl, orgId, orgName, agentId: `mcp:${clientHost}:${userId}`,
+  user: { id: userId, name, email },
+  profile: "general", harness: "hosted", serverVersion,
+  caches, // { generatedTools: Map, governance: Map } — one entry per org, kept by the route
+});
+```
+
+Hosted mode serves the `general` profile plus the org's generated ontology
+tools and three extra tools — `search`, `fetch` (the ChatGPT connector
+contract, `structuredContent` + text twin) and `whoami` — each annotated and
+carrying `_meta.securitySchemes` with its `graph:read` / `graph:write` /
+`graph:evolve` scope. The signed-in member's identity overwrites `agent_id`
+on every call; a model-supplied value is kept only as `requested_agent_id`
+metadata. `mindgraph_code`, `mindgraph_sync` and hook installation are stdio-only.
+The HTTP auth gate (401/403) is the route's job, not the library's.
+
 ## Development
 
 ```bash
