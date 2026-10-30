@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+## 0.22.0 (2026-10-30)
+
+Adds a hosted mode: the same tool surface served over Streamable HTTP for a
+signed-in member, consumed by the MindGraph dashboard's `/mcp` route
+(`docs/plans/hosted-mcp-oauth.md`). The stdio server is unchanged; a fixture
+captured before the refactor guards its `tools/list` for both profiles.
+
+### Added
+
+- `mindgraph-mcp/server` (ESM + CJS + types): `createMindGraphServer(opts)`
+  builds one server per request from the shared tool modules with the caller's
+  client, organization, agent identity and per-organization caches;
+  `handleHostedRequest(request, opts)` wraps the SDK's web-standard Streamable
+  HTTP transport statelessly (no session id, JSON responses; non-POST → 405,
+  unparsable → 400, JSON-RPC arrays → 400). Token verification is the caller's
+  job; the helper assumes an authenticated request.
+- Hosted-only tools `search` and `fetch` in the ChatGPT connector contract
+  (`structuredContent` plus the same JSON as text, `outputSchema`; `fetch`
+  serves graph nodes by uid with source documents) and `whoami`
+  (`_meta["openai/profile"]`) for multi-account hosts.
+- Every tool carries `annotations` (`readOnlyHint`, `destructiveHint`,
+  `openWorldHint`) and `_meta.securitySchemes` naming its OAuth scope
+  (`graph:read`, `graph:write`, `graph:evolve`).
+- In hosted mode `agent_id` is always overwritten with the server-derived
+  identity (`mcp:{host}:{user}`); a model-supplied value survives only as an
+  untrusted label in the governance checkpoint context.
+
+### Changed
+
+- The server wiring moved to `src/server.ts` and the seven prompts to
+  `src/prompts.ts`; the generated-tool cache and the governance capability
+  latch take their cache as a parameter instead of module state; the retrieve
+  handler reads the profile from configuration rather than `process.env`.
+  Behaviour of `npx mindgraph-mcp` is unchanged.
+- `@modelcontextprotocol/sdk` floor raised to `^1.25.0` (first release with the
+  web-standard Streamable HTTP server transport).
+
 ## 0.21.0 (2026-10-02)
 
 Adds the `mindgraph_remember` fast-path tool (11 tools; 13 in the coding
