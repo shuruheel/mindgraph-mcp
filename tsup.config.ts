@@ -31,4 +31,13 @@ export default defineConfig([
     target: "node18",
     define,
   },
+  {
+    // `mindgraph-mcp/server`: the hosted-mode factory the dashboard imports
+    // (spec D5). ESM for Next.js, CJS for everything else; no define — the
+    // version arrives in the options.
+    entry: { server: "src/server.ts" },
+    format: ["esm", "cjs"],
+    dts: true,
+    target: "node18",
+  },
 ]);
