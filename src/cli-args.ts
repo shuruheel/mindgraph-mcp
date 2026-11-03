@@ -16,6 +16,11 @@ export function parseArgs(argv: string[]): {
   agentId?: string;
   positionals: string[];
   dir?: string;
+  /** --prompt-recall / --no-prompt-recall; undefined = keep stored choice. */
+  promptRecall?: boolean;
+  /** --capture / --no-capture; undefined = keep stored choice. */
+  capture?: boolean;
+  sessionId?: string;
 } {
   const args = argv.slice(2);
   let command = "serve";
@@ -28,6 +33,9 @@ export function parseArgs(argv: string[]): {
   let agentId: string | undefined = process.env.MINDGRAPH_AGENT_ID;
   const positionals: string[] = [];
   let dir: string | undefined;
+  let promptRecall: boolean | undefined;
+  let capture: boolean | undefined;
+  let sessionId: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -60,6 +68,21 @@ export function parseArgs(argv: string[]): {
         break;
       case "--hooks":
         hooks = true;
+        break;
+      case "--prompt-recall":
+        promptRecall = true;
+        break;
+      case "--no-prompt-recall":
+        promptRecall = false;
+        break;
+      case "--capture":
+        capture = true;
+        break;
+      case "--no-capture":
+        capture = false;
+        break;
+      case "--session-id":
+        sessionId = args[++i];
         break;
       case "--owner":
         // Ownership marker the installer embeds so uninstall can recognize
@@ -97,6 +120,9 @@ export function parseArgs(argv: string[]): {
     agentId,
     positionals,
     dir,
+    promptRecall,
+    capture,
+    sessionId,
   };
 }
 

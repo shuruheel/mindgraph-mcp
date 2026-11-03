@@ -88,6 +88,34 @@ cleanly. Connection settings persist to `~/.mindgraph/hooks.json` (mode 600) so
 hooks work regardless of shell environment; the API key is never written into
 project settings.
 
+**Per-prompt recall (on by default).** A `UserPromptSubmit` hook runs a
+bounded topic recall for each prompt — the same request the Hermes provider
+makes: `POST /retrieve/context` with up to 8 keywords from the prompt (obvious
+secrets redacted first), 5 items, no source chunks — and injects at most 4,000
+characters headed `MindGraph recall (bounded):`, one line per item (type,
+label, one-line summary, source document). Prompts under 12 characters and
+slash commands are skipped, an unchanged block is not re-injected in the same
+session, and the hook gives up after 4 s and injects nothing on any error, so
+it never blocks a prompt. Turn it off with
+`install-hooks --no-prompt-recall` (or `MINDGRAPH_HOOK_PROMPT_RECALL=off` in
+the environment); `--prompt-recall` turns it back on.
+
+**Transcript capture (off by default).** `install-hooks --capture` adds a
+`PreCompact` hook and makes `SessionEnd` capture too. **What leaves the
+machine when capture is on:** the user prompts and assistant text replies
+from the Claude Code transcript (`transcript_path`) written since the last
+capture, sent to `POST /ingest/session` for extraction, attached to the
+session's MindGraph Session. Tool calls, tool output, thinking blocks,
+subagent (sidechain) turns, compaction summaries, slash-command output and
+system reminders are never sent; API keys, tokens, private keys and
+`key=value` credentials are redacted by pattern (a heuristic, not a
+guarantee). The capture offset lives in the hook ledger under
+`~/.mindgraph/runtime/` (mode 600). `npx mindgraph-mcp hooks preview
+[transcript_path]` prints exactly the request body that would be sent, and
+sends nothing. `install-hooks --no-capture` (or
+`MINDGRAPH_HOOK_CAPTURE=off`) turns it off. Both choices persist in
+`~/.mindgraph/hooks.json`, so automatic hook refreshes keep them.
+
 **Updates are hands-free.** The MCP registration floats on `npx @latest`,
 and at startup the server self-heals the pinned hook runner from its own
 bundle — upgrade-only (never a downgrade from a stale npx cache), atomic,
@@ -224,13 +252,16 @@ mindgraph-mcp uninstall        Remove from Claude Desktop config
 mindgraph-mcp uninstall-code   Remove from Claude Code
 mindgraph-mcp install-hooks    Install coding hooks (--harness claude-code|codex)
 mindgraph-mcp uninstall-hooks  Remove MindGraph-owned hook entries
+mindgraph-mcp hooks preview    Print what transcript capture would send (sends nothing)
 mindgraph-mcp skills pull      Render published and granted skills into local SKILL.md directories
 mindgraph-mcp skills push      Import or update one local SKILL.md as a governed candidate
 mindgraph-mcp status           Show installation status
 ```
 
 Options: `--api-key <key>`, `--base-url <url>`, `--agent-id <id>`,
-`--scope user|project`, `--project-dir <dir>`, `--harness <name>`, `--help`.
+`--scope user|project`, `--project-dir <dir>`, `--harness <name>`,
+`--no-prompt-recall` / `--prompt-recall`, `--capture` / `--no-capture`,
+`--session-id <id>` (for `hooks preview`), `--help`.
 
 **Teams**: when several people share one org graph, give each member a
 distinct identity — `--agent-id claude-code:<name>` on `install-code` /
@@ -250,6 +281,8 @@ teammates one logical agent, which claims each other's work).
 | `MINDGRAPH_ORG_ID` | *(unset)* | Pin operations to a specific organization when a key has access to more than one |
 | `MINDGRAPH_CODEGRAPH_BIN` | *(auto)* | Explicit path to the codegraph binary (PATH and `~/.local/bin` are probed) |
 | `MINDGRAPH_HOOK_AUTOUPDATE` | *(on)* | `off` disables the server's startup self-heal of the pinned hook runner; the version-skew note then signals drift instead |
+| `MINDGRAPH_HOOK_PROMPT_RECALL` | *(on)* | `off` disables the Claude `UserPromptSubmit` recall at runtime |
+| `MINDGRAPH_HOOK_CAPTURE` | *(stored choice; off)* | `on`/`off` overrides the stored `--capture` choice for Claude transcript capture at runtime |
 | `MINDGRAPH_SKIP_MCP_REGISTRATION_CHECK` | *(unset)* | `1` silences the SessionStart warning for hooks running without a registered MindGraph MCP server (exotic registration layouts) |
 
 ## Usage in Claude
