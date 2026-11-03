@@ -366,10 +366,10 @@ describe("Claude hook installer", () => {
     );
     const first = installClaudeHooks("project", root);
     const second = installClaudeHooks("project", root);
-    expect(first.added).toBe(7);
+    expect(first.added).toBe(8);
     expect(second.added).toBe(0);
     const removed = uninstallClaudeHooks("project", root);
-    expect(removed.removed).toBe(7);
+    expect(removed.removed).toBe(8);
     const settings = JSON.parse(
       fs.readFileSync(path.join(settingsDir, "settings.json"), "utf8"),
     );

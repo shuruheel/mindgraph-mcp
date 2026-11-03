@@ -2,9 +2,26 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { loadHookEnv } from "./hook-env.js";
 
 export type HookScope = "user" | "project";
 export type HookHarness = "claude-code" | "codex";
+
+/** Optional Claude Code hook features (N17). Persisted in
+ * ~/.mindgraph/hooks.json so self-healing refreshes keep the user's choice. */
+export interface ClaudeHookFeatures {
+  /** UserPromptSubmit bounded recall. Default ON. */
+  promptRecall?: boolean;
+  /** PreCompact transcript capture (+ at SessionEnd). Default OFF. */
+  capture?: boolean;
+}
+
+function storedFeatures(homeDir?: string): ClaudeHookFeatures {
+  const { promptRecall, capture } = loadHookEnv(
+    path.join(homeDir || os.homedir(), ".mindgraph"),
+  );
+  return { promptRecall, capture };
+}
 
 const OWNER_MARKER = "--owner mindgraph";
 // The hook invokes a pinned copy of the self-contained CLI bundle, installed
@@ -167,7 +184,14 @@ export function refreshOwnedClaudeHooks(
       const file = settingsPath("claude-code", scope, projectDir, undefined, homeDir);
       if (!fs.existsSync(file)) continue;
       if (!fs.readFileSync(file, "utf8").includes(OWNER_MARKER)) continue;
-      installHooks("claude-code", scope, projectDir, undefined, homeDir);
+      installHooks(
+        "claude-code",
+        scope,
+        projectDir,
+        undefined,
+        homeDir,
+        storedFeatures(homeDir),
+      );
       refreshed.push(file);
     } catch {
       // Self-heal must never break server startup.
@@ -248,7 +272,10 @@ function ownedHook(
   };
 }
 
-function desiredEntries(harness: HookHarness): Record<string, JsonObject[]> {
+function desiredEntries(
+  harness: HookHarness,
+  features: ClaudeHookFeatures = {},
+): Record<string, JsonObject[]> {
   const common = {
     SessionStart: [
       {
@@ -294,13 +321,21 @@ function desiredEntries(harness: HookHarness): Record<string, JsonObject[]> {
       { hooks: [ownedHook(harness, harness === "codex" ? 3 : 30)] },
     ],
   };
-  return harness === "claude-code"
-    ? {
-        ...common,
-        TaskCreated: [{ hooks: [ownedHook(harness, 3)] }],
-        TaskCompleted: [{ hooks: [ownedHook(harness, 3)] }],
-      }
-    : common;
+  if (harness !== "claude-code") return common;
+  return {
+    ...common,
+    TaskCreated: [{ hooks: [ownedHook(harness, 3)] }],
+    TaskCompleted: [{ hooks: [ownedHook(harness, 3)] }],
+    // Bounded recall per prompt: the core gives up at 4s and fails open, so
+    // a 5s budget never holds the prompt longer than that.
+    ...(features.promptRecall !== false
+      ? { UserPromptSubmit: [{ hooks: [ownedHook(harness, 5)] }] }
+      : {}),
+    // Opt-in transcript capture before compaction (cold-tenant ingest).
+    ...(features.capture === true
+      ? { PreCompact: [{ hooks: [ownedHook(harness, 30)] }] }
+      : {}),
+  };
 }
 
 function hookCommand(value: unknown): string | undefined {
@@ -333,6 +368,7 @@ function installHooks(
   projectDir = process.cwd(),
   codexHomeDir?: string,
   homeDir?: string,
+  features: ClaudeHookFeatures = {},
 ): { path: string; added: number; updated: number } {
   const file = settingsPath(harness, scope, projectDir, codexHomeDir, homeDir);
   const settings = readSettings(file);
@@ -344,7 +380,17 @@ function installHooks(
       : {};
   let added = 0;
   let updated = 0;
-  for (const [event, wanted] of Object.entries(desiredEntries(harness))) {
+  const desired = desiredEntries(harness, features);
+  // A disabled optional event loses its owned entry (foreign entries stay).
+  for (const optional of ["UserPromptSubmit", "PreCompact"]) {
+    if (optional in desired || !Array.isArray(hooks[optional])) continue;
+    const kept = (hooks[optional] as unknown[]).filter(
+      (entry) => !entryHasOwnedHook(entry),
+    );
+    if (kept.length > 0) hooks[optional] = kept;
+    else delete hooks[optional];
+  }
+  for (const [event, wanted] of Object.entries(desired)) {
     const current = Array.isArray(hooks[event])
       ? ([...(hooks[event] as unknown[])] as unknown[])
       : [];
@@ -416,8 +462,9 @@ function uninstallHooks(
 export function installClaudeHooks(
   scope: HookScope,
   projectDir = process.cwd(),
+  features: ClaudeHookFeatures = {},
 ): { path: string; added: number; updated: number } {
-  return installHooks("claude-code", scope, projectDir);
+  return installHooks("claude-code", scope, projectDir, undefined, undefined, features);
 }
 
 export function uninstallClaudeHooks(

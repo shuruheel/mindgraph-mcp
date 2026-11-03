@@ -26,7 +26,7 @@ export async function runClaudeHook(
     case "context":
       return {
         hookSpecificOutput: {
-          hookEventName: "SessionStart",
+          hookEventName: output.event ?? "SessionStart",
           additionalContext: output.context,
         },
       };

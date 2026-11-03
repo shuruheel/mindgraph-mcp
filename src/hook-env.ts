@@ -28,6 +28,10 @@ export interface HookEnv {
    * leases in the key's default org while the MCP tools write to the pinned
    * one. */
   orgId?: string;
+  /** Claude UserPromptSubmit recall (default on when unset). */
+  promptRecall?: boolean;
+  /** Claude PreCompact/SessionEnd transcript capture (default off). */
+  capture?: boolean;
 }
 
 /**
@@ -70,6 +74,9 @@ export function loadHookEnv(dir?: string): HookEnv {
       apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : undefined,
       agentId: typeof parsed.agentId === "string" ? parsed.agentId : undefined,
       orgId: typeof parsed.orgId === "string" ? parsed.orgId : undefined,
+      promptRecall:
+        typeof parsed.promptRecall === "boolean" ? parsed.promptRecall : undefined,
+      capture: typeof parsed.capture === "boolean" ? parsed.capture : undefined,
     };
   } catch {
     return {};
@@ -93,6 +100,8 @@ export function saveHookEnv(
     apiKey: env.apiKey ?? existing.apiKey,
     agentId: env.agentId ?? existing.agentId,
     orgId: env.orgId === null ? undefined : (env.orgId ?? existing.orgId),
+    promptRecall: env.promptRecall ?? existing.promptRecall,
+    capture: env.capture ?? existing.capture,
   };
   fs.writeFileSync(file, `${JSON.stringify(merged, null, 2)}\n`, {
     mode: 0o600,

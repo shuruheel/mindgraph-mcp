@@ -17,6 +17,7 @@ import {
   type HookClient,
 } from "./claude-hooks.js";
 import { runCodexHook } from "./codex-hooks.js";
+import { previewCapture } from "./hook-core.js";
 import {
   installClaudeHooks,
   installCodexHooks,
@@ -351,6 +352,48 @@ function withHooksFlag(): boolean {
   return process.argv.includes("--hooks");
 }
 
+/** Optional Claude hook features: explicit flags win, then the stored
+ * choice in ~/.mindgraph/hooks.json, then the defaults (recall on, capture
+ * off). */
+function claudeHookFeatures(): { promptRecall: boolean; capture: boolean } {
+  const flags = parseArgs(process.argv);
+  const stored = loadHookEnv();
+  return {
+    promptRecall: flags.promptRecall ?? stored.promptRecall ?? true,
+    capture: flags.capture ?? stored.capture ?? false,
+  };
+}
+
+function printClaudeHookFeatures(features: {
+  promptRecall: boolean;
+  capture: boolean;
+}): void {
+  console.log(
+    `Prompt recall (UserPromptSubmit): ${features.promptRecall ? "on" : "off"}; ` +
+      `transcript capture (PreCompact/SessionEnd): ${features.capture ? "ON — user and assistant text (never tool calls or tool output), secrets redacted, is sent to MindGraph /ingest/session" : "off (enable with --capture)"}`
+  );
+}
+
+/** Most recent Claude Code transcript for a directory (Claude stores them
+ * under ~/.claude/projects/<cwd with non-alphanumerics as "-">/). */
+function latestTranscript(cwd: string): string | undefined {
+  const dir = path.join(
+    os.homedir(),
+    ".claude",
+    "projects",
+    cwd.replace(/[^A-Za-z0-9]/g, "-")
+  );
+  try {
+    return fs
+      .readdirSync(dir)
+      .filter((name) => name.endsWith(".jsonl"))
+      .map((name) => path.join(dir, name))
+      .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
+  } catch {
+    return undefined;
+  }
+}
+
 function finishCodeInstall(
   apiKey: string,
   baseUrl: string | undefined,
@@ -360,13 +403,16 @@ function finishCodeInstall(
   if (withHooks) {
     const runner = installHookRunner(__filename, undefined, __PACKAGE_VERSION__);
     console.log(`Installed pinned hook runner at ${runner}`);
-    const result = installClaudeHooks("user");
+    const features = claudeHookFeatures();
+    const result = installClaudeHooks("user", undefined, features);
     console.log(
       `Installed ${result.added} and refreshed ${result.updated} MindGraph Claude Code hook entries in ${result.path}`
     );
+    printClaudeHookFeatures(features);
     const envPath = saveHookEnv({
       apiKey,
       baseUrl,
+      ...features,
       // Default the stable per-user identity only when nothing is stored —
       // an explicit or previously persisted agentId must survive reinstalls.
       agentId:
@@ -421,6 +467,9 @@ USAGE:
   mindgraph-mcp uninstall-code   Remove from Claude Code
   mindgraph-mcp install-hooks --harness claude-code|codex [--scope user|project]
   mindgraph-mcp uninstall-hooks --harness claude-code|codex [--scope user|project]
+  mindgraph-mcp hooks preview [transcript_path] [--session-id <id>]
+                                 Print exactly what transcript capture would
+                                 send (POST /ingest/session); sends nothing.
   mindgraph-mcp status           Show installation status
   mindgraph-mcp skills pull [--dir .claude/skills]
                                  Write your org's published+granted skills as
@@ -443,6 +492,10 @@ OPTIONS:
   --scope <scope>     Hook settings scope: project (default) or user
   --project-dir <dir> Project root for project-scoped hooks
   --harness <name>    Hook harness (claude-code or codex)
+  --no-prompt-recall  Claude hooks: omit per-prompt recall (UserPromptSubmit)
+  --capture           Claude hooks: send user/assistant text to MindGraph
+                      before compaction and at session end (off by default;
+                      --no-capture turns it back off)
   --help, -h          Show this help message
 
 EXAMPLES:
@@ -742,13 +795,16 @@ async function main(): Promise<void> {
       }
       const runner = installHookRunner(__filename, undefined, __PACKAGE_VERSION__);
       console.log(`Installed pinned hook runner at ${runner}`);
+      const features =
+        hookHarness === "claude-code" ? claudeHookFeatures() : undefined;
       const result =
         hookHarness === "codex"
           ? installCodexHooks(scope, projectDir)
-          : installClaudeHooks(scope, projectDir);
+          : installClaudeHooks(scope, projectDir, features);
       console.log(
         `Installed ${result.added} and refreshed ${result.updated} MindGraph ${hookHarness === "codex" ? "Codex" : "Claude Code"} hook entries in ${result.path}`
       );
+      if (features) printClaudeHookFeatures(features);
       printCodegraphStatus();
       // Hooks run with the harness's environment, which rarely carries the
       // MindGraph connection settings — persist them user-level (0600; never
@@ -759,6 +815,7 @@ async function main(): Promise<void> {
       const envPath = saveHookEnv({
         apiKey,
         baseUrl,
+        ...(features || {}),
         // Default the stable per-user identity only when nothing is stored —
         // an explicit or previously persisted agentId must survive
         // reinstalls.
@@ -828,8 +885,15 @@ async function main(): Promise<void> {
           orgId: process.env.MINDGRAPH_ORG_ID || stored.orgId,
           maxRetries: 0,
           telemetrySurface: "mcp",
+          // Prompt recall must never hold the prompt: abort the request at
+          // the same 4s deadline the core races it against.
+          ...(input.hook_event_name === "UserPromptSubmit"
+            ? { timeoutMs: 4_000 }
+            : {}),
         });
         const hookOptions = {
+          promptRecall: stored.promptRecall,
+          capture: stored.capture,
           // No harness-name fallback here: hook-core derives a stable
           // per-user default shared by both harnesses, which is what lets a
           // task claimed under Codex rebind under Claude Code.
@@ -847,8 +911,13 @@ async function main(): Promise<void> {
                 client as unknown as HookClient,
                 hookOptions
               );
-        process.stdout.write(`${JSON.stringify(output)}\n`);
         clearHookHealth(hookHarness);
+        process.stdout.write(`${JSON.stringify(output)}\n`, () => {
+          // A recall that hit its deadline can leave a socket open that keeps
+          // the process alive past the 5s hook budget; the answer is already
+          // written, so exit instead of waiting for it.
+          if (input.hook_event_name === "UserPromptSubmit") process.exit(0);
+        });
       } catch (error) {
         // Still fail open — but not silently. The marker file plus one
         // stderr line are the ONLY observable difference between "hooks are
@@ -863,6 +932,34 @@ async function main(): Promise<void> {
         );
         process.stdout.write("{}\n");
       }
+      break;
+    }
+
+    case "hooks": {
+      if (positionals[0] !== "preview") {
+        console.error("Usage: mindgraph-mcp hooks preview [transcript_path] [--session-id <id>]");
+        process.exit(1);
+      }
+      const transcript = positionals[1] || latestTranscript(process.cwd());
+      if (!transcript || !fs.existsSync(transcript)) {
+        console.error(
+          "No transcript found. Pass a Claude Code transcript path (~/.claude/projects/<dir>/<session>.jsonl)."
+        );
+        process.exit(1);
+      }
+      const sessionId =
+        parseArgs(process.argv).sessionId || path.basename(transcript, ".jsonl");
+      const preview = previewCapture(transcript, sessionId, {
+        agentId: process.env.MINDGRAPH_AGENT_ID || loadHookEnv().agentId,
+      });
+      const enabled = loadHookEnv().capture === true;
+      console.error(
+        `Transcript: ${transcript}\nSession: ${sessionId}\nCapture is ${enabled ? "ON" : "OFF (nothing is sent; enable with install-hooks --capture)"}\n` +
+          `Would send ${preview.turns} turn(s) from byte ${preview.offset} as POST /ingest/session (nothing sent by this preview):`
+      );
+      process.stdout.write(
+        `${JSON.stringify(preview.body ?? null, null, 2)}\n`
+      );
       break;
     }
 

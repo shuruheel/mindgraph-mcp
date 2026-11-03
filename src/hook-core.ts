@@ -10,6 +10,12 @@ import {
 import { anchorRepository, type CodeClient } from "./code-tool.js";
 import { conflictState } from "./error-detail.js";
 import { stableAgentId } from "./hook-env.js";
+import {
+  buildCaptureRequest,
+  promptRecallQuery,
+  promptRecallRequest,
+  renderPromptRecall,
+} from "./hook-memory.js";
 
 export interface HookInput {
   session_id: string;
@@ -23,12 +29,19 @@ export interface HookInput {
   tool_response?: unknown;
   stop_hook_active?: boolean;
   reason?: string;
+  /** UserPromptSubmit: the submitted prompt text. */
+  prompt?: string;
+  /** PreCompact: "manual" | "auto". */
+  trigger?: string;
+  transcript_path?: string;
 }
 
 export interface HookClient {
   session(request: Record<string, unknown>): Promise<unknown>;
   plan(request: Record<string, unknown>): Promise<unknown>;
   entity?(request: Record<string, unknown>): Promise<unknown>;
+  retrieveContext?(request: Record<string, unknown>): Promise<unknown>;
+  ingestSession?(request: Record<string, unknown>): Promise<unknown>;
 }
 
 export type HookHarness = "claude-code" | "codex";
@@ -60,6 +73,10 @@ interface RuntimeLedger {
   repoContextCwd?: string;
   repoContextRepoId?: string;
   repoContextAt?: number;
+  /** Hash of the last UserPromptSubmit recall block injected (dedup). */
+  lastRecallHash?: string;
+  /** Byte offset in the transcript up to which turns were captured. */
+  captureOffset?: number;
   updatedAt: number;
 }
 
@@ -71,6 +88,13 @@ export interface HookRuntimeOptions {
   /** Claude Code's config file (default ~/.claude.json), used only by the
    * SessionStart registration diagnostic. Injectable for tests. */
   claudeConfigPath?: string;
+  /** UserPromptSubmit recall; default on (the event is only installed when
+   * enabled). MINDGRAPH_HOOK_PROMPT_RECALL=off disables at runtime. */
+  promptRecall?: boolean;
+  /** PreCompact/SessionEnd transcript capture; default OFF. */
+  capture?: boolean;
+  /** UserPromptSubmit recall deadline (default 4s; fail open). */
+  promptRecallTimeoutMs?: number;
 }
 
 interface CoreHookRuntimeOptions extends HookRuntimeOptions {
@@ -80,7 +104,7 @@ interface CoreHookRuntimeOptions extends HookRuntimeOptions {
 
 export type HookCoreOutput =
   | { kind: "noop" }
-  | { kind: "context"; context: string }
+  | { kind: "context"; context: string; event?: string }
   | { kind: "rewrite"; updatedInput: Record<string, unknown> }
   | { kind: "block"; reason: string };
 
@@ -1216,6 +1240,11 @@ async function sessionEnd(
   options: CoreHookRuntimeOptions,
 ): Promise<HookCoreOutput> {
   const harnessLabel = options.harness === "claude-code" ? "Claude Code" : "Codex";
+  // Capture first, while the Session is still open (Claude only: Codex caps
+  // SessionEnd at 3s, which the abandon/close calls already need).
+  if (options.harness === "claude-code") {
+    await captureTranscript(input, client, options);
+  }
   const ledger = readLedger(input.session_id, options);
   if (
     ledger.executionUid &&
@@ -1267,6 +1296,105 @@ async function sessionEnd(
   return NOOP;
 }
 
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("deadline")), ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
+/** UserPromptSubmit: bounded topic recall for the prompt (Hermes
+ * `prefetch` parity). Fails OPEN — any error or timeout injects nothing and
+ * never blocks the prompt. An unchanged block is not re-injected. */
+async function promptRecall(
+  input: HookInput,
+  client: HookClient,
+  options: CoreHookRuntimeOptions,
+): Promise<HookCoreOutput> {
+  if (
+    options.promptRecall === false ||
+    process.env.MINDGRAPH_HOOK_PROMPT_RECALL === "off" ||
+    !client.retrieveContext
+  ) {
+    return NOOP;
+  }
+  const query = promptRecallQuery(input.prompt);
+  if (!query) return NOOP;
+  try {
+    const response = await withDeadline(
+      client.retrieveContext(promptRecallRequest(query)),
+      options.promptRecallTimeoutMs ?? 4_000,
+    );
+    const block = renderPromptRecall(response);
+    if (!block) return NOOP;
+    const hash = crypto.createHash("sha256").update(block).digest("hex");
+    const fresh = withLedger(input.session_id, options, (ledger) => {
+      if (ledger.lastRecallHash === hash) return false;
+      ledger.lastRecallHash = hash;
+      return true;
+    });
+    return fresh
+      ? { kind: "context", context: block, event: "UserPromptSubmit" }
+      : NOOP;
+  } catch {
+    return NOOP;
+  }
+}
+
+/** Ingest the user/assistant text turns appended since the last capture as
+ * a session transcript (Hermes `on_pre_compress`/`on_session_end` parity).
+ * Opt-in; tool calls and tool output are never sent; never throws. */
+async function captureTranscript(
+  input: HookInput,
+  client: HookClient,
+  options: CoreHookRuntimeOptions,
+): Promise<void> {
+  const enabled =
+    process.env.MINDGRAPH_HOOK_CAPTURE === "on" ||
+    (options.capture === true && process.env.MINDGRAPH_HOOK_CAPTURE !== "off");
+  if (!enabled || !client.ingestSession || !input.transcript_path) return;
+  try {
+    const agentId = resolveAgentId(options);
+    const ledger = readLedger(input.session_id, options);
+    let sessionUid = ledger.sessionUid;
+    const prepared = buildCaptureRequest(
+      input.transcript_path,
+      input.session_id,
+      ledger.captureOffset ?? 0,
+      { sessionUid, agentId },
+    );
+    if (prepared.body && !sessionUid) {
+      // Session open is an identity upsert — same identifiers SessionStart uses.
+      const opened = object(
+        await client.session({
+          action: "open",
+          label: `Claude Code ${input.session_id}`,
+          harness: options.harness,
+          harness_session_id: input.session_id,
+          model: input.model,
+          agent_id: agentId,
+        }),
+      );
+      sessionUid = string(opened?.uid);
+      if (sessionUid) prepared.body.session_uid = sessionUid;
+    }
+    if (prepared.body) await client.ingestSession(prepared.body);
+    withLedger(input.session_id, options, (current) => {
+      if (sessionUid) current.sessionUid ??= sessionUid;
+      // Only move forward: a concurrent capture may already be past us.
+      current.captureOffset = Math.max(current.captureOffset ?? 0, prepared.nextOffset);
+      return undefined;
+    });
+  } catch (error) {
+    // Offset unchanged, so the same turns are retried at the next boundary.
+    console.error(
+      `mindgraph-hook: transcript capture failed (${(error as Error)?.message || "unknown error"})`,
+    );
+  }
+}
+
 export async function runHookCore(
   input: HookInput,
   client: HookClient,
@@ -1296,6 +1424,11 @@ export async function runHookCore(
       return stop(input, options);
     case "SessionEnd":
       return sessionEnd(input, client, options);
+    case "UserPromptSubmit":
+      return promptRecall(input, client, options);
+    case "PreCompact":
+      await captureTranscript(input, client, options);
+      return NOOP;
     default:
       return NOOP;
   }
@@ -1309,4 +1442,32 @@ export async function readHookInput(
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as HookInput;
+}
+
+/** What transcript capture WOULD send for a Claude Code session right now,
+ * starting at the stored capture offset. Reads only; sends nothing. */
+export function previewCapture(
+  transcriptPath: string,
+  sessionId: string,
+  options: HookRuntimeOptions = {},
+): ReturnType<typeof buildCaptureRequest> & { offset: number } {
+  let ledger: Partial<RuntimeLedger> = {};
+  try {
+    ledger = JSON.parse(
+      fs.readFileSync(
+        ledgerPath(sessionId, { ...options, harness: "claude-code" } as CoreHookRuntimeOptions),
+        "utf8",
+      ),
+    ) as Partial<RuntimeLedger>;
+  } catch {
+    // No ledger: nothing captured yet.
+  }
+  const offset = ledger.captureOffset ?? 0;
+  return {
+    ...buildCaptureRequest(transcriptPath, sessionId, offset, {
+      sessionUid: ledger.sessionUid,
+      agentId: options.agentId || process.env.MINDGRAPH_AGENT_ID || stableAgentId(),
+    }),
+    offset,
+  };
 }

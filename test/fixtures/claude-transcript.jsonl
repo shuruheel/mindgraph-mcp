@@ -1,0 +1,9 @@
+{"type":"summary","summary":"Earlier work","leafUuid":"x"}
+{"type":"user","message":{"role":"user","content":"How should we bound prompt recall? my key is mg_live_abcdefghijklmnopqrstuvwxyz123456"},"sessionId":"s1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"private reasoning"},{"type":"text","text":"Cap it at five items and 4,000 characters."},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cat ~/.secret"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"TOOL OUTPUT MUST NOT LEAVE"}]}}
+{"type":"user","isMeta":true,"message":{"role":"user","content":"<local-command-caveat>Caveat</local-command-caveat>"}}
+{"type":"user","message":{"role":"user","content":"<command-name>/model</command-name><command-args></command-args>"}}
+{"type":"user","isSidechain":true,"message":{"role":"user","content":"subagent prompt"}}
+{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued from a previous conversation"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done. <system-reminder>injected</system-reminder>"}]}}
