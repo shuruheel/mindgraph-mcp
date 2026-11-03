@@ -94,7 +94,7 @@ makes: `POST /retrieve/context` with up to 8 keywords from the prompt (obvious
 secrets redacted first), 5 items, no source chunks — and injects at most 4,000
 characters headed `MindGraph recall (bounded):`, one line per item (type,
 label, one-line summary, source document). Prompts under 12 characters and
-slash commands are skipped, an unchanged block is not re-injected in the same
+slash commands are skipped, a block identical to the last one injected is not re-injected in the same
 session, and the hook gives up after 4 s and injects nothing on any error, so
 it never blocks a prompt. Turn it off with
 `install-hooks --no-prompt-recall` (or `MINDGRAPH_HOOK_PROMPT_RECALL=off` in
@@ -282,7 +282,7 @@ teammates one logical agent, which claims each other's work).
 | `MINDGRAPH_CODEGRAPH_BIN` | *(auto)* | Explicit path to the codegraph binary (PATH and `~/.local/bin` are probed) |
 | `MINDGRAPH_HOOK_AUTOUPDATE` | *(on)* | `off` disables the server's startup self-heal of the pinned hook runner; the version-skew note then signals drift instead |
 | `MINDGRAPH_HOOK_PROMPT_RECALL` | *(on)* | `off` disables the Claude `UserPromptSubmit` recall at runtime |
-| `MINDGRAPH_HOOK_CAPTURE` | *(stored choice; off)* | `on`/`off` overrides the stored `--capture` choice for Claude transcript capture at runtime |
+| `MINDGRAPH_HOOK_CAPTURE` | *(stored choice; off)* | `on`/`off` overrides the stored `--capture` choice for Claude transcript capture at runtime. With capture stored off, `on` captures only at `SessionEnd`, because the `PreCompact` entry is not installed; run `install-hooks --capture` to add it |
 | `MINDGRAPH_SKIP_MCP_REGISTRATION_CHECK` | *(unset)* | `1` silences the SessionStart warning for hooks running without a registered MindGraph MCP server (exotic registration layouts) |
 
 ## Usage in Claude

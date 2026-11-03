@@ -2,6 +2,82 @@
 
 ## Unreleased
 
+## 0.23.0 (2026-11-03)
+
+The Claude Code hooks gain the two memory behaviours the Hermes provider
+already has: recall for every prompt, and opt-in capture of the conversation
+before Claude compacts it. Recall is on by default and fails open. It gives up
+after 4 s and never blocks a prompt. Capture is off until you run
+`install-hooks --capture`. When it is on, only user and assistant text leaves
+the machine; tool calls and tool output never do. To see exactly what would be
+sent, without sending anything, run `npx mindgraph-mcp hooks preview`. Codex
+hooks are unchanged.
+
+### Added
+
+- **Per-prompt recall (`UserPromptSubmit`, on by default).** For each prompt
+  the hook sends `POST /retrieve/context`. The request carries up to 8
+  keywords taken from the first 600 characters of the prompt (stopwords
+  dropped, obvious secrets redacted first), `node_limit: 5` and
+  `chunk_limit: 0`, so no source chunks are fetched. The hook injects a block
+  headed `MindGraph recall (bounded):` with one line per item: type, label,
+  one-line summary and source document. The block holds at most 5 items and
+  4,000 characters. The hook skips prompts under 12 characters and slash
+  commands. It does not re-inject a block identical to the last one it
+  injected in the session. It aborts the request at 4 s and injects nothing
+  on a timeout or any error. The runner exits as soon as its output is
+  written. Its hook budget is 5 s.
+- **Transcript capture (off by default).** `install-hooks --capture` adds a
+  `PreCompact` hook, and Claude Code `SessionEnd` then also captures before
+  it closes the Session.
+  - Capture reads the Claude Code transcript (`transcript_path`) from the
+    last captured byte offset and sends only the user prompts and assistant
+    text replies written since then. The text goes to `POST /ingest/session`,
+    attached to the hook's MindGraph Session (one is opened if the session
+    has none yet).
+  - **Never sent:** tool calls, tool output, thinking blocks, images,
+    subagent (sidechain) turns, compaction summaries, slash-command and
+    local-command output, and system reminders.
+  - Before sending, capture redacts API keys, bearer and JWT tokens, private
+    keys and `key=value` credentials by pattern. This is a heuristic, not a
+    guarantee.
+  - One capture sends at most the most recent 200,000 characters.
+  - The offset is stored in the per-session hook ledger under
+    `~/.mindgraph/runtime/` (mode 600). It advances only after a successful
+    ingest, so a failed capture is retried at the next compaction or session
+    end. A failure prints one `mindgraph-hook: transcript capture failed`
+    line to stderr.
+  - The `PreCompact` hook budget is 30 s.
+- `npx mindgraph-mcp hooks preview [transcript_path] [--session-id <id>]`
+  prints the exact `/ingest/session` request body that capture would send
+  next, and sends nothing. Without a path it uses the newest transcript for
+  the current directory. Without `--session-id` it uses the transcript's file
+  name. It also reports whether capture is on.
+- New install flags: `--no-prompt-recall` / `--prompt-recall` and
+  `--capture` / `--no-capture`. New runtime overrides:
+  `MINDGRAPH_HOOK_PROMPT_RECALL=off` turns recall off, and
+  `MINDGRAPH_HOOK_CAPTURE=on|off` overrides the stored capture choice. With
+  capture stored off, `on` captures only at `SessionEnd`, because the
+  `PreCompact` entry is not installed. `install-hooks` and
+  `install-code --hooks` print the resulting recall and capture settings.
+
+### Changed
+
+- **Existing Claude Code hook installs gain per-prompt recall
+  automatically.** After an upgrade, the server refreshes the pinned hook
+  runner at startup and rewrites its owned hook entries. When no choice is
+  stored, that rewrite adds `UserPromptSubmit`, so every prompt of 12 or more
+  characters makes one `/retrieve/context` request. To opt out and keep the
+  choice, run `npx mindgraph-mcp install-hooks --no-prompt-recall`.
+  `MINDGRAPH_HOOK_AUTOUPDATE=off` also skips the refresh.
+- Your recall and capture choices are saved in `~/.mindgraph/hooks.json`.
+  Automatic hook refreshes and reinstalls without flags keep them. Turning a
+  feature off removes only MindGraph's own entry for that event; hooks from
+  other tools on the same event stay. `uninstall-hooks` removes the new
+  entries along with the rest.
+- The existing hook entries keep their timeouts and behaviour, and the
+  API key is still never written into `settings.json`.
+
 ## 0.22.0 (2026-10-30)
 
 Adds a hosted mode: the same tool surface served over Streamable HTTP for a
