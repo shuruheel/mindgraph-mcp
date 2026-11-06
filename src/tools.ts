@@ -817,6 +817,17 @@ export const TOOLS: Tool[] = [
           description:
             "ISO-8601 date (e.g. '2021-06') for context: nodes with validity windows are annotated as of this date instead of today",
         },
+        as_of: {
+          type: "string",
+          description:
+            "ISO-8601 date for context: answer with what had been STATED by this date (a node is admitted when one of its sources was stated on or before it; fact dates never exclude it). Use for 'what did we know / what was the value as of <date>' questions.",
+        },
+        retrieval_mode: {
+          type: "string",
+          enum: ["normal", "exhaustive"],
+          description:
+            "context: 'exhaustive' widens retrieval for list/count questions ('how many different … across', 'what two …'); omitted lets the server's cue decide.",
+        },
         created_after: {
           type: "number",
           description: "Unix seconds — 'recent' action: only nodes ingested after this time",
@@ -2312,6 +2323,8 @@ async function handleRetrieve(
     salience_min,
     article_limit,
     valid_at,
+    as_of,
+    retrieval_mode,
     created_after,
     created_before,
     explain,
@@ -2344,6 +2357,8 @@ async function handleRetrieve(
     salience_min?: number;
     article_limit?: number;
     valid_at?: string;
+    as_of?: string;
+    retrieval_mode?: "normal" | "exhaustive";
     created_after?: number;
     created_before?: number;
     explain?: boolean;
@@ -2384,9 +2399,17 @@ async function handleRetrieve(
               ? { article_limit: 0 }
               : {}),
           valid_at,
+          as_of,
+          retrieval_mode,
           include_graph,
           graph_expansion_limit: graph_expansion_limit ?? 3,
           graph_max_depth: graph_max_depth ?? 2,
+          // Evidence plan R2: the server's canonical rendering under a token
+          // budget derived from the character budget; the local renderer is
+          // the fallback for servers that predate it.
+          ...(format === "json"
+            ? {}
+            : { format: "text", max_tokens: Math.max(256, Math.floor((max_output_chars ?? 24_000) / 4)) }),
         } as any),
         (raw) => renderContext(raw, max_output_chars),
       );

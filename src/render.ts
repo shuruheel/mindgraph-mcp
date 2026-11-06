@@ -400,6 +400,17 @@ function hiddenSections(payload: Rec): Section[] {
 export function renderContext(response: unknown, maxChars?: number): string | undefined {
   const payload = obj(response);
   if (!payload) return undefined;
+  // Evidence plan R2 (2026-11-06): a server that rendered the evidence itself
+  // (`format: "text"`) is the one contract every door shares — dated items,
+  // supersession and conflict markers, a hard token budget. Pass it through;
+  // the local renderer below stays for older servers.
+  if (typeof payload.context_text === "string" && payload.context_text.length > 0) {
+    const text = payload.context_text;
+    if (maxChars !== undefined && text.length > maxChars) {
+      return `${text.slice(0, maxChars)}\n[truncated to ${maxChars} characters]`;
+    }
+    return text;
+  }
   const graph = obj(payload.graph);
   const rawNodes = Array.isArray(graph?.nodes) ? graph!.nodes : [];
   const shaped = rawNodes.filter(isNodeShaped);
