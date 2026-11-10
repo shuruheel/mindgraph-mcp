@@ -1,3 +1,4 @@
+import { resolvePendingCall } from "../src/call-ledger.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -220,8 +221,19 @@ describe("Claude Code normalized hook adapter", () => {
       client,
       { runtimeDir },
     );
-    const output = pre.hookSpecificOutput as Record<string, unknown>;
-    const updated = output.updatedInput as Record<string, unknown>;
+    // H1: the hook must not change the call's input — Claude Code's auto mode
+    // refuses a call whose input a hook rewrote. The fields reach the server
+    // through the call ledger instead.
+    expect(pre).toEqual({});
+    const modelInput = {
+      action: "checkpoint_iteration",
+      summary: "preserved",
+      invocation_context: { harness: "forged", cwd: "/tmp/forged" },
+    };
+    const updated: Record<string, unknown> = {
+      ...modelInput,
+      ...resolvePendingCall("mindgraph_plan", modelInput, { runtimeDir }),
+    };
     expect(updated.summary).toBe("preserved");
     expect(updated.session_uid).toBe("session-graph");
     expect(updated.task_uid).toBe("task-1");

@@ -45,6 +45,13 @@ export type { GeneratedToolsEntry, GovernanceLatch };
 /** Everything the request handlers close over. */
 export interface ServerWiring {
   client: MindGraph;
+  /** Fields a local harness hook recorded for a call (see call-ledger.ts).
+   * Injected by the stdio entry so this module stays free of node:fs for the
+   * hosted bundle. */
+  resolveHookFields?: (
+    name: string,
+    args: Record<string, unknown>,
+  ) => Record<string, unknown> | undefined;
   serverVersion: string;
   instructions: string;
   profile: string;
@@ -85,7 +92,12 @@ export function buildMindGraphServer(wiring: ServerWiring): Server {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
-    const rawArgs = { ...((args as Record<string, unknown>) || {}) };
+    const rawArgs = {
+      ...((args as Record<string, unknown>) || {}),
+      // H1: session, lease and invocation fields the local hook recorded for
+      // this exact call (stdio only; hosted mode has no local hook).
+      ...(hosted ? {} : wiring.resolveHookFields?.(name, (args as Record<string, unknown>) || {})),
+    };
     // Inject default agent_id if not provided. Static tools declare agent_id;
     // generated ontology tools do not, and their schemas reject it — so the
     // injected copy is kept separate from the args they receive.

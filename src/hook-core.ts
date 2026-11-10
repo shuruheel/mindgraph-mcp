@@ -8,6 +8,7 @@ import {
   repositoryIdentityKey,
 } from "./codegraph.js";
 import { anchorRepository, type CodeClient } from "./code-tool.js";
+import { recordPendingCall } from "./call-ledger.js";
 import { conflictState } from "./error-detail.js";
 import { stableAgentId } from "./hook-env.js";
 import {
@@ -946,6 +947,23 @@ async function preTool(
     updatedInput.expected_version === undefined
   ) {
     updatedInput.expected_version = ledger.taskVersion;
+  }
+  if (options.harness === "claude-code") {
+    // H1: Claude Code's auto mode refuses a call whose input a hook changed,
+    // so the fields travel beside the call instead of inside it. The server
+    // resolves them by tool name + the model's own arguments.
+    const fills = Object.fromEntries(
+      Object.entries(updatedInput).filter(
+        ([key, value]) => key === "invocation_context" || original[key] !== value,
+      ),
+    );
+    recordPendingCall(
+      input.tool_name || "",
+      original,
+      input.session_id,
+      fills,
+      { runtimeDir: options.runtimeDir, now: options.now },
+    );
   }
   return { kind: "rewrite", updatedInput };
 }

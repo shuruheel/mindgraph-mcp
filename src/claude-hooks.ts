@@ -31,12 +31,10 @@ export async function runClaudeHook(
         },
       };
     case "rewrite":
-      return {
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse",
-          updatedInput: output.updatedInput,
-        },
-      };
+      // H1: never return updatedInput. Auto mode reviews the input the model
+      // wrote and refuses the call when a hook changes it afterwards; the
+      // core already recorded these fields for the server (call-ledger.ts).
+      return {};
     case "block":
       return { decision: "block", reason: output.reason };
     case "noop":

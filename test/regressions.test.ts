@@ -1,3 +1,4 @@
+import { resolvePendingCall } from "../src/call-ledger.js";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
@@ -253,26 +254,29 @@ describe("R4 — the ledger fills, never overwrites, model work-targeting args",
     fs.mkdirSync(path.join(root, ".git"));
     const c = client();
     await ledgerWithClaim(runtime, root, c);
-    const out = (await runClaudeHook(
-      {
-        hook_event_name: "PreToolUse",
-        session_id: "r4-session",
-        cwd: root,
-        tool_name: "mcp__mindgraph__mindgraph_plan",
-        tool_input: {
+    const toolInput: Record<string, unknown> = {
           action: "block_task",
           task_uid: "model-chosen-task",
           expected_version: 7,
           lease_epoch: 9,
           execution_uid: "model-exec",
-        },
+        };
+    const out = await runClaudeHook(
+      {
+        hook_event_name: "PreToolUse",
+        session_id: "r4-session",
+        cwd: root,
+        tool_name: "mcp__mindgraph__mindgraph_plan",
+        tool_input: toolInput,
       },
       c,
       { agentId: "r4-agent", runtimeDir: runtime }
-    )) as {
-      hookSpecificOutput: { updatedInput: Record<string, unknown> };
+    );
+    expect(out).toEqual({});
+    const updated: Record<string, unknown> = {
+      ...toolInput,
+      ...resolvePendingCall("mindgraph_plan", toolInput, { runtimeDir: runtime }),
     };
-    const updated = out.hookSpecificOutput.updatedInput;
     expect(updated.task_uid).toBe("model-chosen-task");
     expect(updated.expected_version).toBe(7);
     expect(updated.lease_epoch).toBe(9);
@@ -287,20 +291,23 @@ describe("R4 — the ledger fills, never overwrites, model work-targeting args",
     fs.mkdirSync(path.join(root, ".git"));
     const c = client();
     await ledgerWithClaim(runtime, root, c);
-    const out = (await runClaudeHook(
+    const toolInput: Record<string, unknown> = { action: "heartbeat" };
+    const out = await runClaudeHook(
       {
         hook_event_name: "PreToolUse",
         session_id: "r4-session",
         cwd: root,
         tool_name: "mcp__mindgraph__mindgraph_plan",
-        tool_input: { action: "heartbeat" },
+        tool_input: toolInput,
       },
       c,
       { agentId: "r4-agent", runtimeDir: runtime }
-    )) as {
-      hookSpecificOutput: { updatedInput: Record<string, unknown> };
+    );
+    expect(out).toEqual({});
+    const updated: Record<string, unknown> = {
+      ...toolInput,
+      ...resolvePendingCall("mindgraph_plan", toolInput, { runtimeDir: runtime }),
     };
-    const updated = out.hookSpecificOutput.updatedInput;
     expect(updated.task_uid).toBe("ledger-task");
     expect(updated.expected_version).toBe(2);
   });
@@ -748,7 +755,7 @@ async function preToolFills(
   c: HookClient,
   toolInput: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const out = (await runClaudeHook(
+  await runClaudeHook(
     {
       hook_event_name: "PreToolUse",
       session_id: "continuity-session",
@@ -758,8 +765,11 @@ async function preToolFills(
     },
     c,
     { agentId: "continuity-agent", runtimeDir: runtime },
-  )) as { hookSpecificOutput: { updatedInput: Record<string, unknown> } };
-  return out.hookSpecificOutput.updatedInput;
+  );
+  return {
+    ...toolInput,
+    ...resolvePendingCall("mindgraph_plan", toolInput, { runtimeDir: runtime }),
+  };
 }
 
 describe("R19 — completing the task clears the ledger's work-targeting state", () => {
