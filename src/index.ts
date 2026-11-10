@@ -1,3 +1,4 @@
+import { resolvePendingCall } from "./call-ledger.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { MindGraph } from "mindgraph";
 import { loadHookEnv, stableAgentId } from "./hook-env.js";
@@ -120,7 +121,7 @@ if (PROFILE === "coding") {
 - Capture corrections, decisions with rationale, fixes that survived meaningful failed attempts, durable invariants/preferences, and blockers with evidence.
 - If a write returns \`near_duplicate\`, choose \`reuse_uid\` or \`supersedes_uid\`; use \`confirm_new\` only for genuinely distinct facts.
 - Do not capture routine mechanics, transient command output, facts cheaply derivable from code, unsupported speculation as high-confidence lessons, or completion without evidence.
-- Adapter context is owned by ${HARNESS}; omit invocation_context because hooks replace it.`;
+- Adapter context is owned by ${HARNESS}; omit invocation_context because the adapter supplies it.`;
 } else {
   INSTRUCTIONS = INSTRUCTIONS.split("\n")
     .filter(
@@ -210,6 +211,7 @@ const server = buildMindGraphServer({
   agentId: AGENT_ID,
   governance: GOVERNANCE_CONFIG,
   memory: MEMORY_RUNTIME_CONFIG,
+  resolveHookFields: (name, args) => resolvePendingCall(name, args),
 });
 
 // ── Start ─────────────────────────────────────────────────────────────

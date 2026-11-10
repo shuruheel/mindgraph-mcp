@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Fixed
+
+- **MindGraph tools work in Claude Code's auto permission mode.** The
+  `PreToolUse` hook no longer returns `updatedInput`. Auto mode reviews the
+  input the model wrote and refused every MindGraph call whose input the hook
+  changed afterwards ("a hook changed this call's input after auto mode
+  reviewed it"). The hook now writes the session, task, lease and invocation
+  fields to `~/.mindgraph/runtime/calls/`, keyed by the tool name and the
+  model's own arguments, and the stdio server applies them at call time. The
+  fields and their fill-only rules are unchanged. If two sessions make the
+  identical call within ten minutes and their project directories do not tell
+  them apart, the server applies nothing and the call goes through untagged,
+  as it does with no hook installed. Codex hooks are unchanged. Takes effect
+  once both the server and the installed hook runner are on this version
+  (the runner refreshes itself on the next server start).
+
 ## 0.23.0 (2026-11-03)
 
 The Claude Code hooks gain the two memory behaviours the Hermes provider
