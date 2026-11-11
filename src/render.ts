@@ -152,16 +152,30 @@ function unwrapSearchResult(value: unknown): Rec | undefined {
   return undefined;
 }
 
+/** What replaced a node, or `undefined` when it is not superseded.
+ *
+ * `/retrieve/context` sends `superseded` as an object naming the head of the
+ * chain (`head_label`, `head_uid`, `head_stated_at`); `/retrieve` sends
+ * `superseded: true` beside `superseded_by`. Returns "" when the node is
+ * superseded and nothing names its replacement. */
+export function supersededBy(node: Rec): string | undefined {
+  const marker = node.superseded;
+  if (!marker) return undefined;
+  const head = obj(marker);
+  if (!head) return str(node.superseded_by) ?? "";
+  const label = (str(head.head_label) ?? str(head.head_uid) ?? "").replace(/\s+/g, " ").trim();
+  const short = label.length <= 80 ? label : `${label.slice(0, 79)}…`;
+  const date = str(head.head_stated_at);
+  return short && date ? `${short} (${date.slice(0, 10)})` : short;
+}
+
 /** Epistemics the raw JSON buries — without these a model states refuted or
  * superseded knowledge as current (the dashboard learned this live). */
 function statusTag(node: Rec): string {
   const tags: string[] = [];
-  if (node.superseded === true) {
-    tags.push(
-      node.superseded_by
-        ? `SUPERSEDED by ${str(node.superseded_by)}`
-        : "SUPERSEDED",
-    );
+  const replacement = supersededBy(node);
+  if (replacement !== undefined) {
+    tags.push(replacement ? `SUPERSEDED by ${replacement}` : "SUPERSEDED");
   }
   const truth = str(node.truth_status) ?? str(obj(node.props)?.truth_status);
   if (truth && truth !== "accepted") tags.push(`truth: ${truth}`);

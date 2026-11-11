@@ -213,6 +213,30 @@ describe("mindgraph_memory M0 contract", () => {
     );
   });
 
+  it("warns about superseded items in the /retrieve/context shape", async () => {
+    const c = client({
+      retrieveContext: vi.fn(async () => ({
+        graph: {
+          nodes: [
+            {
+              uid: "old",
+              node_type: "Observation",
+              label: "Budget is $5,000",
+              superseded: { by: ["new"], heads: ["new"], head_uid: "new", head_label: "Budget is $8,000" },
+            },
+          ],
+          edges: [],
+        },
+      })),
+    });
+    const result = await handleMemoryTool(c, { action: "context", mode: "topic", query: "budget" });
+    expect(result.content[0].text).toContain("SUPERSEDED by Budget is $8,000");
+    expect(result.structuredContent?.warnings).toContainEqual(
+      expect.objectContaining({ code: "superseded_items_present" }),
+    );
+    expect(JSON.stringify(result.structuredContent)).toContain('"superseded":true');
+  });
+
   it("returns actionable errors for missing or invalid context intent", async () => {
     const c = client();
     const missingQuery = await handleMemoryTool(c, { action: "context", mode: "topic" });

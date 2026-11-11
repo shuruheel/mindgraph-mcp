@@ -99,6 +99,15 @@ describe("UserPromptSubmit recall", () => {
     expect(renderPromptRecall({ graph: { nodes: [] } })).toBeUndefined();
   });
 
+  it("marks a superseded item in either wire shape", () => {
+    const recall = (superseded: unknown) =>
+      renderPromptRecall({ graph: { nodes: [{ uid: "n1", node_type: "Decision", label: "Ship Friday", superseded }] } });
+    expect(recall({ head_uid: "n2", head_label: "Ship Monday" })).toContain("- [Decision] Ship Friday (superseded)");
+    expect(recall(true)).toContain("- [Decision] Ship Friday (superseded)");
+    expect(recall(false)).not.toContain("(superseded)");
+    expect(recall(undefined)).not.toContain("(superseded)");
+  });
+
   it("drops items below the relevance floor when the query is known", () => {
     // One shared word is not enough: the Article mentions only "recall".
     expect(renderPromptRecall(CONTEXT, "bound prompt recall")!.split("\n")).toEqual([
