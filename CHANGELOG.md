@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.24.0 (2026-11-10)
+
+MindGraph tools now work in Claude Code's auto permission mode, where every
+call was refused before. Per-prompt recall injects only items that share two
+keywords with the prompt, so unrelated memory stops arriving with each
+message. A new `hooks stats` command shows what the hooks cost a session.
+Upgrade the server and let the hook runner refresh (it does so on the next
+server start); no settings change is needed.
+
 ### Changed
 
 - **Per-prompt recall injects less, and only what the prompt is about.** An
