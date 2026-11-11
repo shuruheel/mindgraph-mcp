@@ -2,13 +2,36 @@
 
 ## Unreleased
 
+### Added
+
+- **The session-start work brief covers the whole workspace.** Started in a
+  workspace root, or in the folder one level above it, a session now sees the
+  selected task's repository and a short list of the other eligible tasks
+  grouped by repository, with a count of any not listed. The list needs a
+  MindGraph server that returns it; against an older server the brief is the
+  one task it always was.
+- **`mindgraph_memory` accepts `scope: "workspace"`** for `mode: "resume"` and
+  `"continuity"` on the local server. It selects work across every repository
+  `.mindgraph/workspace.json` declares and lists the rest the same way. The
+  hosted endpoint has no checkout and returns an error that says so.
+
 ### Changed
+
+- Session start no longer looks up each repository's graph id on every run.
+  The ids are remembered for 12 hours in `~/.mindgraph/runtime`, per API key
+  and organization. In a 12-repository workspace the lookups took about six
+  seconds.
 
 - **A prompt with one usable keyword recalls nothing.** 0.24.0 let such a
   prompt inject items that shared that one word, so "Yes, please go ahead"
   recalled passages containing "ahead". Recall now needs two keywords in the
   prompt and two in the item.
 - The build targets Node 20, matching the declared engine.
+
+### Fixed
+
+- A `mindgraph_memory` resume that found nothing in scope now reports how
+  many tasks exist outside it. The count was read as a list and never shown.
 
 ## 0.25.0 (2026-11-10)
 

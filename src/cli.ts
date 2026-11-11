@@ -901,6 +901,16 @@ async function main(): Promise<void> {
           // per-user default shared by both harnesses, which is what lets a
           // task claimed under Codex rebind under Claude Code.
           agentId: process.env.MINDGRAPH_AGENT_ID || stored.agentId,
+          scopeCacheTenant: crypto.createHash("sha256")
+            .update(
+              [
+                hookBaseUrl || "https://api.mindgraph.cloud",
+                hookApiKey,
+                process.env.MINDGRAPH_ORG_ID || stored.orgId || "",
+              ].join("\n"),
+            )
+            .digest("hex")
+            .slice(0, 16),
         };
         const output =
           hookHarness === "codex"

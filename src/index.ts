@@ -3,6 +3,7 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { MindGraph } from "mindgraph";
 import { loadHookEnv, stableAgentId } from "./hook-env.js";
 import { buildMindGraphServer } from "./server.js";
+import { resolveRepositoryScope, type ScopeClient } from "./workspace-scope.js";
 import path from "node:path";
 import {
   refreshHookRunner,
@@ -199,6 +200,12 @@ const MEMORY_RUNTIME_CONFIG = {
   harness: HARNESS,
   orgId: ORG_ID,
   agentId: AGENT_ID,
+  resolveWorkspaceScope: (agentId: string) =>
+    resolveRepositoryScope(
+      process.env.CLAUDE_PROJECT_DIR || process.cwd(),
+      client as unknown as ScopeClient,
+      agentId,
+    ),
 };
 
 // Tools, prompts and resources are wired in server.ts, shared with the hosted

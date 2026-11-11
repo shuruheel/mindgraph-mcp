@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import {
+  type Dirent,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   statSync,
   writeFileSync,
@@ -182,6 +184,10 @@ type AdapterOptions = {
   env?: NodeJS.ProcessEnv;
   cwd?: string;
   workspaceFile?: string;
+  /** When no workspace file exists at or above `cwd`, also read the ones
+   * declared by its immediate child directories. Only the durable-work
+   * brief asks for this; code routing and sync keep the upward search. */
+  childWorkspaces?: boolean;
   now?: () => number;
 };
 
@@ -282,6 +288,25 @@ function nearestExistingDirectory(candidate: string): string {
   }
 }
 
+const MAX_CHILD_DIRECTORIES = 200;
+
+/** Workspace files declared one level below `start`. One level and a fixed
+ * entry cap keep this a single directory read, wherever it runs. */
+function findChildWorkspaceFiles(start: string): string[] {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(start, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .slice(0, MAX_CHILD_DIRECTORIES)
+    .map((entry) => join(start, entry.name, ".mindgraph", "workspace.json"))
+    .filter((candidate) => existsSync(candidate))
+    .sort();
+}
+
 function findWorkspaceFile(start: string, explicit?: string): string | undefined {
   if (explicit) return resolve(start, explicit);
   let current = resolve(start);
@@ -367,6 +392,7 @@ export class CodegraphAdapter {
   private readonly env: NodeJS.ProcessEnv;
   private readonly cwd: string;
   private readonly workspaceFile?: string;
+  private readonly childWorkspaceFiles: string[];
   private readonly now: () => number;
   private readonly identityCache = new Map<string, Promise<RepositoryIdentity>>();
   private readonly statusCache = new Map<
@@ -383,6 +409,10 @@ export class CodegraphAdapter {
       this.cwd,
       options.workspaceFile ?? this.env.MINDGRAPH_WORKSPACE_FILE,
     );
+    this.childWorkspaceFiles =
+      !this.workspaceFile && options.childWorkspaces
+        ? findChildWorkspaceFiles(this.cwd)
+        : [];
     this.now = options.now ?? Date.now;
   }
 
@@ -800,13 +830,17 @@ export class CodegraphAdapter {
 
   private configuredRepositories(): ConfiguredRepository[] {
     const configured: ConfiguredRepository[] = [];
-    if (this.workspaceFile && existsSync(this.workspaceFile)) {
+    const workspaceFiles = this.workspaceFile
+      ? [this.workspaceFile]
+      : this.childWorkspaceFiles;
+    for (const workspaceFile of workspaceFiles) {
+      if (!existsSync(workspaceFile)) continue;
       try {
         const parsed = JSON.parse(
-          readFileSync(this.workspaceFile, "utf8"),
+          readFileSync(workspaceFile, "utf8"),
         ) as WorkspaceMap;
         if (parsed.v === 1 && Array.isArray(parsed.repositories)) {
-          const configDirectory = dirname(this.workspaceFile);
+          const configDirectory = dirname(workspaceFile);
           const base =
             basename(configDirectory) === ".mindgraph"
               ? dirname(configDirectory)
