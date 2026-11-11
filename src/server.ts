@@ -2,18 +2,12 @@
 // Streamable HTTP mode (`mindgraph-mcp/server`, spec D5/D6). This module has
 // no load-time side effects: everything the handlers close over arrives in a
 // `ServerWiring`, so a hosted route can build one Server per request.
-
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
-  CallToolRequestSchema,
-  GetPromptRequestSchema,
-  ListPromptsRequestSchema,
-  ListResourcesRequestSchema,
-  ListResourceTemplatesRequestSchema,
-  ListToolsRequestSchema,
-  ReadResourceRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+  createMcpHandler,
+  isLegacyRequest,
+  Server,
+  WebStandardStreamableHTTPServerTransport,
+} from "@modelcontextprotocol/server";
 import type { MindGraph } from "mindgraph";
 import {
   createGeneratedToolsEntry,
@@ -75,7 +69,7 @@ export function buildMindGraphServer(wiring: ServerWiring): Server {
     },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
+  server.setRequestHandler('tools/list', async () => {
     // Static tools + per-object-type read tools generated from the active
     // ontology (never throws — empty set if the manifest endpoint is absent).
     const generated = await getGeneratedTools(client, wiring.generatedTools);
@@ -89,7 +83,7 @@ export function buildMindGraphServer(wiring: ServerWiring): Server {
     };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler('tools/call', async (request) => {
     const { name, arguments: args } = request.params;
 
     const rawArgs = {
@@ -150,24 +144,24 @@ export function buildMindGraphServer(wiring: ServerWiring): Server {
     return handleTool(client, name, toolArgs, wiring.memory);
   });
 
-  server.setRequestHandler(ListPromptsRequestSchema, async () => {
+  server.setRequestHandler('prompts/list', async () => {
     return { prompts: PROMPTS };
   });
 
-  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+  server.setRequestHandler('prompts/get', async (request) => {
     const { name, arguments: args } = request.params;
     return getPrompt(name, args);
   });
 
-  server.setRequestHandler(ListResourcesRequestSchema, async () => {
+  server.setRequestHandler('resources/list', async () => {
     return { resources: RESOURCES };
   });
 
-  server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
+  server.setRequestHandler('resources/templates/list', async () => {
     return { resourceTemplates: RESOURCE_TEMPLATES };
   });
 
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+  server.setRequestHandler('resources/read', async (request) => {
     return readGovernedResource(
       client,
       request.params.uri,
@@ -257,7 +251,9 @@ function jsonRpcError(status: number, code: number, message: string): Response {
 /**
  * Serve one Streamable HTTP request statelessly (D6). The caller has already
  * verified the bearer and resolved `opts`; this helper owns only the JSON-RPC
- * surface: non-POST → 405, unparsable → 400, batches → 400, else the SDK.
+ * surface: non-POST → 405, unparsable → 400, batches → 400, else the SDK —
+ * the 2026-07-28 path for requests that carry the per-request envelope, the
+ * 2025 stateless path for every other client.
  */
 export async function handleHostedRequest(
   request: Request,
@@ -274,6 +270,22 @@ export async function handleHostedRequest(
   }
   if (Array.isArray(parsedBody)) {
     return jsonRpcError(400, -32600, "JSON-RPC batches are not accepted");
+  }
+  // 2026-07-28 requests carry their protocol version and capabilities in a
+  // per-request envelope and never send `initialize`. Everything else is a
+  // 2025-era client and keeps the stateless JSON serving it has always had.
+  if (!(await isLegacyRequest(request, parsedBody))) {
+    const modern = createMcpHandler(() => createMindGraphServer(opts), {
+      legacy: "reject",
+      // Default response mode: one JSON body unless a handler emits a message
+      // before its result. No tool does today; a tool that starts emitting
+      // progress must also stop this function closing the handler on return.
+    });
+    try {
+      return await modern.fetch(request, { parsedBody });
+    } finally {
+      await modern.close();
+    }
   }
   const server = createMindGraphServer(opts);
   const transport = new WebStandardStreamableHTTPServerTransport({

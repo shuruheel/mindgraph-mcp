@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/server";
 import type { MindGraph } from "mindgraph";
 import { renderContext, renderResumeContext } from "./render.js";
 

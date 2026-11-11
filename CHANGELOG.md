@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Changed
+
+- **The server speaks MCP revision 2026-07-28, and still serves older hosts.**
+  The package moves from `@modelcontextprotocol/sdk` 1.x to the v2 SDK
+  (`@modelcontextprotocol/server` 2.4). A host on the new revision gets the
+  per-request protocol with no `initialize` handshake, over stdio and over the
+  hosted Streamable HTTP endpoint. A host on a 2025 revision is served through
+  the handshake exactly as before; hosted responses to those hosts are still a
+  single JSON body with no session. Tool names, schemas and results are
+  unchanged.
+- **Node.js 20 or later is required** (the v2 SDK's floor). `package.json`
+  now declares it.
+- `mindgraph-mcp/server`: `handleHostedRequest` keeps its signature. The
+  `Server` type it and `createMindGraphServer` return now comes from
+  `@modelcontextprotocol/server`.
+
 ## 0.24.0 (2026-11-10)
 
 MindGraph tools now work in Claude Code's auto permission mode, where every

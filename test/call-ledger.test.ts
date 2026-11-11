@@ -77,8 +77,8 @@ describe("H1 — hook fields reach the server beside the call, not inside it", (
 
 describe("H1 — the stdio server applies the recorded fields", () => {
   it("merges resolved fields over the model's arguments before dispatch", async () => {
-    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+    const { Client } = await import("@modelcontextprotocol/client");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/server");
     const { buildMindGraphServer } = await import("../src/server.js");
     const seen: Array<[string, Record<string, unknown>]> = [];
     const governed: string[] = [];

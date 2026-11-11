@@ -2,7 +2,7 @@
 // contract, the `whoami` profile tool, per-tool OAuth scopes, annotations and
 // the hosted server instructions. Nothing here reads process state.
 
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/server";
 import { MindGraphError, type MindGraph } from "mindgraph";
 import { toolError } from "./error-detail.js";
 
