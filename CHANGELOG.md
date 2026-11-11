@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.26.0 (2026-11-11)
+
+A coding session started at a workspace root, or one folder above it, now
+gets a work brief that covers every declared repository. Superseded items are
+marked wherever this package renders context. Short prompts no longer trigger
+recall on a single shared word.
+
 ### Added
 
 - **The session-start work brief covers the whole workspace.** Started in a
@@ -21,7 +28,6 @@
   The ids are remembered for 12 hours in `~/.mindgraph/runtime`, per API key
   and organization. In a 12-repository workspace the lookups took about six
   seconds.
-
 - **A prompt with one usable keyword recalls nothing.** 0.24.0 let such a
   prompt inject items that shared that one word, so "Yes, please go ahead"
   recalled passages containing "ahead". Recall now needs two keywords in the
