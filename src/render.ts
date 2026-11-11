@@ -525,15 +525,19 @@ function resumeSection(
 /** Render the authoritative task-first `mindgraph_plan(resume_work)` response.
  * This deliberately preserves its task, lease, blocker, and execution ordering
  * instead of turning continuation into a recency search. */
-export function renderResumeContext(response: unknown, maxChars?: number): string | undefined {
+export function renderResumeContext(
+  response: unknown,
+  maxChars?: number,
+  repositoryNames: Record<string, string> = {},
+): string | undefined {
   const payload = obj(response);
   if (!payload) return undefined;
   const state: RenderState = { bounded: false, omitted: 0 };
   const status = str(payload.status);
   if (!payload.task && status === "no_eligible_work") {
-    const scopedOut = Array.isArray(payload.scoped_out_tasks)
-      ? payload.scoped_out_tasks.length
-      : 0;
+    // The server sends a count.
+    const scopedOut =
+      typeof payload.scoped_out_tasks === "number" ? payload.scoped_out_tasks : 0;
     const note = scopedOut > 0 ? ` ${scopedOut} task(s) exist outside the requested scope.` : "";
     return assemble(
       "# Resume context",
@@ -548,6 +552,18 @@ export function renderResumeContext(response: unknown, maxChars?: number): strin
     if (section) sections.push(section);
   };
   push(resumeSection("## Current task", [payload.task], state, "Task"));
+  const other = otherEligibleWork(payload, repositoryNames);
+  if (other.shown > 0) {
+    sections.push({
+      heading: `## Other eligible work (${other.shown} shown${other.more > 0 ? `, ${other.more} more not listed` : ""})`,
+      items: other.groups.flatMap((group) =>
+        group.tasks.map(
+          (task) =>
+            `- ${group.repository}: ${task.label} [${task.uid}]${task.detail ? ` — ${task.detail}` : ""}`,
+        ),
+      ),
+    });
+  }
   push(
     resumeSection(
       "## Goal and project",
@@ -618,6 +634,71 @@ export function renderResumeContext(response: unknown, maxChars?: number): strin
   }
   if (sections.length === 0) return undefined;
   return assemble("# Resume context", sections, state, maxChars);
+}
+
+export interface OtherWorkGroup {
+  repository: string;
+  tasks: Array<{ uid: string; label: string; detail: string }>;
+}
+
+/**
+ * The work ranked behind a resume's selection, grouped by repository in the
+ * order the server ranked it. `more` counts eligible tasks the response did
+ * not list. Empty when the server predates the list or found nothing else.
+ */
+export function otherEligibleWork(
+  brief: Record<string, unknown> | undefined,
+  names: Record<string, string> = {},
+): { groups: OtherWorkGroup[]; shown: number; more: number } {
+  const listed = Array.isArray(brief?.other_eligible) ? brief!.other_eligible : [];
+  const groups: OtherWorkGroup[] = [];
+  let shown = 0;
+  for (const entry of listed) {
+    const task = obj(entry);
+    const uid = typeof task?.uid === "string" ? task.uid : undefined;
+    if (!task || !uid) continue;
+    const scopes = Array.isArray(task.scope_uids) ? task.scope_uids.map(String) : [];
+    const named = scopes.find((scope) => names[scope]);
+    const repository = named ? names[named] : "Other scopes";
+    let group = groups.find((candidate) => candidate.repository === repository);
+    if (!group) {
+      group = { repository, tasks: [] };
+      groups.push(group);
+    }
+    const label = typeof task.label === "string" && task.label ? task.label : "(unlabeled)";
+    const detail = [
+      typeof task.status === "string" ? task.status : undefined,
+      typeof task.priority === "string" && task.priority ? `priority ${task.priority}` : undefined,
+    ]
+      .filter(Boolean)
+      .join(", ");
+    group.tasks.push({
+      uid,
+      label: label.length > 160 ? `${label.slice(0, 159)}…` : label,
+      detail,
+    });
+    shown += 1;
+  }
+  const total = typeof brief?.eligible_total === "number" ? brief.eligible_total : 0;
+  return { groups, shown, more: Math.max(0, total - 1 - shown) };
+}
+
+export function renderOtherEligibleWork(
+  brief: Record<string, unknown> | undefined,
+  names: Record<string, string> = {},
+): string | undefined {
+  const { groups, shown, more } = otherEligibleWork(brief, names);
+  if (shown === 0) return undefined;
+  const lines = [
+    `Other eligible work in this scope (${shown} shown${more > 0 ? `, ${more} more not listed` : ""}; resume one by task_uid):`,
+  ];
+  for (const group of groups) {
+    lines.push(`${group.repository}:`);
+    for (const task of group.tasks) {
+      lines.push(`- ${task.label} [${task.uid}]${task.detail ? ` — ${task.detail}` : ""}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 /** Render any response whose payload is (or contains) a list of nodes —

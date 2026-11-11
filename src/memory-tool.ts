@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Tool } from "@modelcontextprotocol/server";
 import type { MindGraph } from "mindgraph";
 import { renderContext, renderResumeContext } from "./render.js";
+import { WORKSPACE_RESUME_LIMIT, type RepositoryScope } from "./workspace-scope.js";
 
 const RESULT_SCHEMA_VERSION = "mindgraph.memory.result.v1";
 const DEFAULT_OUTPUT_CHARS = 8_000;
@@ -20,6 +21,9 @@ export interface MemoryRuntimeConfig {
   harness?: string;
   orgId?: string;
   agentId?: string;
+  /** Resolves the repositories the local workspace declares. Present only
+   * where the server runs beside a checkout (stdio), never when hosted. */
+  resolveWorkspaceScope?: (agentId: string) => Promise<RepositoryScope>;
 }
 
 export interface MemoryToolResult {
@@ -58,6 +62,12 @@ export const MEMORY_TOOL: Tool = {
         type: "array",
         items: { type: "string" },
         description: "Optional explicit graph scopes for continuity/resume",
+      },
+      scope: {
+        type: "string",
+        enum: ["workspace"],
+        description:
+          "For continuity/resume on a local server: select work across every repository the working directory's .mindgraph/workspace.json declares, and list the other eligible tasks grouped by repository",
       },
       node_types: {
         type: "array",
@@ -339,6 +349,10 @@ function resumeCandidates(raw: unknown): Rec[] {
     const item = compactItem(payload[key], key);
     if (item) items.push(item);
   }
+  for (const value of Array.isArray(payload.other_eligible) ? payload.other_eligible : []) {
+    const item = compactItem(value, "Task");
+    if (item) items.push(item);
+  }
   for (const key of ["next_steps", "recent_executions", "blockers", "code_targets"] as const) {
     for (const value of Array.isArray(payload[key]) ? payload[key] : []) {
       const item = compactItem(value, key.replace(/s$/, ""));
@@ -473,6 +487,7 @@ export async function handleMemoryTool(
   let rendered: string;
   let strategy: "retrieve_context" | "resume_work";
   let candidates: Rec[];
+  let workspace: RepositoryScope | undefined;
 
   if (mode === "topic") {
     const query = text(args.query);
@@ -500,10 +515,29 @@ export async function handleMemoryTool(
     strategy = "retrieve_context";
     candidates = topicCandidates(raw);
   } else {
+    if (args.scope !== undefined && args.scope !== "workspace") {
+      return error("scope must be 'workspace' when given");
+    }
+    if (args.scope === "workspace") {
+      if (!config.resolveWorkspaceScope) {
+        return error(
+          "scope='workspace' needs the local MindGraph MCP server, which reads .mindgraph/workspace.json beside the checkout; this server has no working directory. Pass scope_uids instead.",
+        );
+      }
+      workspace = await config.resolveWorkspaceScope(agentId ?? "mcp");
+      if (workspace.uids.length === 0) {
+        // Unscoped would select from every task in the org and call it the
+        // workspace.
+        return error(
+          `scope='workspace' resolved no repositories${workspace.failures.length > 0 ? ` (${workspace.failures.join("; ")})` : ""}`,
+        );
+      }
+    }
     const scopeUids = Array.from(
       new Set([
         ...(Array.isArray(args.scope_uids) ? args.scope_uids.map(String) : []),
         ...(text(args.project_uid) ? [text(args.project_uid)!] : []),
+        ...(workspace?.uids ?? []),
       ]),
     );
     raw = await client.plan(
@@ -512,11 +546,13 @@ export async function handleMemoryTool(
         task_uid: text(args.task_uid),
         session_uid: text(args.session_uid),
         scope_uids: scopeUids.length > 0 ? scopeUids : undefined,
-        limit: 1,
+        limit: workspace ? WORKSPACE_RESUME_LIMIT : 1,
         agent_id: agentId,
       }) as never,
     );
-    rendered = renderResumeContext(raw, budget) ?? "No eligible work was found in the requested scope.";
+    rendered =
+      renderResumeContext(raw, budget, workspace?.names) ??
+      "No eligible work was found in the requested scope.";
     strategy = "resume_work";
     candidates = resumeCandidates(raw);
   }
@@ -531,6 +567,7 @@ export async function handleMemoryTool(
     task_uid: text(args.task_uid),
     session_uid: text(args.session_uid),
     scope_uids: Array.isArray(args.scope_uids) ? args.scope_uids.map(String) : undefined,
+    workspace_repositories: workspace ? Object.values(workspace.names).sort() : undefined,
   });
   const contextId = `ctx_${sha256(
     stableJson({ mode, scope, strategy, query: text(args.query), rendered_hash: renderedHash }),
@@ -571,7 +608,17 @@ export async function handleMemoryTool(
       valid_at: text(args.valid_at),
       latest_source_timestamp: latestTimestamp(raw),
     }),
-    warnings: contextWarnings(raw, rendered, candidates.length, items.length),
+    warnings: [
+      ...contextWarnings(raw, rendered, candidates.length, items.length),
+      ...(workspace && workspace.failures.length > 0
+        ? [
+            {
+              code: "workspace_scope_partial",
+              message: `${workspace.failures.length} declared repositories did not resolve and were left out: ${workspace.failures.join("; ")}`,
+            },
+          ]
+        : []),
+    ],
   };
   return {
     content: [{ type: "text", text: rendered }],

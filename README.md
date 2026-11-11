@@ -165,6 +165,12 @@ checkouts)? Declare them once in `.mindgraph/workspace.json` at the parent:
   Anchoring requires an explicit space — per-repo `space_uid`, a
   `repo_space_uid` argument, or `MINDGRAPH_CODE_SPACE_UID` — so shared code
   identity never lands silently in a private per-agent space.
+- **Work brief**: a session started at the workspace root, or one folder
+  above it, selects durable work across every declared repository and lists
+  the other eligible tasks by repository. `mindgraph_memory` with
+  `mode: "resume"` and `scope: "workspace"` returns the same view on demand.
+  Only the brief looks one folder down for a workspace file; routing and sync
+  use the upward search described above.
 - **Memory-file sync**: `mindgraph_sync action=scan workspace=true` fans out
   across the declared repositories (and errors with a diagnostic when nothing
   is declared); all other sync actions stay single-repository.

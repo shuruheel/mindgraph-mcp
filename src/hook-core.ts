@@ -3,11 +3,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { CodegraphAdapter } from "./codegraph.js";
+import { renderOtherEligibleWork } from "./render.js";
 import {
-  CodegraphAdapter,
-  repositoryIdentityKey,
-} from "./codegraph.js";
-import { anchorRepository, type CodeClient } from "./code-tool.js";
+  resolveRepositoryScope,
+  WORKSPACE_RESUME_LIMIT,
+} from "./workspace-scope.js";
 import { recordPendingCall } from "./call-ledger.js";
 import { conflictState } from "./error-detail.js";
 import { stableAgentId } from "./hook-env.js";
@@ -89,6 +90,10 @@ export interface HookRuntimeOptions {
   agentId?: string;
   now?: () => number;
   workspaceFile?: string;
+  /** Identifies the API key, base URL and organization the hook talks to.
+   * When set, resolved repository uids are remembered in the runtime
+   * directory for that tenant only; unset means no cache. */
+  scopeCacheTenant?: string;
   /** Claude Code's config file (default ~/.claude.json), used only by the
    * SessionStart registration diagnostic. Injectable for tests. */
   claudeConfigPath?: string;
@@ -331,6 +336,8 @@ interface BriefRenderMeta {
   claimed: boolean;
   claimFailed: boolean;
   scopeNote?: string;
+  /** Scope uid → repository id; groups the other eligible work. */
+  repositoryNames?: Record<string, string>;
 }
 
 /**
@@ -393,6 +400,15 @@ function renderBrief(
     );
     const description = clipTracked(props?.description, 400);
     if (description) lines.push(`  ${description}`);
+    const taskScopes = Array.isArray(brief?.task_scope_uids)
+      ? brief!.task_scope_uids.map(String)
+      : [];
+    const taskRepository = taskScopes
+      .map((uid) => meta.repositoryNames?.[uid])
+      .find(Boolean);
+    if (taskRepository && Object.keys(meta.repositoryNames ?? {}).length > 1) {
+      lines.push(`Repository: ${taskRepository}`);
+    }
     const reason = string(brief?.selection_reason);
     if (reason) lines.push(`Selection: ${reason}`);
     const lease = object(brief?.claim) || object(brief?.lease);
@@ -444,6 +460,10 @@ function renderBrief(
   // Optional context sections append only while the budget holds; each is
   // dropped whole rather than cut mid-item.
   const optional: string[] = [];
+  // First among the optional sections: at a workspace root the other
+  // repositories' work is the reason the brief exists.
+  const otherWork = renderOtherEligibleWork(brief, meta.repositoryNames);
+  if (otherWork) optional.push(otherWork);
   const knowledge = Array.isArray(brief?.knowledge) ? brief!.knowledge : [];
   if (knowledge.length > 5) bounded = true;
   const knowledgeLines = knowledge
@@ -487,87 +507,6 @@ function renderBrief(
   return rendered.length <= BRIEF_CHAR_BUDGET
     ? rendered
     : `${rendered.slice(0, BRIEF_CHAR_BUDGET - 40)}\n…[bounded work brief truncated]`;
-}
-
-interface RepositoryScope {
-  uids: string[];
-  /** Repo ids whose identity resolution ERRORED (as opposed to resolving to
-   * "absent", which just means no tasks can target them yet). A failure
-   * silently narrowing — or entirely removing — the scope was the amplifier
-   * in the 2026-07-29 auto-claim incident: the cloud identity 403 emptied the
-   * scope and resume ran against the global pool with no signal anywhere. */
-  failures: string[];
-}
-
-async function repositoryScopeUids(
-  input: HookInput,
-  client: HookClient,
-  options: CoreHookRuntimeOptions,
-  agentId: string,
-): Promise<RepositoryScope> {
-  if (!client.entity) return { uids: [], failures: [] };
-  const adapter = new CodegraphAdapter({
-    cwd: input.cwd,
-    workspaceFile: options.workspaceFile,
-  });
-  const configured = await adapter.resolveRepositories();
-  const repositories =
-    configured.length > 0
-      ? configured
-      : [await adapter.resolveRepository()];
-  const failures: string[] = [];
-  const resolved = await Promise.all(
-    repositories.map(async (repository) => {
-      try {
-        const payload = object(
-          await client.entity!({
-            action: "resolve_identity",
-            identity: {
-              namespace: "external.code",
-              key_version: 1,
-              key: repositoryIdentityKey(repository),
-            },
-            agent_id: agentId,
-          }),
-        );
-        if (payload?.status === "existing" && string(payload.uid)) {
-          return string(payload.uid);
-        }
-        if (payload?.status === "absent") {
-          // Anchor the repository identity NOW (the same idempotent upsert
-          // create_task uses). Skipping "absent" repos meant a repo whose
-          // identity had never been anchored ran every session UNSCOPED —
-          // silently mixing other repositories' tasks into its briefs
-          // (caught live by the E2E: a task scoped to repo B surfaced in
-          // repo A's session because A had no anchor).
-          const anchored = await anchorRepository(
-            client as unknown as CodeClient,
-            repository,
-            repository.spaceUid ?? `space:agent:${agentId}`,
-            agentId,
-          );
-          if (anchored?.uid) return anchored.uid;
-          failures.push(
-            `${repository.repoId}: anchor ${anchored?.status ?? "failed"}`,
-          );
-          return undefined;
-        }
-        failures.push(
-          `${repository.repoId}: ${string(payload?.status) || "unresolved"}`,
-        );
-        return undefined;
-      } catch (error) {
-        failures.push(
-          `${repository.repoId}: ${(error as Error)?.message || "resolve failed"}`,
-        );
-        return undefined;
-      }
-    }),
-  );
-  return {
-    uids: [...new Set(resolved.filter((uid): uid is string => Boolean(uid)))],
-    failures,
-  };
 }
 
 // SessionStart may only RE-claim this agent's own durable work. The lease
@@ -711,7 +650,12 @@ async function sessionStart(
       return undefined;
     });
   }
-  const scope = await repositoryScopeUids(input, client, options, agentId);
+  const scope = await resolveRepositoryScope(input.cwd, client, agentId, {
+    workspaceFile: options.workspaceFile,
+    cache: options.scopeCacheTenant
+      ? { dir: runtimeDir(options), tenant: options.scopeCacheTenant }
+      : undefined,
+  });
   if (scope.failures.length > 0) {
     console.error(
       `mindgraph-hook: ${scope.failures.length} repository scope(s) failed to resolve (${scope.failures.join("; ")}); resume runs ${scope.uids.length > 0 ? "narrowed" : "UNSCOPED"}`,
@@ -723,9 +667,17 @@ async function sessionStart(
       action: "resume_work",
       session_uid: sessionUid,
       ...(scopeUids.length > 0 ? { scope_uids: scopeUids } : {}),
+      // Above several repositories one task is not the picture: ask for the
+      // work ranked behind it too. An older server ignores the field.
+      ...(scopeUids.length > 1 ? { limit: WORKSPACE_RESUME_LIMIT } : {}),
       agent_id: agentId,
     }),
   );
+  const workspaceList = {
+    task_scope_uids: brief?.task_scope_uids,
+    other_eligible: brief?.other_eligible,
+    eligible_total: brief?.eligible_total,
+  };
   const task = object(brief?.task);
   const lease = object(brief?.lease);
   // Prior ledger state — on compact/resume re-entry (same harness session
@@ -781,7 +733,9 @@ async function sessionStart(
             agent_id: agentId,
           }),
         );
-        if (reResumed) brief = reResumed;
+        // A resume by task_uid lists nothing beside the task; keep the list
+        // the scoped selection returned.
+        if (reResumed) brief = { ...reResumed, ...workspaceList };
       } catch {
         // Pre-claim brief still renders; the claim is what matters.
       }
@@ -799,6 +753,7 @@ async function sessionStart(
     claimed: Boolean(claimed) || stillHeld,
     claimFailed: claimFailed && !stillHeld,
     scopeNote,
+    repositoryNames: scope.names,
   });
   const registrationNote = claudeMcpRegistrationNote(input, options);
   if (registrationNote) {
