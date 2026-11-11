@@ -111,13 +111,14 @@ export function recallTermOverlap(query: string, text: string): { matched: numbe
 }
 
 /** Relevance floor for an every-prompt injection: an item must mention two
- * distinct query terms (one, when the prompt only yields one). A single
- * shared word let book notes about "the Roadmap" answer an engineering
- * prompt. With no usable term nothing is injected. */
+ * distinct query terms. A single shared word let book notes about "the
+ * Roadmap" answer an engineering prompt, and a prompt that yields only one
+ * usable term is nearly always an acknowledgement ("Yes, please go ahead"
+ * recalled passages containing "ahead"), so it injects nothing. */
 function relevant(query: string | undefined, text: string): boolean {
   if (query === undefined) return true;
   const { matched, usable } = recallTermOverlap(query, text);
-  return usable > 0 && matched >= Math.min(2, usable);
+  return usable >= 2 && matched >= 2;
 }
 
 type Rec = Record<string, unknown>;

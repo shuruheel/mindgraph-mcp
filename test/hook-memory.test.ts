@@ -134,6 +134,12 @@ describe("UserPromptSubmit recall", () => {
     ]);
     // No usable term (numbers and two-letter fragments never count): inject nothing.
     expect(renderPromptRecall(noise, promptRecallQuery("Yes, please build items 2-4."))).toBeUndefined();
+    // One usable term is an acknowledgement, not a topic: inject nothing.
+    const ahead = {
+      graph: { nodes: [{ node_type: "Claim", label: "Enlightened ruler plans ahead", summary: "Lays plans well ahead." }] },
+    };
+    expect(promptRecallQuery("Yes, please go ahead.")).toBe("ahead");
+    expect(renderPromptRecall(ahead, "ahead")).toBeUndefined();
     // Without a query the renderer keeps its old behaviour, minus bare entities.
     expect(renderPromptRecall(noise)!.split("\n")).toHaveLength(4);
     expect(recallTermOverlap("hook-core.ts lease", "src/hook-core.ts renews the lease")).toEqual({

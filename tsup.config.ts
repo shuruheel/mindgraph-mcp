@@ -15,7 +15,7 @@ export default defineConfig([
     format: ["cjs"],
     dts: true,
     clean: true,
-    target: "node18",
+    target: "node20",
     banner: { js: "#!/usr/bin/env node" },
     define,
     // The cli bundle is COPIED to ~/.mindgraph/bin/ as the pinned hook runner
@@ -28,7 +28,7 @@ export default defineConfig([
     entry: { index: "src/index.ts" },
     format: ["cjs"],
     dts: true,
-    target: "node18",
+    target: "node20",
     define,
   },
   {
@@ -38,6 +38,6 @@ export default defineConfig([
     entry: { server: "src/server.ts" },
     format: ["esm", "cjs"],
     dts: true,
-    target: "node18",
+    target: "node20",
   },
 ]);
