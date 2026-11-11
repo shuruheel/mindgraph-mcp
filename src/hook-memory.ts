@@ -169,7 +169,8 @@ export function renderPromptRecall(response: unknown, query?: string): string | 
     const docs = Array.isArray(node.source_documents) ? node.source_documents : [];
     const source = str(rec(docs[0])?.title);
     let line = `- [${type}] ${oneLine(label, 140)}`;
-    if (node.superseded === true) line += " (superseded)";
+    // `true` from /retrieve, an object naming the replacement from /retrieve/context.
+    if (node.superseded) line += " (superseded)";
     if (summary && summary !== label) line += ` — ${oneLine(summary, 240)}`;
     if (source) line += ` (source: ${oneLine(source, 100)})`;
     lines.push(line);

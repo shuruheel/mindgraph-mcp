@@ -32,6 +32,14 @@
 
 - A `mindgraph_memory` resume that found nothing in scope now reports how
   many tasks exist outside it. The count was read as a list and never shown.
+- **Superseded items from `/retrieve/context` are marked.** That endpoint
+  sends `superseded` as an object naming the replacement (`head_label`,
+  `head_uid`, `head_stated_at`); the renderer, the `mindgraph_memory` item
+  flag and warning, and the prompt-recall hook only recognized `true`, the
+  shape `/retrieve` sends. A superseded item was shown as current whenever
+  this package rendered the context itself. It now reads
+  `[SUPERSEDED by <label> (<date>)]`, the structured item carries
+  `superseded: true`, and the `superseded_items_present` warning fires.
 
 ## 0.25.0 (2026-11-10)
 

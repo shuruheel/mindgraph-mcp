@@ -140,6 +140,28 @@ describe("renderContext", () => {
     expect(text).not.toContain("raw chunk");
   });
 
+  it("marks an item superseded when /retrieve/context names its replacement as an object", () => {
+    const context = (superseded: unknown) => ({
+      graph: {
+        nodes: [
+          { uid: "old", label: "Budget is $5,000", node_type: "Observation", confidence: 1, superseded, props: {} },
+        ],
+        edges: [],
+      },
+    });
+    const head = { by: ["new"], heads: ["new"], head_uid: "new", head_label: "Budget is\n$8,000" };
+    expect(renderContext(context({ ...head, head_stated_at: "2024-04-05T10:00:00Z" }))).toContain(
+      "[SUPERSEDED by Budget is $8,000 (2024-04-05)]",
+    );
+    expect(renderContext(context(head))).toContain("[SUPERSEDED by Budget is $8,000]");
+    expect(renderContext(context({ head_uid: "new" }))).toContain("[SUPERSEDED by new]");
+    expect(renderContext(context({}))).toContain("[SUPERSEDED]");
+    expect(renderContext(context(true))).toContain("[SUPERSEDED]");
+    for (const live of [false, null, undefined]) {
+      expect(renderContext(context(live))).not.toContain("SUPERSEDED");
+    }
+  });
+
   it("is dramatically smaller than the pretty JSON it replaces", () => {
     const raw = JSON.stringify(specimen(), null, 2);
     const text = renderContext(specimen())!;

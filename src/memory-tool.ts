@@ -278,7 +278,8 @@ function compactItem(raw: unknown, fallbackType?: string): Rec | undefined {
     type: fallbackType ?? nodeType(value),
     label: text(value.label) ?? text(value.document_title),
     truth_status: text(value.truth_status) ?? text(obj(value.props)?.truth_status),
-    superseded: value.superseded === true ? true : undefined,
+    // `true` from /retrieve, an object naming the replacement from /retrieve/context.
+    superseded: value.superseded ? true : undefined,
     currently_valid: value.currently_valid === false ? false : undefined,
     valid_at_time: value.valid_at_time === false ? false : undefined,
     retrieval_origin: text(value.retrieval_origin),
@@ -431,7 +432,7 @@ function contextWarnings(raw: unknown, rendered: string, available: number, retu
       message: `${Math.max(0, available - returned)} structured item(s) were omitted from the rendered context.`,
     });
   }
-  if (/"superseded":true/.test(serialized)) {
+  if (/"superseded":(?:true|\{)/.test(serialized)) {
     warnings.push({ code: "superseded_items_present", message: "Some retrieved items are superseded." });
   }
   if (/"currently_valid":false|"valid_at_time":false/.test(serialized)) {
