@@ -17,7 +17,7 @@ import {
   type HookClient,
 } from "./claude-hooks.js";
 import { runCodexHook } from "./codex-hooks.js";
-import { previewCapture } from "./hook-core.js";
+import { previewCapture, readHookStats } from "./hook-core.js";
 import {
   installClaudeHooks,
   installCodexHooks,
@@ -470,6 +470,9 @@ USAGE:
   mindgraph-mcp hooks preview [transcript_path] [--session-id <id>]
                                  Print exactly what transcript capture would
                                  send (POST /ingest/session); sends nothing.
+  mindgraph-mcp hooks stats [--session-id <id>]
+                                 Per-event hook calls, time and characters
+                                 injected for a session (latest by default).
   mindgraph-mcp status           Show installation status
   mindgraph-mcp skills pull [--dir .claude/skills]
                                  Write your org's published+granted skills as
@@ -936,8 +939,32 @@ async function main(): Promise<void> {
     }
 
     case "hooks": {
+      if (positionals[0] === "stats") {
+        const stats = readHookStats(parseArgs(process.argv).sessionId);
+        if (!stats) {
+          console.error(
+            "No hook statistics recorded yet. They are kept per session once the hooks from this version have run."
+          );
+          process.exit(1);
+        }
+        const rows = Object.entries(stats.events).sort(([a], [b]) => a.localeCompare(b));
+        const injected = rows.reduce((sum, [, row]) => sum + row.injectedChars, 0);
+        console.log(`Session ${stats.sessionId} (${stats.harness}), last active ${new Date(stats.updatedAt).toISOString()}`);
+        console.log("event               calls   avg ms   max ms   injected chars");
+        for (const [event, row] of rows) {
+          console.log(
+            `${event.padEnd(18)} ${String(row.count).padStart(6)} ${String(Math.round(row.totalMs / Math.max(row.count, 1))).padStart(8)} ${String(row.maxMs).padStart(8)} ${String(row.injectedChars).padStart(16)}`
+          );
+        }
+        console.log(
+          `Injected into context: ${injected} characters (about ${Math.round(injected / 4)} tokens). Times are measured inside the hook and exclude process start.`
+        );
+        break;
+      }
       if (positionals[0] !== "preview") {
-        console.error("Usage: mindgraph-mcp hooks preview [transcript_path] [--session-id <id>]");
+        console.error(
+          "Usage: mindgraph-mcp hooks preview [transcript_path] [--session-id <id>]\n       mindgraph-mcp hooks stats [--session-id <id>]"
+        );
         process.exit(1);
       }
       const transcript = positionals[1] || latestTranscript(process.cwd());

@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### Changed
+
+- **Per-prompt recall injects less, and only what the prompt is about.** An
+  item is now injected only when its label or summary mentions two distinct
+  keywords from the prompt (one, when the prompt yields a single keyword).
+  Before, one shared word was enough: a prompt about "the roadmap" recalled
+  book notes on a diplomatic Roadmap, and "build items 2-4" recalled a passage
+  about "n = 4". Numbers and two-letter fragments no longer count as keywords
+  for this check, more filler words are dropped from the query, and an Entity
+  with a name but no summary is skipped. A prompt with no usable keyword
+  injects nothing. Recall that reached you only through meaning, with no
+  shared word, is dropped too; ask with `mindgraph_memory` when you want it.
+- **The Claude Code `PostToolUse` hook runs for fewer tools.** Its matcher was
+  `.*`; it is now `mcp__mindgraph__.*|Edit|MultiEdit|Write|NotebookEdit|Bash|Task|Agent`.
+  Read, Grep and Glob no longer start a hook process. One consequence: a task
+  lease is renewed on those tool calls only, so a stretch of pure reading
+  longer than the lease can let it lapse; the next MindGraph call recovers it.
+  Installed hooks pick the new matcher up when the runner refreshes. Codex
+  keeps `.*`.
+- Depends on `mindgraph` `^0.17.0`.
+
+### Added
+
+- **`mindgraph-mcp hooks stats [--session-id <id>]`.** Prints, for one session
+  (the most recently active by default), how many times each hook event ran,
+  the average and longest time spent inside the hook, and how many characters
+  it injected into context. The numbers are kept in the session's local
+  runtime file and never leave the machine. Times exclude process start.
+
 ### Fixed
 
 - **MindGraph tools work in Claude Code's auto permission mode.** The

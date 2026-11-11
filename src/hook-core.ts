@@ -78,6 +78,9 @@ interface RuntimeLedger {
   lastRecallHash?: string;
   /** Byte offset in the transcript up to which turns were captured. */
   captureOffset?: number;
+  /** Per-event cost of the hooks in this session (roadmap H8): how often each
+   * fired, time spent inside the hook, and characters injected into context. */
+  hookStats?: Record<string, HookEventStats>;
   updatedAt: number;
 }
 
@@ -101,6 +104,13 @@ export interface HookRuntimeOptions {
 interface CoreHookRuntimeOptions extends HookRuntimeOptions {
   harness: HookHarness;
   reinjectUnchangedCompact: boolean;
+}
+
+export interface HookEventStats {
+  count: number;
+  totalMs: number;
+  maxMs: number;
+  injectedChars: number;
 }
 
 export type HookCoreOutput =
@@ -1345,7 +1355,7 @@ async function promptRecall(
       client.retrieveContext(promptRecallRequest(query)),
       options.promptRecallTimeoutMs ?? 4_000,
     );
-    const block = renderPromptRecall(response);
+    const block = renderPromptRecall(response, query);
     if (!block) return NOOP;
     const hash = crypto.createHash("sha256").update(block).digest("hex");
     const fresh = withLedger(input.session_id, options, (ledger) => {
@@ -1414,6 +1424,42 @@ async function captureTranscript(
 }
 
 export async function runHookCore(
+  input: HookInput,
+  client: HookClient,
+  options: CoreHookRuntimeOptions,
+): Promise<HookCoreOutput> {
+  const started = performance.now();
+  const output = await dispatchHook(input, client, options);
+  // A PreToolUse for another server's tool does no work and keeps no record.
+  if (
+    input.session_id &&
+    !(input.hook_event_name === "PreToolUse" && output.kind === "noop")
+  ) {
+    try {
+      const elapsed = Math.round(performance.now() - started);
+      const injected = output.kind === "context" ? output.context.length : 0;
+      withLedger(input.session_id, options, (ledger) => {
+        const stats = (ledger.hookStats ??= {});
+        const entry = (stats[input.hook_event_name] ??= {
+          count: 0,
+          totalMs: 0,
+          maxMs: 0,
+          injectedChars: 0,
+        });
+        entry.count += 1;
+        entry.totalMs += elapsed;
+        entry.maxMs = Math.max(entry.maxMs, elapsed);
+        entry.injectedChars += injected;
+        return undefined;
+      });
+    } catch {
+      // Bookkeeping never changes what a hook returns.
+    }
+  }
+  return output;
+}
+
+async function dispatchHook(
   input: HookInput,
   client: HookClient,
   options: CoreHookRuntimeOptions,
@@ -1488,4 +1534,46 @@ export function previewCapture(
     }),
     offset,
   };
+}
+
+export interface HookSessionStats {
+  harness: string;
+  sessionId: string;
+  updatedAt: number;
+  events: Record<string, HookEventStats>;
+}
+
+/** Hook cost for one session, or for the most recently active session when
+ * no id is given. Reads the local runtime ledger only. */
+export function readHookStats(
+  sessionId?: string,
+  options: HookRuntimeOptions = {},
+): HookSessionStats | undefined {
+  const dir = runtimeDir(options);
+  let best: HookSessionStats | undefined;
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(dir).filter((name) => /^[0-9a-f]{64}\.json$/.test(name));
+  } catch {
+    return undefined;
+  }
+  for (const name of names) {
+    try {
+      const ledger = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) as Partial<RuntimeLedger>;
+      if (!ledger.harnessSessionId || !ledger.hookStats) continue;
+      if (sessionId && ledger.harnessSessionId !== sessionId) continue;
+      const updatedAt = Number(ledger.updatedAt) || 0;
+      if (!best || updatedAt > best.updatedAt) {
+        best = {
+          harness: String(ledger.harness ?? "unknown"),
+          sessionId: ledger.harnessSessionId,
+          updatedAt,
+          events: ledger.hookStats,
+        };
+      }
+    } catch {
+      // Unreadable disposable bookkeeping is skipped.
+    }
+  }
+  return best;
 }
