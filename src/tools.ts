@@ -1,7 +1,7 @@
 import { MindGraph } from "mindgraph";
 import { createHash } from "node:crypto";
 import { toolError } from "./error-detail.js";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/server";
 import {
   CODE_TOOL,
   anchorRepository,
@@ -52,7 +52,7 @@ const RESOLUTION_PROPERTIES = {
     enum: ["create"],
     description: "Alias for confirm_new on a near-duplicate response",
   },
-} as const;
+};
 
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;

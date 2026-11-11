@@ -3,10 +3,9 @@
 // the stateless Streamable HTTP helper. The client is mocked; nothing here
 // touches the network.
 import { describe, expect, it, vi } from "vitest";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client, InMemoryTransport, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import type { Tool } from "@modelcontextprotocol/client";
 import { MindGraph, MindGraphError } from "mindgraph";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import {
   createMindGraphServer,
   handleHostedRequest,
@@ -313,5 +312,53 @@ describe("handleHostedRequest (D6)", () => {
     const names = body.result.tools.map((tool: { name: string }) => tool.name);
     expect(names).toContain("search");
     expect(names).toContain("whoami");
+  });
+});
+
+describe("handleHostedRequest serves the 2026-07-28 revision", () => {
+  // A real v2 client over HTTP, with `fetch` routed straight into the hosted
+  // helper: the wire is exactly what a 2026-era host sends.
+  async function connect(mode: "auto" | "legacy", client = makeClient()) {
+    const seen: Array<{ method: string; headers: Headers }> = [];
+    const mcp = new Client(
+      { name: "test-host", version: "1.0.0" },
+      { versionNegotiation: { mode } },
+    );
+    const transport = new StreamableHTTPClientTransport(new URL("https://mindgraph.cloud/mcp"), {
+      fetch: async (input, init) => {
+        const request = new Request(input as string | URL, init as RequestInit);
+        if (request.method === "POST") {
+          const body = JSON.parse(await request.clone().text()) as { method?: string };
+          seen.push({ method: body.method ?? "(response)", headers: request.headers });
+        }
+        return handleHostedRequest(request, makeOpts(client));
+      },
+    });
+    await mcp.connect(transport);
+    return { mcp, seen, client };
+  }
+
+  it("negotiates 2026-07-28 without an initialize handshake and serves tools", async () => {
+    const { mcp, seen, client } = await connect("auto");
+    expect(mcp.getNegotiatedProtocolVersion()).toBe("2026-07-28");
+    expect(seen.map((entry) => entry.method)).not.toContain("initialize");
+    expect(seen[0].method).toBe("server/discover");
+
+    const { tools } = await mcp.listTools();
+    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["search", "fetch"]));
+
+    const result = await mcp.callTool({ name: "fetch", arguments: { id: NODE.uid } });
+    expect(result.isError).not.toBe(true);
+    expect(client.getNode).toHaveBeenCalledWith(NODE.uid);
+    await mcp.close();
+  });
+
+  it("still serves a 2025-era client through the initialize handshake", async () => {
+    const { mcp, seen } = await connect("legacy");
+    expect(seen[0].method).toBe("initialize");
+    expect(mcp.getNegotiatedProtocolVersion()).toBe("2025-11-25");
+    const { tools } = await mcp.listTools();
+    expect(tools.length).toBeGreaterThan(0);
+    await mcp.close();
   });
 });

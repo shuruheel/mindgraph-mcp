@@ -1,5 +1,5 @@
 import { resolvePendingCall } from "./call-ledger.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { MindGraph } from "mindgraph";
 import { loadHookEnv, stableAgentId } from "./hook-env.js";
 import { buildMindGraphServer } from "./server.js";
@@ -203,7 +203,10 @@ const MEMORY_RUNTIME_CONFIG = {
 
 // Tools, prompts and resources are wired in server.ts, shared with the hosted
 // mode; this entry only supplies what it reads from the environment.
-const server = buildMindGraphServer({
+// A factory, not an instance: the stdio entry pins one server per connection
+// to the era the client opens with (2026-07-28 envelope, or the 2025
+// `initialize` handshake), and may build a discarded probe instance first.
+const buildServer = () => buildMindGraphServer({
   client,
   serverVersion: __PACKAGE_VERSION__,
   instructions: INSTRUCTIONS,
@@ -217,8 +220,9 @@ const server = buildMindGraphServer({
 // ── Start ─────────────────────────────────────────────────────────────
 
 async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  serveStdio(buildServer, {
+    onerror: (error) => console.error("MindGraph MCP transport error:", error.message),
+  });
   console.error(
     `MindGraph MCP server v${__PACKAGE_VERSION__} running on stdio (${BASE_URL})`
   );

@@ -1,5 +1,5 @@
 import { MindGraph } from "mindgraph";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/server";
 import { errorDetail, toolError } from "./error-detail.js";
 import {
   CodegraphAdapter,

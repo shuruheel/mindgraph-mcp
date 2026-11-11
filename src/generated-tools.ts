@@ -8,7 +8,7 @@ import { toolError } from "./error-detail.js";
 
 import { MindGraph } from "mindgraph";
 import { renderNodeList, renderObjectList, renderOntologyAnswer } from "./render.js";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/server";
 
 export interface GeneratedToolDescriptor {
   name: string;

@@ -6,8 +6,7 @@
 // UPDATE_STDIO_FIXTURE=1 when a tool schema changes on purpose.
 import { readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import type { MindGraph } from "mindgraph";
 import { buildMindGraphServer } from "../src/server.js";
 
