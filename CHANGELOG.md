@@ -30,10 +30,20 @@ server start); no settings change is needed.
   longer than the lease can let it lapse; the next MindGraph call recovers it.
   Installed hooks pick the new matcher up when the runner refreshes. Codex
   keeps `.*`.
+- **Context output uses the server's rendering when the server provides
+  one.** `mindgraph_memory` and `mindgraph_retrieve` context calls now ask for
+  `format: "text"` with a token budget derived from `max_output_chars`, and
+  pass the server's `context_text` through unchanged: dated items,
+  supersession marks and conflict pairs read the same through every door.
+  Against an older server the local renderer is used, as before.
 - Depends on `mindgraph` `^0.17.0`.
 
 ### Added
 
+- **`as_of` and `retrieval_mode` on context calls.** `as_of` (a date or
+  timestamp) returns what was stated up to that moment. `retrieval_mode:
+  "exhaustive"` asks for every matching item, for list and count questions;
+  the default is `normal`.
 - **`mindgraph-mcp hooks stats [--session-id <id>]`.** Prints, for one session
   (the most recently active by default), how many times each hook event ran,
   the average and longest time spent inside the hook, and how many characters

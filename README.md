@@ -93,7 +93,9 @@ bounded topic recall for each prompt — the same request the Hermes provider
 makes: `POST /retrieve/context` with up to 8 keywords from the prompt (obvious
 secrets redacted first), 5 items, no source chunks — and injects at most 4,000
 characters headed `MindGraph recall (bounded):`, one line per item (type,
-label, one-line summary, source document). Prompts under 12 characters and
+label, one-line summary, source document). An item is injected only when its
+label or summary mentions two distinct keywords from the prompt (one, when the
+prompt yields a single keyword), so a prompt can inject nothing. Prompts under 12 characters and
 slash commands are skipped, a block identical to the last one injected is not re-injected in the same
 session, and the hook gives up after 4 s and injects nothing on any error, so
 it never blocks a prompt. Turn it off with
@@ -253,6 +255,7 @@ mindgraph-mcp uninstall-code   Remove from Claude Code
 mindgraph-mcp install-hooks    Install coding hooks (--harness claude-code|codex)
 mindgraph-mcp uninstall-hooks  Remove MindGraph-owned hook entries
 mindgraph-mcp hooks preview    Print what transcript capture would send (sends nothing)
+mindgraph-mcp hooks stats      Per-event hook calls, time and injected characters for a session
 mindgraph-mcp skills pull      Render published and granted skills into local SKILL.md directories
 mindgraph-mcp skills push      Import or update one local SKILL.md as a governed candidate
 mindgraph-mcp status           Show installation status
@@ -261,7 +264,7 @@ mindgraph-mcp status           Show installation status
 Options: `--api-key <key>`, `--base-url <url>`, `--agent-id <id>`,
 `--scope user|project`, `--project-dir <dir>`, `--harness <name>`,
 `--no-prompt-recall` / `--prompt-recall`, `--capture` / `--no-capture`,
-`--session-id <id>` (for `hooks preview`), `--help`.
+`--session-id <id>` (for `hooks preview` and `hooks stats`), `--help`.
 
 **Teams**: when several people share one org graph, give each member a
 distinct identity — `--agent-id claude-code:<name>` on `install-code` /
