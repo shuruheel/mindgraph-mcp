@@ -272,6 +272,9 @@ function ownedHook(
   };
 }
 
+export const CLAUDE_POST_TOOL_MATCHER =
+  "mcp__mindgraph__.*|Edit|MultiEdit|Write|NotebookEdit|Bash|Task|Agent";
+
 function desiredEntries(
   harness: HookHarness,
   features: ClaudeHookFeatures = {},
@@ -310,7 +313,17 @@ function desiredEntries(
     ],
     // PostToolUse awaits the lease renewal round-trip, which fires exactly
     // when the tenant is cold (post-idle reclaim) — 5s killed it mid-claim.
-    PostToolUse: [{ matcher: ".*", hooks: [ownedHook(harness, 10)] }],
+    // Claude Code: only the tools the hook acts on (MindGraph calls, edits,
+    // and the shell/agent calls that keep a lease alive). Read, Grep and Glob
+    // are most of a session's tool calls and the hook did nothing useful for
+    // them but start a process (roadmap H8). Codex names its tools
+    // differently, so it keeps the catch-all.
+    PostToolUse: [
+      {
+        matcher: harness === "claude-code" ? CLAUDE_POST_TOOL_MATCHER : ".*",
+        hooks: [ownedHook(harness, 10)],
+      },
+    ],
     Stop: [{ hooks: [ownedHook(harness, 5)] }],
     // SessionEnd makes up to two sequential cloud calls (abandon_iteration +
     // session close) — the SAME cold-tenant latency SessionStart needs 30s

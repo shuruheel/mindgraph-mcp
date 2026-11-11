@@ -3,10 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runClaudeHook, type HookClient } from "../src/claude-hooks.js";
-import { previewCapture } from "../src/hook-core.js";
+import { previewCapture, readHookStats } from "../src/hook-core.js";
 import {
   extractTranscriptTurns,
   promptRecallQuery,
+  recallTermOverlap,
   redactSecrets,
   renderPromptRecall,
 } from "../src/hook-memory.js";
@@ -98,6 +99,62 @@ describe("UserPromptSubmit recall", () => {
     expect(renderPromptRecall({ graph: { nodes: [] } })).toBeUndefined();
   });
 
+  it("drops items below the relevance floor when the query is known", () => {
+    // One shared word is not enough: the Article mentions only "recall".
+    expect(renderPromptRecall(CONTEXT, "bound prompt recall")!.split("\n")).toEqual([
+      "MindGraph recall (bounded):",
+      "- [Decision] Bound prompt recall — Five items, 4,000 characters (source: Hermes README)",
+    ]);
+    const noise = {
+      graph: {
+        nodes: [
+          {
+            node_type: "Pattern",
+            label: "Roadmap as motion imitating movement",
+            summary: "The Roadmap became an example of diplomatic activity without substantive movement.",
+          },
+          { node_type: "Concept", label: "Workable criterion (n=4)", summary: "The criterion for n = 4." },
+          { node_type: "Entity", label: "_active_session_uid" },
+          {
+            node_type: "Journal",
+            label: "Roadmap review 2026-10-30",
+            summary: "Queue re-ranked; the roadmap update moved Health first.",
+          },
+        ],
+      },
+    };
+    // The real prompts that surfaced these lines in a live session.
+    const roadmap = promptRecallQuery(
+      "Can you make sure the roadmap is up to date without including unnecessary updates in it?",
+    );
+    expect(roadmap).toBe("roadmap date unnecessary updates");
+    expect(renderPromptRecall(noise, roadmap)!.split("\n")).toEqual([
+      "MindGraph recall (bounded):",
+      "- [Journal] Roadmap review 2026-10-30 — Queue re-ranked; the roadmap update moved Health first.",
+    ]);
+    // No usable term (numbers and two-letter fragments never count): inject nothing.
+    expect(renderPromptRecall(noise, promptRecallQuery("Yes, please build items 2-4."))).toBeUndefined();
+    // Without a query the renderer keeps its old behaviour, minus bare entities.
+    expect(renderPromptRecall(noise)!.split("\n")).toHaveLength(4);
+    expect(recallTermOverlap("hook-core.ts lease", "src/hook-core.ts renews the lease")).toEqual({
+      matched: 2,
+      usable: 2,
+    });
+  });
+
+  it("records per-event hook statistics for the session", async () => {
+    const runtimeDir = tempDir();
+    const { client } = fake(CONTEXT);
+    await runClaudeHook(promptInput("How should we bound prompt recall?"), client, { runtimeDir });
+    await runClaudeHook(promptInput("Something unrelated entirely to anything stored"), client, { runtimeDir });
+    const stats = readHookStats(undefined, { runtimeDir })!;
+    expect(stats.events.UserPromptSubmit.count).toBe(2);
+    expect(stats.events.UserPromptSubmit.injectedChars).toBe(
+      renderPromptRecall(CONTEXT, "bound prompt recall")!.length,
+    );
+    expect(readHookStats("no-such-session", { runtimeDir })).toBeUndefined();
+  });
+
   it("bounds the block to 4,000 characters and 5 items", () => {
     const nodes = Array.from({ length: 20 }, (_, i) => ({
       uid: `n${i}`,
@@ -126,7 +183,7 @@ describe("UserPromptSubmit recall", () => {
     expect(first).toEqual({
       hookSpecificOutput: {
         hookEventName: "UserPromptSubmit",
-        additionalContext: renderPromptRecall(CONTEXT),
+        additionalContext: renderPromptRecall(CONTEXT, "bound prompt recall"),
       },
     });
     const second = await runClaudeHook(promptInput("Bound prompt recall again please"), client, {

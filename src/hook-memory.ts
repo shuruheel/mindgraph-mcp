@@ -22,7 +22,11 @@ const STOPWORDS = new Set(
     "a an and are as at be but by can could did do does for from had has have how i if in into is it its " +
     "me my of on or our please should so that the their them then there these they this to us was we were " +
     "what when where which who why will with would you your about just also any some tell know want need " +
-    "let lets like get got make"
+    "let lets like get got make " +
+    // Function words that matched unrelated memory on their own (0.24.0).
+    "yes no not ok okay sure may might must up down out off over under again after before while " +
+    "without within including include use using used keep now next here than very more most " +
+    "other each both all one two been being am done going go"
   ).split(" "),
 );
 const WORD = /[A-Za-z0-9][A-Za-z0-9_.\-/#+]*/g;
@@ -80,6 +84,42 @@ export function promptRecallRequest(query: string): Record<string, unknown> {
   };
 }
 
+/** Alphanumeric parts of a text, lowercased: `hook-core.ts` → hook, core, ts. */
+function wordParts(text: string): string[] {
+  return text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+const sameWord = (left: string, right: string): boolean =>
+  left === right ||
+  (left.length >= 4 && right.length >= 4 && (left.startsWith(right) || right.startsWith(left)));
+
+/** How many distinct query terms a recalled item actually mentions. A term
+ * counts when one of its parts of three or more characters appears in the
+ * text as a word (or as the stem of one: `update` ~ `updates`). Bare numbers
+ * and two-letter fragments never count: "items 2-4" matched "n = 4". */
+export function recallTermOverlap(query: string, text: string): { matched: number; usable: number } {
+  const hay = wordParts(text);
+  let matched = 0;
+  let usable = 0;
+  for (const term of new Set(query.split(/\s+/).filter(Boolean))) {
+    const parts = wordParts(term).filter((part) => part.length >= 3 && !/^\d+$/.test(part));
+    if (parts.length === 0) continue;
+    usable += 1;
+    if (parts.some((part) => hay.some((word) => sameWord(word, part)))) matched += 1;
+  }
+  return { matched, usable };
+}
+
+/** Relevance floor for an every-prompt injection: an item must mention two
+ * distinct query terms (one, when the prompt only yields one). A single
+ * shared word let book notes about "the Roadmap" answer an engineering
+ * prompt. With no usable term nothing is injected. */
+function relevant(query: string | undefined, text: string): boolean {
+  if (query === undefined) return true;
+  const { matched, usable } = recallTermOverlap(query, text);
+  return usable > 0 && matched >= Math.min(2, usable);
+}
+
 type Rec = Record<string, unknown>;
 const rec = (value: unknown): Rec | undefined =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as Rec) : undefined;
@@ -104,8 +144,9 @@ function nodeType(node: Rec): string {
 /** Render a `/retrieve/context` response as a compact recall block: one line
  * per item (type, label, one-line summary, source document title), at most
  * PROMPT_RECALL_LIMIT items and PROMPT_RECALL_MAX_CHARS characters. Returns
- * undefined when nothing is worth injecting. */
-export function renderPromptRecall(response: unknown): string | undefined {
+ * undefined when nothing is worth injecting. With `query` (the keywords the
+ * request was built from) items below the relevance floor are dropped. */
+export function renderPromptRecall(response: unknown, query?: string): string | undefined {
   const payload = rec(response);
   if (!payload) return undefined;
   const lines: string[] = [];
@@ -119,6 +160,11 @@ export function renderPromptRecall(response: unknown): string | undefined {
     const label = str(node.label) ?? str(props?.label) ?? str(props?.name);
     if (!label) continue;
     const summary = str(node.summary) ?? str(props?.summary) ?? str(props?.description) ?? str(props?.content);
+    const informative = summary && summary !== label ? summary : undefined;
+    // A bare entity name (`_active_session_uid`, a file path) tells the model
+    // nothing and takes one of five slots.
+    if (!informative && type === "Entity") continue;
+    if (!relevant(query, `${label} ${informative ?? ""}`)) continue;
     const docs = Array.isArray(node.source_documents) ? node.source_documents : [];
     const source = str(rec(docs[0])?.title);
     let line = `- [${type}] ${oneLine(label, 140)}`;
@@ -134,6 +180,7 @@ export function renderPromptRecall(response: unknown): string | undefined {
     const label = str(article.label);
     if (!label) continue;
     const content = str(article.content);
+    if (!relevant(query, `${label} ${content ?? ""}`)) continue;
     lines.push(`- [Article] ${oneLine(label, 140)}${content ? ` — ${oneLine(content, 240)}` : ""}`);
   }
   if (lines.length === 0) return undefined;
