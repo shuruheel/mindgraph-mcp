@@ -97,8 +97,8 @@ makes: `POST /retrieve/context` with up to 8 keywords from the prompt (obvious
 secrets redacted first), 5 items, no source chunks — and injects at most 4,000
 characters headed `MindGraph recall (bounded):`, one line per item (type,
 label, one-line summary, source document). An item is injected only when its
-label or summary mentions two distinct keywords from the prompt (one, when the
-prompt yields a single keyword), so a prompt can inject nothing. Prompts under 12 characters and
+label or summary mentions two distinct keywords from the prompt, so a prompt
+can inject nothing (one with a single usable keyword always does). Prompts under 12 characters and
 slash commands are skipped, a block identical to the last one injected is not re-injected in the same
 session, and the hook gives up after 4 s and injects nothing on any error, so
 it never blocks a prompt. Turn it off with

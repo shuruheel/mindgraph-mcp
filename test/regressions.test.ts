@@ -380,12 +380,25 @@ describe("R7 — pinned hook runner replaces per-invocation npx", () => {
     const iso = tempDir("mindgraph-r7-iso-");
     const runner = path.join(iso, "runner.cjs");
     fs.copyFileSync(bundle, runner);
-    const out = execFileSync("node", [runner, "hook", "--harness", "claude-code", "--owner", "mindgraph"], {
-      cwd: iso,
-      input: JSON.stringify({ hook_event_name: "Stop", session_id: "iso", cwd: iso, stop_hook_active: true }),
-      env: { ...process.env, MINDGRAPH_API_KEY: "", MINDGRAPH_RUNTIME_DIR: iso },
-    });
-    expect(out.toString().trim()).toBe("{}");
+    // Every hook event, not only Stop: the bundle also carries the MCP server,
+    // whose SDK imports must stay lazy. An eager require on any hook path
+    // would crash here, where no node_modules exists.
+    for (const event of ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "Stop", "SessionEnd"]) {
+      const out = execFileSync("node", [runner, "hook", "--harness", "claude-code", "--owner", "mindgraph"], {
+        cwd: iso,
+        input: JSON.stringify({
+          hook_event_name: event,
+          session_id: "iso",
+          cwd: iso,
+          stop_hook_active: true,
+          prompt: "what about the deploy plan",
+          tool_name: "mcp__mindgraph__mindgraph_memory",
+          tool_input: { action: "status" },
+        }),
+        env: { ...process.env, MINDGRAPH_API_KEY: "", MINDGRAPH_RUNTIME_DIR: iso, HOME: iso },
+      });
+      expect(out.toString().trim(), event).toBe("{}");
+    }
 
     const root = tempDir("mindgraph-r7-root-");
     fs.mkdirSync(path.join(root, ".git"));

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Changed
+
+- **A prompt with one usable keyword recalls nothing.** 0.24.0 let such a
+  prompt inject items that shared that one word, so "Yes, please go ahead"
+  recalled passages containing "ahead". Recall now needs two keywords in the
+  prompt and two in the item.
+- The build targets Node 20, matching the declared engine.
+
 ## 0.25.0 (2026-11-10)
 
 The server now speaks MCP revision 2026-07-28, the per-request protocol with
