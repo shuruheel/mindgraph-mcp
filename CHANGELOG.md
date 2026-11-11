@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.25.0 (2026-11-10)
+
+The server now speaks MCP revision 2026-07-28, the per-request protocol with
+no `initialize` handshake, and keeps serving hosts on the 2025 revisions.
+Claude Code 2.1.322 connects on the new revision. Node.js 20 or later is
+required. Tools and their results are unchanged.
+
 ### Changed
 
 - **The server speaks MCP revision 2026-07-28, and still serves older hosts.**

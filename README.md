@@ -5,6 +5,9 @@
 
 Model Context Protocol server for [MindGraph](https://mindgraph.cloud) — plug your persistent, structured knowledge graph into Claude Desktop, Claude Code, Codex, and any MCP-compatible client.
 
+Requires Node.js 20 or later. Speaks MCP revision 2026-07-28 and the 2025
+revisions, over stdio and hosted Streamable HTTP.
+
 ## Install
 
 The fastest way to install is the interactive setup:
