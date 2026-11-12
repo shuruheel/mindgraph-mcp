@@ -163,6 +163,34 @@ function ledgerPath(sessionId: string, options: HookRuntimeOptions): string {
   return path.join(runtimeDir(options), `${key}.json`);
 }
 
+const STALE_TEMPORARY_MS = 60 * 60_000;
+
+/** Removes ledger temporaries left by a hook that was killed between its
+ * write and its rename (the harness enforces hook timeouts). Only files
+ * older than an hour are touched, so a write in flight is never removed. */
+export function sweepStaleTemporaries(dir: string, now = Date.now()): number {
+  let removed = 0;
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  for (const name of names) {
+    if (!/\.json\.\d+\.[0-9a-f-]+\.tmp$/.test(name)) continue;
+    const file = path.join(dir, name);
+    try {
+      if (now - fs.statSync(file).mtimeMs > STALE_TEMPORARY_MS) {
+        fs.unlinkSync(file);
+        removed += 1;
+      }
+    } catch {
+      // Another hook removed it first.
+    }
+  }
+  return removed;
+}
+
 function waitBriefly(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
@@ -1421,6 +1449,7 @@ async function dispatchHook(
 ): Promise<HookCoreOutput> {
   switch (input.hook_event_name) {
     case "SessionStart":
+      sweepStaleTemporaries(runtimeDir(options));
       return sessionStart(input, client, options);
     case "PreToolUse":
       if (!input.tool_name?.startsWith("mcp__mindgraph__")) return NOOP;

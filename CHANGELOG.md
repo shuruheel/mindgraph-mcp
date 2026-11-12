@@ -9,14 +9,30 @@
   removes it. Cursor gets the code tools and the workspace-scoped resume; no hooks are
   installed by this command.
 
+- Every tool now declares whether it only reads, can remove data, is safe to repeat, and
+  reaches outside the graph (MCP tool annotations). Apps use these to decide what to run
+  without asking; before, eight of the tools declared nothing.
+- `server.json` and `mcpName` for the MCP Registry, listing both the hosted connector and
+  the npm package.
+
 ### Changed
 
+- **`mindgraph_remember` `action: "forget"` now takes two calls.** Without `confirm: true`
+  it returns a preview of what would be removed and removes nothing; call it again with
+  `confirm: true` to remove. `dry_run: true` still previews and now wins over `confirm`.
+  A caller that relied on a single forget call must add `confirm: true`.
 - The README opens with the hosted connector (`https://mindgraph.cloud/mcp`) and install
   links for Claude and Cursor; the local install is presented as the choice for hooks, code
   anchors and the workspace brief.
 - CLI help and the missing-key error point to the current API keys page
   (`/dashboard/settings/api-keys`) and mention the hosted connector. `init` is described as
   setup for Claude Desktop, Claude Code or both.
+
+### Fixed
+
+- `CHANGELOG.md` ships in the npm package; it was left out of the tarball.
+- Session start removes ledger temporaries older than an hour that a killed hook left in
+  `~/.mindgraph/runtime`.
 
 
 ## 0.26.0 (2026-11-11)

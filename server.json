@@ -1,0 +1,42 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.shuruheel/mindgraph-mcp",
+  "title": "MindGraph",
+  "description": "Persistent, typed memory for AI agents: a source-linked knowledge graph with hybrid retrieval.",
+  "websiteUrl": "https://mindgraph.cloud/docs/mcp",
+  "repository": {
+    "url": "https://github.com/shuruheel/mindgraph-mcp",
+    "source": "github"
+  },
+  "version": "0.26.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mindgraph.cloud/mcp"
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "mindgraph-mcp",
+      "version": "0.26.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "MINDGRAPH_API_KEY",
+          "description": "MindGraph organization API key (mg_...)",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "MINDGRAPH_PROFILE",
+          "description": "Tool profile: general (default) or coding",
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}
