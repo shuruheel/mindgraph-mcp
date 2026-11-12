@@ -17,6 +17,7 @@ import {
   type HookClient,
 } from "./claude-hooks.js";
 import { runCodexHook } from "./codex-hooks.js";
+import { installCursor, uninstallCursor } from "./cursor-install.js";
 import { previewCapture, readHookStats } from "./hook-core.js";
 import {
   installClaudeHooks,
@@ -465,6 +466,9 @@ USAGE:
   mindgraph-mcp install-code     Install into Claude Code (--hooks: + session hooks)
   mindgraph-mcp uninstall        Remove from Claude Desktop config
   mindgraph-mcp uninstall-code   Remove from Claude Code
+  mindgraph-mcp install-cursor   Install the local server (coding profile) into
+                                 ~/.cursor/mcp.json
+  mindgraph-mcp uninstall-cursor Remove from ~/.cursor/mcp.json
   mindgraph-mcp install-hooks --harness claude-code|codex [--scope user|project]
   mindgraph-mcp uninstall-hooks --harness claude-code|codex [--scope user|project]
   mindgraph-mcp hooks preview [transcript_path] [--session-id <id>]
@@ -783,6 +787,41 @@ async function main(): Promise<void> {
       }
       installClaudeCode(apiKey, baseUrl, agentId);
       finishCodeInstall(apiKey, baseUrl, withHooksFlag(), agentId);
+      break;
+
+    case "install-cursor": {
+      if (!apiKey) {
+        console.error(
+          "API key required. Use --api-key or set MINDGRAPH_API_KEY."
+        );
+        process.exit(1);
+      }
+      // Same identity the hooks and the Claude Code registration resolve, so
+      // work claimed in one harness is recognised in the other.
+      const result = installCursor({
+        apiKey,
+        baseUrl,
+        agentId:
+          agentId ||
+          process.env.MINDGRAPH_AGENT_ID ||
+          loadHookEnv().agentId ||
+          stableAgentId(),
+      });
+      console.log(
+        `${result.updated ? "Updated" : "Added"} MindGraph (coding profile) in ${result.file}.`
+      );
+      console.log(
+        "Open Cursor Settings › MCP to confirm the server is enabled."
+      );
+      break;
+    }
+
+    case "uninstall-cursor":
+      console.log(
+        uninstallCursor()
+          ? "Removed MindGraph from ~/.cursor/mcp.json."
+          : "MindGraph not found in ~/.cursor/mcp.json."
+      );
       break;
 
     case "uninstall":

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- `install-cursor --api-key …` writes the local server with the coding profile into
+  `~/.cursor/mcp.json` (owner-only; other servers are kept), and `uninstall-cursor`
+  removes it. Cursor gets the code tools and the workspace-scoped resume; no hooks are
+  installed by this command.
+
 ### Changed
 
 - The README opens with the hosted connector (`https://mindgraph.cloud/mcp`) and install
