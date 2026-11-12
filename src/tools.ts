@@ -1,3 +1,4 @@
+import { clampWaitSeconds, waitForJob, type ToolRuntime } from "./job-wait.js";
 import { MindGraph } from "mindgraph";
 import { createHash } from "node:crypto";
 import { toolError } from "./error-detail.js";
@@ -1052,6 +1053,13 @@ export const TOOLS: Tool[] = [
           type: "string",
           description: "Job ID to check status (for job_status action)",
         },
+        wait_seconds: {
+          type: "number",
+          minimum: 0,
+          maximum: 50,
+          description:
+            "job_status with job_id: wait up to this many seconds (max 50) for the job to finish, reporting progress, instead of returning at once. A job still running at the end comes back with still_running: true; call again to keep waiting.",
+        },
         format: {
           type: "string",
           enum: ["text", "json"],
@@ -1101,6 +1109,13 @@ export const TOOLS: Tool[] = [
         job_id: {
           type: "string",
           description: "Job ID to poll (for action='job_status')",
+        },
+        wait_seconds: {
+          type: "number",
+          minimum: 0,
+          maximum: 50,
+          description:
+            "job_status with job_id: wait up to this many seconds (max 50) for the job to finish, reporting progress, instead of returning at once. A job still running at the end comes back with still_running: true; call again to keep waiting.",
         },
         format: {
           type: "string",
@@ -1409,6 +1424,7 @@ export async function handleTool(
   name: string,
   args: Record<string, unknown>,
   memoryConfig: MemoryRuntimeConfig = {},
+  runtime: ToolRuntime = {},
 ): Promise<ToolResult> {
   try {
     if (
@@ -1455,10 +1471,10 @@ export async function handleTool(
         result = await handleSeriesQuery(client, args);
         break;
       case "mindgraph_ingest":
-        result = await handleIngest(client, args);
+        result = await handleIngest(client, args, runtime);
         break;
       case "mindgraph_synthesize":
-        result = await handleSynthesize(client, args);
+        result = await handleSynthesize(client, args, runtime);
         break;
       case "mindgraph_ontology":
         result = await handleOntology(client, args);
@@ -2754,9 +2770,34 @@ async function handleRetrieve(
 
 // ── Ingest ────────────────────────────────────────────────────────────
 
+/** `job_status` for one job: an immediate read, or a bounded wait with
+ * progress when `wait_seconds` is given. */
+async function jobStatus(
+  client: MindGraph,
+  jobId: string,
+  waitSeconds: unknown,
+  runtime: ToolRuntime,
+): Promise<ToolResult> {
+  const wait = clampWaitSeconds(waitSeconds, runtime.maxWaitSeconds);
+  if (wait === 0) return ok(await client.getJob(jobId));
+  const waited = await waitForJob(() => client.getJob(jobId), wait, runtime);
+  const job = waited.job && typeof waited.job === "object" ? waited.job : { job: waited.job };
+  return ok({
+    ...job,
+    waited_seconds: waited.waited_seconds,
+    ...(waited.still_running
+      ? {
+          still_running: true,
+          next: "The job is still running. Call job_status again with wait_seconds to keep waiting.",
+        }
+      : {}),
+  });
+}
+
 async function handleIngest(
   client: MindGraph,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  runtime: ToolRuntime = {},
 ): Promise<ToolResult> {
   const {
     action,
@@ -2888,7 +2929,7 @@ async function handleIngest(
 
     case "job_status":
       if (job_id) {
-        return ok(await client.getJob(job_id));
+        return jobStatus(client, job_id, args.wait_seconds, runtime);
       }
       // The bare list was unbounded raw JSON of every job ever; render it
       // newest-first and capped (format:"json" returns the full raw list).
@@ -2901,7 +2942,8 @@ async function handleIngest(
 
 async function handleSynthesize(
   client: MindGraph,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  runtime: ToolRuntime = {},
 ): Promise<ToolResult> {
   const { action, project_uid, signals, target_types, job_id, format } =
     args as {
@@ -2930,7 +2972,7 @@ async function handleSynthesize(
 
     case "job_status":
       if (!job_id) return err("job_id is required for action='job_status'");
-      return ok(await client.getJob(job_id));
+      return jobStatus(client, job_id, (args as { wait_seconds?: unknown }).wait_seconds, runtime);
 
     default:
       return err(`Unknown synthesize action: ${action}`);
