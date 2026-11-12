@@ -33,6 +33,7 @@ import type { MemoryRuntimeConfig } from "./memory-tool.js";
 import { getPrompt, PROMPTS } from "./prompts.js";
 import { RESOURCES, RESOURCE_TEMPLATES, readGovernedResource } from "./resources.js";
 import { handleTool, toolsForProfile } from "./tools.js";
+import type { ToolRuntime } from "./job-wait.js";
 
 export type { GeneratedToolsEntry, GovernanceLatch };
 
@@ -83,7 +84,7 @@ export function buildMindGraphServer(wiring: ServerWiring): Server {
     };
   });
 
-  server.setRequestHandler('tools/call', async (request) => {
+  server.setRequestHandler('tools/call', async (request, ctx) => {
     const { name, arguments: args } = request.params;
 
     const rawArgs = {
@@ -141,7 +142,7 @@ export function buildMindGraphServer(wiring: ServerWiring): Server {
     if (hosted && HOSTED_TOOL_NAMES.has(name)) {
       return handleHostedTool(name, toolArgs, client, hosted);
     }
-    return handleTool(client, name, toolArgs, wiring.memory);
+    return handleTool(client, name, toolArgs, wiring.memory, toolRuntime(ctx, Boolean(hosted)));
   });
 
   server.setRequestHandler('prompts/list', async () => {
@@ -239,6 +240,37 @@ export function createMindGraphServer(opts: MindGraphServerOptions): Server {
     generatedTools: perOrg(opts.caches.generatedTools, orgId, createGeneratedToolsEntry),
     hosted: { user: opts.user, orgId, orgName: opts.orgName, log: opts.log },
   });
+}
+
+/** Hosted requests are served as one JSON body by a function that is billed
+ * while it waits, so a hosted wait is shorter and carries no progress. */
+const HOSTED_MAX_JOB_WAIT_SECONDS = 25;
+
+interface CallContext {
+  mcpReq: {
+    _meta?: { progressToken?: string | number };
+    signal?: AbortSignal;
+    notify?: (notification: { method: string; params: Record<string, unknown> }) => Promise<void>;
+  };
+}
+
+function toolRuntime(ctx: unknown, hosted: boolean): ToolRuntime {
+  const request = (ctx as CallContext | undefined)?.mcpReq;
+  const token = request?._meta?.progressToken;
+  const notify = request?.notify;
+  return {
+    signal: request?.signal,
+    ...(hosted ? { maxWaitSeconds: HOSTED_MAX_JOB_WAIT_SECONDS } : {}),
+    ...(!hosted && token !== undefined && notify
+      ? {
+          progress: (update) =>
+            notify({
+              method: "notifications/progress",
+              params: { progressToken: token, ...update },
+            }),
+        }
+      : {}),
+  };
 }
 
 function jsonRpcError(status: number, code: number, message: string): Response {

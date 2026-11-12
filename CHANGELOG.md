@@ -20,6 +20,13 @@
   from ingested documents are left out; ones stated directly come before ones inferred
   from a transcript. A section that fails to load is named in a warning, never shown as
   empty. Available on the local server too.
+- **Wait for a job instead of guessing when to poll.** `job_status` on `mindgraph_ingest`
+  and `mindgraph_synthesize` takes `wait_seconds` (up to 50; 25 on the hosted connector):
+  the call stays open until the job finishes or the time is up, then returns the job with
+  `waited_seconds`, and `still_running: true` if it has not finished. The local server
+  sends MCP progress notifications ("processing: 12 of 40 chunks, 310 nodes") to a host
+  that asks for them; the hosted connector waits without progress. Without `wait_seconds`
+  the call reads the job once, as before.
 - `mindgraph_remember` `action: "restore"` undoes a forget: pass the `uid` and the
   `edge_uids` the forget returned and the memory and its connections come back. Before,
   undoing a forget meant calling the API directly. A confirmed forget now says so in its
