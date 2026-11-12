@@ -2,16 +2,14 @@
 
 ## Unreleased
 
+## 0.27.0 (2026-11-11)
+
+Chat apps get a brief at the start of a conversation, forgetting a memory takes a
+confirmation and can be undone, and a call can wait for an ingestion job. **One breaking
+change:** `forget` no longer removes on the first call.
+
 ### Added
 
-- `install-cursor --api-key …` writes the local server with the coding profile into
-  `~/.cursor/mcp.json` (owner-only; other servers are kept), and `uninstall-cursor`
-  removes it. Cursor gets the code tools and the workspace-scoped resume; no hooks are
-  installed by this command.
-
-- Every tool now declares whether it only reads, can remove data, is safe to repeat, and
-  reaches outside the graph (MCP tool annotations). Apps use these to decide what to run
-  without asking; before, eight of the tools declared nothing.
 - **A brief for chat apps.** `mindgraph_memory` `action: "context"`, `mode: "brief"` returns
   work in progress, active goals, open decisions and stored preferences in one bounded
   call (about a second against production). The hosted connector's instructions now tell
@@ -31,6 +29,14 @@
   `edge_uids` the forget returned and the memory and its connections come back. Before,
   undoing a forget meant calling the API directly. A confirmed forget now says so in its
   response (`undo_hint`).
+- `install-cursor --api-key …` writes the local server with the coding profile into
+  `~/.cursor/mcp.json` (owner-only; other servers are kept), and `uninstall-cursor`
+  removes it. Cursor gets the code tools and the workspace-scoped resume; no hooks are
+  installed by this command.
+
+- Every tool now declares whether it only reads, can remove data, is safe to repeat, and
+  reaches outside the graph (MCP tool annotations). Apps use these to decide what to run
+  without asking; before, eight of the tools declared nothing.
 - `server.json` and `mcpName` for the MCP Registry, listing both the hosted connector and
   the npm package.
 
@@ -52,7 +58,6 @@
 - `CHANGELOG.md` ships in the npm package; it was left out of the tarball.
 - Session start removes ledger temporaries older than an hour that a killed hook left in
   `~/.mindgraph/runtime`.
-
 
 ## 0.26.0 (2026-11-11)
 
