@@ -65,6 +65,19 @@ Or drop this into your Claude Desktop config by hand (`~/Library/Application Sup
 }
 ```
 
+### Cursor (local server)
+
+```bash
+npx -y mindgraph-mcp install-cursor --api-key mg_your_key_here
+```
+
+Writes the local server with the coding profile into `~/.cursor/mcp.json` (owner-only,
+other servers untouched), which gives Cursor the code tools and the workspace-scoped
+`mindgraph_memory` resume that the hosted connector cannot offer. `uninstall-cursor`
+removes it. No hooks are installed: Cursor loads Claude Code hooks from
+`~/.claude/settings.json` by default, so if you installed those they may already run in
+Cursor; that combination has not been tested in a live Cursor session yet.
+
 ### Coding agents (Claude Code)
 
 The **coding profile** turns MindGraph into a durable work substrate for coding
