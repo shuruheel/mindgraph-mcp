@@ -31,7 +31,8 @@ const HARNESS = process.env.MINDGRAPH_HARNESS || "generic";
 if (!API_KEY) {
   console.error(
     "Error: MINDGRAPH_API_KEY environment variable is required.\n" +
-      "Get your API key at https://mindgraph.cloud/dashboard/keys\n" +
+      "Get your API key at https://mindgraph.cloud/dashboard/settings/api-keys\n" +
+      "(or skip the key: add the hosted connector https://mindgraph.cloud/mcp to your app)\n" +
       "Or run: npx mindgraph-mcp init"
   );
   process.exit(1);

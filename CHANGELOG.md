@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- The README opens with the hosted connector (`https://mindgraph.cloud/mcp`) and install
+  links for Claude and Cursor; the local install is presented as the choice for hooks, code
+  anchors and the workspace brief.
+- CLI help and the missing-key error point to the current API keys page
+  (`/dashboard/settings/api-keys`) and mention the hosted connector. `init` is described as
+  setup for Claude Desktop, Claude Code or both.
+
+
 ## 0.26.0 (2026-11-11)
 
 A coding session started at a workspace root, or one folder above it, now

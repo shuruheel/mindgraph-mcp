@@ -8,9 +8,24 @@ Model Context Protocol server for [MindGraph](https://mindgraph.cloud) — plug 
 Requires Node.js 20 or later. Speaks MCP revision 2026-07-28 and the 2025
 revisions, over stdio and hosted Streamable HTTP.
 
+## Connect without installing
+
+Chat apps and editors can use the hosted connector at `https://mindgraph.cloud/mcp`: no
+package, no API key, a MindGraph sign-in in the browser.
+
+- **Claude** (claude.ai, Claude Desktop, mobile): [Add to Claude](https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=MindGraph&connectorUrl=https%3A%2F%2Fmindgraph.cloud%2Fmcp)
+- **Cursor**: [Add to Cursor](https://cursor.com/install-mcp?name=mindgraph&config=eyJ1cmwiOiJodHRwczovL21pbmRncmFwaC5jbG91ZC9tY3AifQ%3D%3D)
+- **Claude Code**: `claude mcp add --transport http mindgraph https://mindgraph.cloud/mcp`, then `/mcp` to sign in
+- **ChatGPT**: Settings › Connectors › Advanced › Developer mode › Create › paste the URL
+- **VS Code and others**: steps at [mindgraph.cloud/docs/mcp](https://mindgraph.cloud/docs/mcp#connect-an-app)
+
+Install the package (below) when you want what only a local server can do: the
+coding profile with lifecycle hooks, code anchors read from your repository, the
+workspace-scoped work brief, or Claude Desktop without a sign-in.
+
 ## Install
 
-The fastest way to install is the interactive setup:
+The fastest way to install the local server is the interactive setup:
 
 ```bash
 npx mindgraph-mcp init

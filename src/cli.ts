@@ -460,7 +460,7 @@ mindgraph-mcp — MCP server for MindGraph knowledge graphs
 
 USAGE:
   mindgraph-mcp                  Start the MCP server (stdio transport)
-  mindgraph-mcp init             Interactive setup for Claude Desktop
+  mindgraph-mcp init             Interactive setup (Claude Desktop, Claude Code or both)
   mindgraph-mcp install          Install into Claude Desktop config
   mindgraph-mcp install-code     Install into Claude Code (--hooks: + session hooks)
   mindgraph-mcp uninstall        Remove from Claude Desktop config
@@ -511,7 +511,9 @@ EXAMPLES:
   # Install into Claude Code
   npx mindgraph-mcp install-code --api-key mg_your_key_here
 
-Get your API key at: https://mindgraph.cloud/dashboard/keys
+Get your API key at: https://mindgraph.cloud/dashboard/settings/api-keys
+No install needed for chat apps: add the hosted connector https://mindgraph.cloud/mcp
+(steps: https://mindgraph.cloud/docs/mcp#connect-an-app)
 `);
 }
 
@@ -601,7 +603,7 @@ async function interactiveInit(baseUrl?: string): Promise<void> {
   if (method.trim() === "2") {
     // Manual API key entry
     apiKey = await ask(
-      "\nEnter your MindGraph API key (from mindgraph.cloud/dashboard/keys): "
+      "\nEnter your MindGraph API key (from mindgraph.cloud/dashboard/settings/api-keys): "
     );
     if (!apiKey || !apiKey.startsWith("mg_")) {
       console.error('Invalid API key. Keys start with "mg_".');
