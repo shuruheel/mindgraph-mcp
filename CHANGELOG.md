@@ -12,6 +12,10 @@
 - Every tool now declares whether it only reads, can remove data, is safe to repeat, and
   reaches outside the graph (MCP tool annotations). Apps use these to decide what to run
   without asking; before, eight of the tools declared nothing.
+- `mindgraph_remember` `action: "restore"` undoes a forget: pass the `uid` and the
+  `edge_uids` the forget returned and the memory and its connections come back. Before,
+  undoing a forget meant calling the API directly. A confirmed forget now says so in its
+  response (`undo_hint`).
 - `server.json` and `mcpName` for the MCP Registry, listing both the hosted connector and
   the npm package.
 

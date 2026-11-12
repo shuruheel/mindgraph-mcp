@@ -86,6 +86,8 @@ function makeClient() {
     "series",
     "remember",
     "forget",
+    "restore",
+    "evolve",
   ] as const;
 
   const client = {} as Record<string, ReturnType<typeof vi.fn>>;
@@ -241,8 +243,55 @@ describe("mindgraph_remember dispatch", () => {
     expect(client.forget).not.toHaveBeenCalled();
   });
 
-  it("advertises exactly the two actions", () => {
-    expect(actionEnum("mindgraph_remember")).toEqual(["remember", "forget"]);
+  it("a confirmed forget says how to undo it", async () => {
+    client.forget.mockResolvedValueOnce({ uid: "n1", action: "forgotten", edge_uids: ["e1"] });
+    const r = await handleTool(client, "mindgraph_remember", { action: "forget", uid: "n1", confirm: true });
+    const body = JSON.parse(r.content[0].text);
+    expect(body.edge_uids).toEqual(["e1"]);
+    expect(body.undo_hint).toMatch(/restore/);
+  });
+
+  it("restore brings back the node, then each distinct edge", async () => {
+    client.restore.mockResolvedValueOnce({ uid: "n1", tombstone_at: null });
+    const r = await handleTool(client, "mindgraph_remember", {
+      action: "restore",
+      uid: " n1 ",
+      edge_uids: ["e1", "e2", "e1", ""],
+      agent_id: "mcp",
+    });
+    expect(client.restore.mock.calls).toEqual([["n1", "mcp"]]);
+    expect(client.evolve.mock.calls).toEqual([
+      [{ action: "restore_edge", uid: "e1", agent_id: "mcp" }],
+      [{ action: "restore_edge", uid: "e2", agent_id: "mcp" }],
+    ]);
+    const body = JSON.parse(r.content[0].text);
+    expect(body).toMatchObject({ action: "restored", uid: "n1", edges_restored: 2 });
+    expect(body.edges_failed).toBeUndefined();
+  });
+
+  it("restore reports an edge that fails and still restores the others", async () => {
+    client.evolve.mockRejectedValueOnce(new Error("edge not found"));
+    const r = await handleTool(client, "mindgraph_remember", {
+      action: "restore",
+      uid: "n1",
+      edge_uids: ["gone", "e2"],
+    });
+    expect(r.isError).toBeFalsy();
+    const body = JSON.parse(r.content[0].text);
+    expect(body.edges_restored).toBe(1);
+    expect(body.edges_failed).toEqual([{ uid: "gone", error: "edge not found" }]);
+  });
+
+  it("restore needs a uid and a well-formed edge list", async () => {
+    expect((await handleTool(client, "mindgraph_remember", { action: "restore" })).isError).toBe(true);
+    expect(
+      (await handleTool(client, "mindgraph_remember", { action: "restore", uid: "n1", edge_uids: "e1" })).isError,
+    ).toBe(true);
+    expect(client.restore).not.toHaveBeenCalled();
+  });
+
+  it("advertises exactly the three actions", () => {
+    expect(actionEnum("mindgraph_remember")).toEqual(["remember", "forget", "restore"]);
   });
 });
 

@@ -1247,15 +1247,15 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_remember",
     description:
-      "Small-text memory fast path. 'remember' stores one fact, preference, decision or note synchronously; it is BM25- and vector-searchable the moment the call returns (the response says which). Pass a stable custom_id (e.g. 'pref:theme', 'deploy:target') so re-sending the same key UPDATES the same memory instead of creating a duplicate — that is the idempotency contract; without custom_id an exact duplicate is reused. 'forget' reversibly removes a memory by uid or custom_id (tombstone plus connected edges): the first call returns a preview of the edge uids it would remove and changes nothing; call it again with confirm=true to remove. Undo with mindgraph_capture-independent server actions /evolve restore and restore_edge. Use mindgraph_capture for typed entities, sources and skills, and mindgraph_ingest for documents longer than a few paragraphs.",
+      "Small-text memory fast path. 'remember' stores one fact, preference, decision or note synchronously; it is BM25- and vector-searchable the moment the call returns (the response says which). Pass a stable custom_id (e.g. 'pref:theme', 'deploy:target') so re-sending the same key UPDATES the same memory instead of creating a duplicate — that is the idempotency contract; without custom_id an exact duplicate is reused. 'forget' reversibly removes a memory by uid or custom_id (tombstone plus connected edges): the first call returns a preview of the edge uids it would remove and changes nothing; call it again with confirm=true to remove. 'restore' undoes a forget: pass the uid and the edge_uids the forget returned. Use mindgraph_capture for typed entities, sources and skills, and mindgraph_ingest for documents longer than a few paragraphs.",
     inputSchema: {
       type: "object" as const,
       properties: {
         action: {
           type: "string",
-          enum: ["remember", "forget"],
+          enum: ["remember", "forget", "restore"],
           description:
-            "remember = store/upsert one small text; forget = reversible removal, two steps: call once to preview, then again with confirm: true",
+            "remember = store/upsert one small text; forget = reversible removal, two steps: call once to preview, then again with confirm: true; restore = undo a forget",
         },
         text: {
           type: "string",
@@ -1272,7 +1272,15 @@ export const TOOLS: Tool[] = [
         },
         uid: {
           type: "string",
-          description: "forget: node uid to remove (alternative to custom_id)",
+          description:
+            "forget: node uid to remove (alternative to custom_id). restore: the uid a forget returned",
+        },
+        edge_uids: {
+          type: "array",
+          items: { type: "string" },
+          maxItems: 500,
+          description:
+            "restore: the edge_uids the forget returned, to bring the memory's connections back with it",
         },
         dry_run: {
           type: "boolean",
@@ -1537,6 +1545,7 @@ async function handleRemember(
     uid,
     dry_run,
     confirm,
+    edge_uids,
     cascade,
     reason,
     space_uid,
@@ -1592,7 +1601,52 @@ async function handleRemember(
           preview,
         });
       }
-      return ok(await client.forget(target, options));
+      const forgotten = await client.forget(target, options);
+      return ok({
+        ...forgotten,
+        undo_hint:
+          "To undo: mindgraph_remember action restore with this uid and these edge_uids.",
+      });
+    }
+    case "restore": {
+      if (typeof uid !== "string" || !uid.trim()) {
+        return err("restore requires the uid the forget returned");
+      }
+      if (edge_uids !== undefined && !Array.isArray(edge_uids)) {
+        return err("restore: edge_uids must be an array of edge uids");
+      }
+      const edges = [...new Set((edge_uids ?? []).filter(
+        (edge): edge is string => typeof edge === "string" && edge.trim() !== "",
+      ))];
+      if (edges.length > 500) return err("restore: at most 500 edge_uids per call");
+      const actor = typeof agent_id === "string" ? agent_id : undefined;
+      const node = await client.restore(uid.trim(), actor);
+      // The node is back at this point. An edge that fails to restore is
+      // reported by uid so the caller can retry it; it never hides the rest.
+      const failed: Array<{ uid: string; error: string }> = [];
+      let restored = 0;
+      for (const edge of edges) {
+        try {
+          await client.evolve({
+            action: "restore_edge",
+            uid: edge,
+            ...(actor ? { agent_id: actor } : {}),
+          });
+          restored += 1;
+        } catch (error) {
+          failed.push({
+            uid: edge,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      return ok({
+        action: "restored",
+        uid: uid.trim(),
+        node,
+        edges_restored: restored,
+        ...(failed.length > 0 ? { edges_failed: failed } : {}),
+      });
     }
     default:
       return err(`Unknown remember action: ${String(action)}`);
