@@ -280,3 +280,123 @@ describe("tool-selection conformance", () => {
     expect(actionEnum("mindgraph_memory")).not.toContain(action);
   });
 });
+
+describe("mode='brief' (conversation-start orientation)", () => {
+  const config = { serverVersion: "0.test", baseUrl: "https://api.example.test", orgId: "org-1", agentId: "mcp:host:user" };
+  const node = (uid: string, label: string, props: Record<string, unknown> = {}) => ({ uid, label, node_type: "X", props });
+
+  it("reads work, goals, decisions and preferences in one call and renders them by section", async () => {
+    const c = client({
+      plan: vi.fn(async () => ({
+        action: "resume_work",
+        status: "eligible",
+        task: { uid: "task-1", label: "Ship the connector", props: { status: "in_progress" } },
+        other_eligible: [{ uid: "task-2", label: "Write the listing", status: "todo", scope_uids: [] }],
+        eligible_total: 2,
+      })),
+      getGoals: vi.fn(async () => [node("goal-1", "Reach 100 connected apps", { status: "active" })]),
+      getOpenDecisions: vi.fn(async () => [node("dec-1", "Which directory first?")]),
+      retrieve: vi.fn(async () => [{ node: node("pref-1", "Prefers short answers"), score: 0.9 }]),
+    });
+    const result = await handleMemoryTool(c, { action: "context", mode: "brief", project_uid: "proj-1" }, config);
+    expect(result.isError).toBeFalsy();
+    expect(c.plan).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "resume_work", limit: 6, scope_uids: ["proj-1"], agent_id: "mcp:host:user" }),
+    );
+    expect(c.retrieve).toHaveBeenCalledWith(expect.objectContaining({ action: "preferences" }));
+    const text = result.content[0].text;
+    expect(text).toContain("## Work in progress");
+    expect(text).toContain("[task-1]");
+    expect(text).toContain("## Active goals\n- Reach 100 connected apps [goal-1] — active");
+    expect(text).toContain("## Open decisions\n- Which directory first? [dec-1]");
+    expect(text).toContain("## Preferences\n- Prefers short answers [pref-1]");
+    const structured = result.structuredContent as Record<string, any>;
+    expect(structured.mode).toBe("brief");
+    expect(structured.retrieval_trace.strategy).toBe("brief");
+    expect(structured.items.map((item: { uid: string }) => item.uid)).toEqual(
+      expect.arrayContaining(["task-1", "goal-1", "dec-1", "pref-1"]),
+    );
+    expect(structured.warnings.map((w: { code: string }) => w.code)).not.toContain("brief_section_unavailable");
+  });
+
+  it("names a section that failed instead of presenting it as empty", async () => {
+    const c = client({
+      getGoals: vi.fn(async () => {
+        throw new Error("503");
+      }),
+      getOpenDecisions: vi.fn(async () => []),
+      retrieve: vi.fn(async () => []),
+    });
+    const result = await handleMemoryTool(c, { action: "context", mode: "brief" }, config);
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("Nothing to orient on yet");
+    const warning = (result.structuredContent as Record<string, any>).warnings.find(
+      (w: { code: string }) => w.code === "brief_section_unavailable",
+    );
+    expect(warning.message).toContain("goals");
+    expect(warning.message).not.toContain("preferences");
+  });
+
+  it("counts what a long section leaves out", async () => {
+    const goals = Array.from({ length: 9 }, (_, index) => node(`goal-${index}`, `Goal ${index}`));
+    const c = client({
+      getGoals: vi.fn(async () => goals),
+      getOpenDecisions: vi.fn(async () => []),
+      retrieve: vi.fn(async () => []),
+    });
+    const text = (await handleMemoryTool(c, { action: "context", mode: "brief" }, config)).content[0].text;
+    expect(text).toContain("## Active goals (6 shown, 3 more)");
+    expect(text).toContain("[goal-5]");
+    expect(text).not.toContain("[goal-6]");
+  });
+
+  it("lists the member's own goals most recent first, without document-extracted ones or coding-only sections", async () => {
+    const c = client({
+      plan: vi.fn(async () => ({
+        action: "resume_work",
+        status: "eligible",
+        task: { uid: "task-1", label: "Ship", props: {} },
+        other_eligible: [{ uid: "task-2", label: "Next", status: "todo", scope_uids: [] }],
+        code_targets: [{ uid: "repo-1", label: "github.com/x/y", node_type: "Entity" }],
+        selection_reason: "blocked",
+      })),
+      getGoals: vi.fn(async () => [
+        { ...node("goal-old", "Old goal"), updated_at: 10 },
+        { ...node("goal-new", "New goal"), updated_at: 20 },
+        { ...node("goal-inferred", "Inferred from a transcript", { source: "session" }), updated_at: 99 },
+        { ...node("goal-doc", "A goal a book's subject had", { source: "document" }), updated_at: 30 },
+      ]),
+      getOpenDecisions: vi.fn(async () => []),
+      retrieve: vi.fn(async () => []),
+    });
+    const text = (await handleMemoryTool(c, { action: "context", mode: "brief" }, config)).content[0].text;
+    expect(text.indexOf("[goal-new]")).toBeLessThan(text.indexOf("[goal-old]"));
+    expect(text.indexOf("[goal-old]")).toBeLessThan(text.indexOf("[goal-inferred]"));
+    expect(text).not.toContain("[goal-doc]");
+    expect(text).toContain("- Next [task-2]");
+    expect(text).not.toContain("Other scopes");
+    expect(text).not.toContain("Code targets");
+    expect(text).not.toContain("### Selection");
+  });
+
+  it("is an error only when every section fails", async () => {
+    const failing = vi.fn(async () => {
+      throw new Error("down");
+    });
+    const c = client({ plan: failing, getGoals: failing, getOpenDecisions: failing, retrieve: failing });
+    const result = await handleMemoryTool(c, { action: "context", mode: "brief" }, config);
+    expect(result.isError).toBe(true);
+  });
+
+  it("stays inside the output budget", async () => {
+    const goals = Array.from({ length: 6 }, (_, index) => node(`goal-${index}`, "x".repeat(400)));
+    const c = client({
+      getGoals: vi.fn(async () => goals),
+      getOpenDecisions: vi.fn(async () => goals.map((g) => ({ ...g, uid: `d-${g.uid}` }))),
+      retrieve: vi.fn(async () => []),
+    });
+    const text = (await handleMemoryTool(c, { action: "context", mode: "brief", max_output_chars: 600 }, config)).content[0].text;
+    expect(text.length).toBeLessThanOrEqual(600);
+    expect(text).toContain("brief truncated");
+  });
+});

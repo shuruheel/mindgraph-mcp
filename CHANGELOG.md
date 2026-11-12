@@ -12,6 +12,14 @@
 - Every tool now declares whether it only reads, can remove data, is safe to repeat, and
   reaches outside the graph (MCP tool annotations). Apps use these to decide what to run
   without asking; before, eight of the tools declared nothing.
+- **A brief for chat apps.** `mindgraph_memory` `action: "context"`, `mode: "brief"` returns
+  work in progress, active goals, open decisions and stored preferences in one bounded
+  call (about a second against production). The hosted connector's instructions now tell
+  the model to call it once at the start of every conversation, since claude.ai, ChatGPT
+  and Claude Desktop have no hook that could inject it. Goals and decisions extracted
+  from ingested documents are left out; ones stated directly come before ones inferred
+  from a transcript. A section that fails to load is named in a warning, never shown as
+  empty. Available on the local server too.
 - `mindgraph_remember` `action: "restore"` undoes a forget: pass the `uid` and the
   `edge_uids` the forget returned and the memory and its connections come back. Before,
   undoing a forget meant calling the API directly. A confirmed forget now says so in its
