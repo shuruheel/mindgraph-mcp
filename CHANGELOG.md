@@ -33,7 +33,6 @@ change:** `forget` no longer removes on the first call.
   `~/.cursor/mcp.json` (owner-only; other servers are kept), and `uninstall-cursor`
   removes it. Cursor gets the code tools and the workspace-scoped resume; no hooks are
   installed by this command.
-
 - Every tool now declares whether it only reads, can remove data, is safe to repeat, and
   reaches outside the graph (MCP tool annotations). Apps use these to decide what to run
   without asking; before, eight of the tools declared nothing.
