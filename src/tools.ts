@@ -269,6 +269,12 @@ export const TOOLS: Tool[] = [
         },
       ],
     },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
   },
   {
     name: "mindgraph_reason",
@@ -365,6 +371,12 @@ export const TOOLS: Tool[] = [
       },
       required: ["action"],
     },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
   },
   {
     name: "mindgraph_commit",
@@ -455,6 +467,12 @@ export const TOOLS: Tool[] = [
         },
       },
       required: ["action"],
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
     },
   },
   {
@@ -883,6 +901,12 @@ export const TOOLS: Tool[] = [
       },
       required: ["action"],
     },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
   },
   {
     name: "mindgraph_series_query",
@@ -1041,6 +1065,12 @@ export const TOOLS: Tool[] = [
       },
       required: ["action"],
     },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
   },
   {
     name: "mindgraph_synthesize",
@@ -1084,6 +1114,12 @@ export const TOOLS: Tool[] = [
         },
       },
       required: ["action"],
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
     },
   },
   {
@@ -1201,18 +1237,25 @@ export const TOOLS: Tool[] = [
       },
       required: ["action"],
     },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
   },
   {
     name: "mindgraph_remember",
     description:
-      "Small-text memory fast path. 'remember' stores one fact, preference, decision or note synchronously; it is BM25- and vector-searchable the moment the call returns (the response says which). Pass a stable custom_id (e.g. 'pref:theme', 'deploy:target') so re-sending the same key UPDATES the same memory instead of creating a duplicate — that is the idempotency contract; without custom_id an exact duplicate is reused. 'forget' reversibly removes a memory by uid or custom_id (tombstone plus connected edges): call it with dry_run=true first to see the edge uids it would remove, then without. Undo with mindgraph_capture-independent server actions /evolve restore and restore_edge. Use mindgraph_capture for typed entities, sources and skills, and mindgraph_ingest for documents longer than a few paragraphs.",
+      "Small-text memory fast path. 'remember' stores one fact, preference, decision or note synchronously; it is BM25- and vector-searchable the moment the call returns (the response says which). Pass a stable custom_id (e.g. 'pref:theme', 'deploy:target') so re-sending the same key UPDATES the same memory instead of creating a duplicate — that is the idempotency contract; without custom_id an exact duplicate is reused. 'forget' reversibly removes a memory by uid or custom_id (tombstone plus connected edges): the first call returns a preview of the edge uids it would remove and changes nothing; call it again with confirm=true to remove. Undo with mindgraph_capture-independent server actions /evolve restore and restore_edge. Use mindgraph_capture for typed entities, sources and skills, and mindgraph_ingest for documents longer than a few paragraphs.",
     inputSchema: {
       type: "object" as const,
       properties: {
         action: {
           type: "string",
           enum: ["remember", "forget"],
-          description: "remember = store/upsert one small text; forget = reversible removal",
+          description:
+            "remember = store/upsert one small text; forget = reversible removal, two steps: call once to preview, then again with confirm: true",
         },
         text: {
           type: "string",
@@ -1234,6 +1277,11 @@ export const TOOLS: Tool[] = [
         dry_run: {
           type: "boolean",
           description: "forget: preview the affected edge uids without changing anything",
+        },
+        confirm: {
+          type: "boolean",
+          description:
+            "forget: must be true to remove anything. Without it, forget returns a preview of what would be removed and changes nothing.",
         },
         cascade: {
           type: "boolean",
@@ -1263,6 +1311,12 @@ export const TOOLS: Tool[] = [
         },
       },
       required: ["action"],
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
     },
   },
   MEMORY_TOOL,
@@ -1482,6 +1536,7 @@ async function handleRemember(
     label,
     uid,
     dry_run,
+    confirm,
     cascade,
     reason,
     space_uid,
@@ -1520,10 +1575,23 @@ async function handleRemember(
             : null;
       if (!target) return err("forget requires uid or custom_id");
       const options: Record<string, unknown> = {};
-      if (dry_run === true) options.dry_run = true;
       if (typeof cascade === "boolean") options.cascade = cascade;
       if (typeof reason === "string" && reason.trim()) options.reason = reason;
       if (typeof agent_id === "string") options.agent_id = agent_id;
+      // Removal takes two calls: a model that reaches for forget by mistake
+      // gets a preview back, not a tombstone. An explicit dry_run wins over
+      // confirm, so a preview can never remove anything.
+      if (dry_run === true || confirm !== true) {
+        const preview = await client.forget(target, { ...options, dry_run: true });
+        if (dry_run === true) return ok(preview);
+        return ok({
+          confirmation_required: true,
+          removed: false,
+          message:
+            "Nothing was removed. This is a preview of what forget would remove. Call forget again with the same target and confirm: true to remove it.",
+          preview,
+        });
+      }
       return ok(await client.forget(target, options));
     }
     default:

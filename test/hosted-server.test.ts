@@ -127,8 +127,9 @@ describe("hosted tools/list (A9)", () => {
     expect(byName.get("whoami")!._meta?.["openai/profile"]).toBe(true);
     expect(byName.get("search")!.outputSchema).toBeDefined();
     expect(byName.get("fetch")!.outputSchema).toBeDefined();
-    // The static tool objects are shared with stdio and must stay undecorated.
-    expect((toolsForProfile("general")[0] as Decorated).annotations).toBeUndefined();
+    // The static tool objects are shared with stdio and must stay undecorated:
+    // they carry their own behaviour hints but never the hosted security scheme.
+    expect((toolsForProfile("general")[0] as Decorated)._meta).toBeUndefined();
     await mcp.close();
   });
 

@@ -185,17 +185,49 @@ describe("mindgraph_remember dispatch", () => {
     });
     expect(client.forget.mock.calls[0]).toEqual([
       { custom_id: "pref:theme" },
-      { dry_run: true, agent_id: "mcp" },
+      { agent_id: "mcp", dry_run: true },
     ]);
   });
 
-  it("forget by uid takes precedence over custom_id", async () => {
+  it("forget without confirm previews and removes nothing", async () => {
+    client.forget.mockResolvedValueOnce({ dry_run: true, edge_uids: ["e1"] });
+    const r = await handleTool(client, "mindgraph_remember", {
+      action: "forget",
+      custom_id: "pref:theme",
+      reason: "stale",
+    });
+    expect(client.forget).toHaveBeenCalledTimes(1);
+    expect(client.forget.mock.calls[0]).toEqual([
+      { custom_id: "pref:theme" },
+      { reason: "stale", dry_run: true },
+    ]);
+    expect(r.isError).toBeFalsy();
+    const body = JSON.parse(r.content[0].text);
+    expect(body.confirmation_required).toBe(true);
+    expect(body.removed).toBe(false);
+    expect(body.preview).toEqual({ dry_run: true, edge_uids: ["e1"] });
+    expect(body.message).toMatch(/confirm: true/);
+  });
+
+  it("an explicit dry_run stays a preview even with confirm", async () => {
+    await handleTool(client, "mindgraph_remember", {
+      action: "forget",
+      uid: "n1",
+      dry_run: true,
+      confirm: true,
+    });
+    expect(client.forget).toHaveBeenCalledTimes(1);
+    expect(client.forget.mock.calls[0][1]).toEqual({ dry_run: true });
+  });
+
+  it("forget with confirm removes; uid takes precedence over custom_id", async () => {
     await handleTool(client, "mindgraph_remember", {
       action: "forget",
       uid: "n1",
       custom_id: "pref:theme",
       cascade: false,
       reason: "stale",
+      confirm: true,
     });
     expect(client.forget.mock.calls[0]).toEqual([
       { uid: "n1" },
