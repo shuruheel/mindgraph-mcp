@@ -12,7 +12,8 @@ const HIDDEN_CONTEXT_NODE_TYPES = new Set(["Chunk", "Document", "Article"]);
 const HIDDEN_CONTEXT_EDGE_TYPES = new Set(["POSSIBLE_DUPLICATE", "PossibleDuplicate"]);
 
 type Rec = Record<string, unknown>;
-type MemoryClient = Pick<MindGraph, "retrieveContext" | "plan">;
+type MemoryClient = Pick<MindGraph, "retrieveContext" | "plan"> &
+  Partial<Pick<MindGraph, "getGoals" | "getOpenDecisions" | "retrieve">>;
 
 export interface MemoryRuntimeConfig {
   serverVersion?: string;
@@ -35,7 +36,7 @@ export interface MemoryToolResult {
 export const MEMORY_TOOL: Tool = {
   name: "mindgraph_memory",
   description:
-    "Read the portable MindGraph memory surface. Use action='context' with mode='resume' or 'continuity' for authoritative task-first work state, and mode='topic' with a short keyword query for prior knowledge relevant to the user's request. Use action='status' to inspect integration capabilities and limitations. This tool never writes; durable capture and correction use the existing typed MindGraph write tools.",
+    "Read the portable MindGraph memory surface. Use action='context' with mode='brief' once at the start of a conversation for work in progress, active goals, open decisions and preferences; mode='resume' or 'continuity' for authoritative task-first work state, and mode='topic' with a short keyword query for prior knowledge relevant to the user's request. Use action='status' to inspect integration capabilities and limitations. This tool never writes; durable capture and correction use the existing typed MindGraph write tools.",
   inputSchema: {
     type: "object",
     properties: {
@@ -46,9 +47,9 @@ export const MEMORY_TOOL: Tool = {
       },
       mode: {
         type: "string",
-        enum: ["topic", "continuity", "resume"],
+        enum: ["topic", "continuity", "resume", "brief"],
         description:
-          "Context strategy. topic uses query-shaped retrieval; continuity/resume use authoritative task-first resume_work.",
+          "Context strategy. brief is the conversation-start orientation: work in progress, active goals, open decisions and stored preferences in one bounded call. topic uses query-shaped retrieval; continuity/resume use authoritative task-first resume_work.",
       },
       query: {
         type: "string",
@@ -137,7 +138,7 @@ export const MEMORY_TOOL: Tool = {
       capabilities: { type: "object" },
       degradation: { type: "array", items: { type: "object" } },
       context_id: { type: "string" },
-      mode: { type: "string", enum: ["topic", "continuity", "resume"] },
+      mode: { type: "string", enum: ["topic", "continuity", "resume", "brief"] },
       scope: { type: "object" },
       rendered_context: { type: "string" },
       rendered_hash: { type: "string" },
@@ -370,6 +371,160 @@ function resumeCandidates(raw: unknown): Rec[] {
   return items;
 }
 
+const BRIEF_SECTION_ITEMS = 6;
+/** The selected task plus five others: a chat brief is read every conversation. */
+const BRIEF_WORK_LIMIT = 6;
+/** Resume sections that only help a coding session. */
+const BRIEF_DROPPED_WORK_SECTIONS = /^### (?:Code targets|Recent executions|Selection)\n(?:(?!### ).*\n?)*/gm;
+
+function inferred(value: unknown): number {
+  const node = obj(obj(value)?.node) ?? obj(value);
+  return text(obj(node?.props)?.source) ? 1 : 0;
+}
+
+function updatedAt(value: unknown): number {
+  const node = obj(obj(value)?.node) ?? obj(value);
+  return typeof node?.updated_at === "number" ? node.updated_at : 0;
+}
+const BRIEF_LABEL_CHARS = 160;
+
+function briefLine(item: Rec, detail?: string): string {
+  const label = text(item.label) ?? "(unlabeled)";
+  const shown =
+    label.length > BRIEF_LABEL_CHARS ? `${label.slice(0, BRIEF_LABEL_CHARS - 1)}…` : label;
+  return `- ${shown} [${String(item.uid)}]${detail ? ` — ${detail}` : ""}`;
+}
+
+/** One section: up to six items, the rest counted, never silently dropped. */
+function briefSection(title: string, values: unknown, type: string): { text?: string; items: Rec[] } {
+  const all = (Array.isArray(values) ? values : [])
+    .map((value) => {
+      const item = compactItem(value, type);
+      if (!item) return undefined;
+      const node = obj(obj(value)?.node) ?? obj(value);
+      const status = text(obj(node?.props)?.status);
+      return { item, status };
+    })
+    .filter((entry): entry is { item: Rec; status: string | undefined } => Boolean(entry));
+  if (all.length === 0) return { items: [] };
+  const shown = all.slice(0, BRIEF_SECTION_ITEMS);
+  const more = all.length - shown.length;
+  return {
+    text: [
+      `## ${title}${more > 0 ? ` (${shown.length} shown, ${more} more)` : ""}`,
+      ...shown.map(({ item, status }) => briefLine(item, status)),
+    ].join("\n"),
+    items: shown.map(({ item }) => item),
+  };
+}
+
+/**
+ * The orientation a chat app reads at the start of a conversation, where no
+ * hook can inject one: work in progress, active goals, open decisions and
+ * stored preferences. Sections are read in parallel; one that fails is named
+ * in `unavailable` and left out, so an empty section always means "none".
+ */
+async function conversationBrief(
+  client: MemoryClient,
+  args: Rec,
+  agentId: string | undefined,
+  budget: number,
+): Promise<{ raw: Rec; rendered: string; candidates: Rec[]; unavailable: string[] } | undefined> {
+  const scopeUids = Array.from(
+    new Set([
+      ...(Array.isArray(args.scope_uids) ? args.scope_uids.map(String) : []),
+      ...(text(args.project_uid) ? [text(args.project_uid)!] : []),
+    ]),
+  );
+  const [work, goals, decisions, preferences] = await Promise.allSettled([
+    client.plan(
+      defined({
+        action: "resume_work",
+        scope_uids: scopeUids.length > 0 ? scopeUids : undefined,
+        limit: BRIEF_WORK_LIMIT,
+        agent_id: agentId,
+      }) as never,
+    ),
+    client.getGoals ? client.getGoals() : Promise.reject(new Error("unsupported")),
+    client.getOpenDecisions ? client.getOpenDecisions() : Promise.reject(new Error("unsupported")),
+    client.retrieve
+      ? client.retrieve({ action: "preferences", k: BRIEF_SECTION_ITEMS + 2 } as never)
+      : Promise.reject(new Error("unsupported")),
+  ]);
+  const settled = { work, goals, decisions, preferences };
+  const unavailable = Object.entries(settled)
+    .filter(([, result]) => result.status === "rejected")
+    .map(([name]) => (name === "work" ? "work in progress" : name === "decisions" ? "open decisions" : name));
+  if (unavailable.length === 4) return undefined;
+  const value = <T>(result: PromiseSettledResult<T>) =>
+    result.status === "fulfilled" ? result.value : undefined;
+
+  const sections: string[] = [];
+  const candidates: Rec[] = [];
+  const workRaw = value(work);
+  // Work gets half the budget; the three lists are short by construction.
+  const workPayload = obj(workRaw);
+  const hasWork =
+    Boolean(obj(workPayload?.task)) ||
+    (Array.isArray(workPayload?.other_eligible) && workPayload.other_eligible.length > 0);
+  const workText = hasWork
+    ? renderResumeContext(workRaw, Math.floor(budget / 2))
+        // The resume renderer titles its own document; here it is one section.
+        ?.replace(/^# Resume context[^\n]*\n+/, "")
+        .replace(/^## /gm, "### ")
+        .replace(BRIEF_DROPPED_WORK_SECTIONS, "")
+        // No repository names when hosted, so the grouping label says nothing.
+        .replace(/^- Other scopes: /gm, "- ")
+        .trimEnd()
+    : undefined;
+  if (workText) {
+    sections.push(`## Work in progress\n${workText}`);
+    candidates.push(...resumeCandidates(workRaw));
+  }
+  // Goals and decisions arrive in storage order; most recently touched first.
+  // Preferences arrive most salient first and keep that order.
+  // A goal or decision extracted from an ingested document (`source:
+  // "document"`) belongs to that document's subject, not to the member; a
+  // graph with a few books in it had 30 of 53 goals of that kind.
+  const recentFirst = (values: unknown) =>
+    Array.isArray(values)
+      ? values
+          .filter((entry) => {
+            const node = obj(obj(entry)?.node) ?? obj(entry);
+            return text(obj(node?.props)?.source) !== "document";
+          })
+          // Stated directly (no `source`) before inferred from a transcript
+          // (`source: "session"`); most recently touched first within each.
+          .sort((a, b) => inferred(a) - inferred(b) || updatedAt(b) - updatedAt(a))
+      : values;
+  for (const [title, values, type] of [
+    ["Active goals", recentFirst(value(goals)), "Goal"],
+    ["Open decisions", recentFirst(value(decisions)), "Decision"],
+    ["Preferences", value(preferences), "Preference"],
+  ] as const) {
+    const section = briefSection(title, values, type);
+    if (section.text) sections.push(section.text);
+    candidates.push(...section.items);
+  }
+  const body =
+    sections.length > 0
+      ? sections.join("\n\n")
+      : "Nothing to orient on yet: no work in progress, active goals, open decisions or stored preferences.";
+  const rendered =
+    body.length > budget ? `${body.slice(0, Math.max(0, budget - 40)).trimEnd()}\n…[brief truncated to the output budget]` : body;
+  return {
+    raw: defined({
+      work: workRaw,
+      goals: value(goals),
+      decisions: value(decisions),
+      preferences: value(preferences),
+    }),
+    rendered,
+    candidates,
+    unavailable,
+  };
+}
+
 function visibleItems(candidates: Rec[], rendered: string): Rec[] {
   const seen = new Set<string>();
   return candidates.filter((item) => {
@@ -479,18 +634,27 @@ export async function handleMemoryTool(
   }
 
   const mode = text(args.mode) ?? (text(args.query) ? "topic" : undefined);
-  if (!mode || !["topic", "continuity", "resume"].includes(mode)) {
-    return error("action='context' requires mode='topic', 'continuity', or 'resume'");
+  if (!mode || !["topic", "continuity", "resume", "brief"].includes(mode)) {
+    return error("action='context' requires mode='brief', 'topic', 'continuity', or 'resume'");
   }
   const budget = outputBudget(args.max_output_chars);
   const agentId = text(args.agent_id) ?? config.agentId;
   let raw: unknown;
   let rendered: string;
-  let strategy: "retrieve_context" | "resume_work";
+  let strategy: "retrieve_context" | "resume_work" | "brief";
   let candidates: Rec[];
   let workspace: RepositoryScope | undefined;
+  let briefUnavailable: string[] = [];
 
-  if (mode === "topic") {
+  if (mode === "brief") {
+    const brief = await conversationBrief(client, args, agentId, budget);
+    if (!brief) {
+      return error("The brief could not be read: every section failed. Try mode='resume' or mode='topic'.");
+    }
+    ({ raw, rendered, candidates } = brief);
+    briefUnavailable = brief.unavailable;
+    strategy = "brief";
+  } else if (mode === "topic") {
     const query = text(args.query);
     if (!query) return error("mode='topic' requires a non-empty query of 1-3 discriminating keywords");
     const limit =
@@ -611,6 +775,14 @@ export async function handleMemoryTool(
     }),
     warnings: [
       ...contextWarnings(raw, rendered, candidates.length, items.length),
+      ...(briefUnavailable.length > 0
+        ? [
+            {
+              code: "brief_section_unavailable",
+              message: `Not read, so absent from this brief (not evidence there are none): ${briefUnavailable.join(", ")}.`,
+            },
+          ]
+        : []),
       ...(workspace && workspace.failures.length > 0
         ? [
             {

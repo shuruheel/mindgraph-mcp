@@ -138,6 +138,10 @@ describe("hosted tools/list (A9)", () => {
     const head = String(mcp.getInstructions() ?? "").slice(0, 512);
     expect(head).toContain("persistent knowledge graph via MindGraph");
     expect(head).toContain("agent_id");
+    // Chat apps have no session-start hook: the instruction to fetch the
+    // brief must survive a host that keeps only the head of the instructions.
+    expect(head).toContain("mode `brief`");
+    expect(head).toContain("start of every conversation");
     await mcp.close();
   });
 });
