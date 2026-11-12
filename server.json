@@ -8,7 +8,7 @@
     "url": "https://github.com/shuruheel/mindgraph-mcp",
     "source": "github"
   },
-  "version": "0.26.0",
+  "version": "0.27.0",
   "remotes": [
     {
       "type": "streamable-http",
@@ -20,7 +20,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "mindgraph-mcp",
-      "version": "0.26.0",
+      "version": "0.27.0",
       "transport": {
         "type": "stdio"
       },
