@@ -721,7 +721,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_retrieve",
     description:
-      "Search and explore the knowledge graph. NOT for work state: for 'what was I working on' or resuming work, use mindgraph_plan action resume_work (structural, deterministic) — this tool is semantic/keyword recall over ALL knowledge. Use 'context' (default) for BM25 keyword retrieval plus bounded cheapest-first graph expansion — returns graph nodes only by default (labels, summaries, types, confidence); set include_chunks=true to also get full source text. Pass 1-3 discriminating keywords, not sentences. GOOD: 'Kissinger NATO'. BAD: 'What is Kissinger\\'s view on NATO?'. Use 'document_index' to list all ingested documents (titles, dates, UIDs) for orientation. Use 'semantic' when keywords return nothing — conceptual/fuzzy queries. Use 'hybrid' for keyword + semantic. Use 'text' for fast keyword-only. Use 'neighborhood'/'chain'/'path'/'subgraph' for graph traversal — traversal steps carry the cheapest witness path_cost (lower = stronger connection; sum of -ln(edge weight)), path_confidence, and witness depth. Use 'preferences' for advice or recommendation requests ('suggest a hotel', 'what should I read?') — it returns the user's stated/learned preferences relevant to the query (pass the topic as 'query'), so your answer reflects what they actually like instead of being generic. Other structured actions ('active_goals', 'open_questions', etc.) only when the user explicitly asks.",
+      "Search and explore the knowledge graph. NOT for work state: for 'what was I working on' or resuming work, use mindgraph_plan action resume_work (structural, deterministic) — this tool is semantic/keyword recall over ALL knowledge. Use 'context' (default) for BM25 keyword retrieval plus bounded cheapest-first graph expansion — returns graph nodes (labels, summaries, types, confidence), plus source text when the server includes it by default; include_chunks=true forces source text, false excludes it. Pass 1-3 discriminating keywords, not sentences. GOOD: 'Kissinger NATO'. BAD: 'What is Kissinger\\'s view on NATO?'. Use 'document_index' to list all ingested documents (titles, dates, UIDs) for orientation. Use 'semantic' when keywords return nothing — conceptual/fuzzy queries. Use 'hybrid' for keyword + semantic. Use 'text' for fast keyword-only. Use 'neighborhood'/'chain'/'path'/'subgraph' for graph traversal — traversal steps carry the cheapest witness path_cost (lower = stronger connection; sum of -ln(edge weight)), path_confidence, and witness depth. Use 'preferences' for advice or recommendation requests ('suggest a hotel', 'what should I read?') — it returns the user's stated/learned preferences relevant to the query (pass the topic as 'query'), so your answer reflects what they actually like instead of being generic. Other structured actions ('active_goals', 'open_questions', etc.) only when the user explicitly asks.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -869,7 +869,7 @@ export const TOOLS: Tool[] = [
         },
         include_chunks: {
           type: "boolean",
-          description: "Include source document chunks in context results (default: false — set true to fetch full chunk text for citations or deep reading)",
+          description: "Source document text in context results. Omit to let the server decide (it may include some by default); true fetches full chunk text for citations or deep reading; false excludes it.",
         },
         include_graph: {
           type: "boolean",
@@ -2521,7 +2521,12 @@ async function handleRetrieve(
           node_limit: limit,
           node_types,
           layer,
-          chunk_limit: include_chunks ? (limit ?? 5) : 0,
+          // RD2: no include_chunks lets the server decide whether a text read
+          // carries source text (MINDGRAPH_CONTEXT_SOURCE_DEFAULT; an omitted
+          // chunk_limit is 0 on servers without it). An explicit choice wins.
+          ...(include_chunks === undefined || include_chunks === null
+            ? {}
+            : { chunk_limit: include_chunks ? (limit ?? 5) : 0 }),
           // Scoped by default, never walled: the coding profile drops the
           // document/article leg (the "Bob Work" class of noise) unless the
           // model opts in for a genuinely document-shaped question. Any

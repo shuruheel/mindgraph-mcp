@@ -102,7 +102,7 @@ Capture knowledge when the user shares something worth remembering:
 - If a local harness task remains unfinished and should become authoritative outside that local list, promote it once with a stable idempotency key when the graph-managed composite actions are available; otherwise do not copy it.
 - \`capture\`: "entity"/"observation" for facts, "journal" for personal/informal
 - \`reason\`: "claim" when evidence exists, "open_question"/"hypothesis" otherwise
-- \`retrieve\`: "context" returns graph nodes only by default — set include_chunks=true for source text
+- \`retrieve\`: "context" returns graph nodes, plus source text when the server includes it by default — include_chunks=true forces source text, false excludes it
 - \`retrieve\`: "context" (FTS default) → "semantic" (conceptual fallback) → "hybrid" (both)
 - \`retrieve\`: "neighborhood"/"chain"/"path"/"subgraph" for graph exploration
 - \`code\`: pass path + symbol + signature when names are overloaded; ambiguity never writes
