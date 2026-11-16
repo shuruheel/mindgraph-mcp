@@ -26,6 +26,8 @@ async function connect(mode: "auto" | "legacy") {
     env: {
       PATH: process.env.PATH ?? "",
       HOME: home,
+      // hooks.json is found through the account's home directory, not HOME.
+      MINDGRAPH_HOME: path.join(home, ".mindgraph"),
       MINDGRAPH_API_KEY: "mg_live_test_not_a_real_key",
       MINDGRAPH_BASE_URL: "http://127.0.0.1:9",
       MINDGRAPH_GOVERNANCE: "off",
