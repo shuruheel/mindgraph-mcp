@@ -38,6 +38,7 @@ import {
 import { codexHookOutput, runCodexHook } from "./codex-hooks.js";
 import { installCursor, uninstallCursor } from "./cursor-install.js";
 import { formatHookStats, offOutput, previewCapture, readHookStats, recordFailOpen } from "./hook-core.js";
+import { formatScope } from "./action-line.js";
 import {
   gateFloorWarning,
   installClaudeHooks,
@@ -528,6 +529,13 @@ USAGE:
   mindgraph-mcp hooks stats [--session-id <id>]
                                  Per-event hook calls, time and characters
                                  injected for a session (latest by default).
+  mindgraph-mcp hooks scope [--session-id <id>]
+                                 Check that every memory item the hooks
+                                 injected came from that place's own memory
+                                 space and none was named at an edited file
+                                 after the session replaced it; exits 1 if
+                                 not (prompt-recall items whose space the
+                                 server did not report count as unchecked).
   mindgraph-mcp on [path]        Turn MindGraph on for a repository or workspace
                                  (asks first; run it in your own terminal)
   mindgraph-mcp off [path]       Turn MindGraph off for a repository or workspace
@@ -1086,7 +1094,7 @@ async function main(): Promise<void> {
     }
 
     case "hooks": {
-      if (positionals[0] === "stats") {
+      if (positionals[0] === "stats" || positionals[0] === "scope") {
         const stats = readHookStats(parseArgs(process.argv).sessionId);
         if (!stats) {
           console.error(
@@ -1094,12 +1102,17 @@ async function main(): Promise<void> {
           );
           process.exit(1);
         }
+        if (positionals[0] === "scope") {
+          console.log(`Session ${stats.sessionId}. ${formatScope(stats.scope)}`);
+          if (stats.scope.problems.length) process.exit(1);
+          break;
+        }
         console.log(formatHookStats(stats));
         break;
       }
       if (positionals[0] !== "preview") {
         console.error(
-          "Usage: mindgraph-mcp hooks preview [transcript_path] [--session-id <id>]\n       mindgraph-mcp hooks stats [--session-id <id>]"
+          "Usage: mindgraph-mcp hooks preview [transcript_path] [--session-id <id>]\n       mindgraph-mcp hooks stats|scope [--session-id <id>]"
         );
         process.exit(1);
       }
