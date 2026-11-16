@@ -8,6 +8,8 @@ import { CodegraphAdapter } from "../src/codegraph.js";
 import { handleMemoryTool } from "../src/memory-tool.js";
 import { renderResumeContext } from "../src/render.js";
 import { resolveRepositoryScope } from "../src/workspace-scope.js";
+import type { OnDecision, PinnedRepository } from "../src/consent.js";
+import { consentOn, sha256File, workspaceEntry, writeStore } from "./fixtures/consent.js";
 
 const cleanup: string[] = [];
 function tempDir(prefix: string): string {
@@ -73,22 +75,72 @@ function hookClient(resume: Record<string, unknown>) {
   return { client, plans };
 }
 
-async function sessionStart(cwd: string, client: HookClient): Promise<string> {
+async function sessionStart(
+  cwd: string,
+  client: HookClient,
+  consent?: OnDecision,
+): Promise<string> {
   const output = await runClaudeHook(
     { hook_event_name: "SessionStart", session_id: `h2-${path.basename(cwd)}`, cwd, source: "startup" },
     client,
-    { agentId: "h2-agent", runtimeDir: tempDir("mindgraph-h2-runtime-") },
+    {
+      agentId: "h2-agent",
+      runtimeDir: tempDir("mindgraph-h2-runtime-"),
+      ...(consent ? { consent } : {}),
+    },
   );
   return JSON.stringify(output);
 }
 
+/** The workspace turned on with both repositories pinned, for an event in `cwd`. */
+function workspaceOn(workspace: string, cwd: string): OnDecision {
+  const repositories: PinnedRepository[] = ["a", "b"].map((name) => ({
+    root: path.join(workspace, name),
+    repo_id: `example/${name}`,
+    space_uid: null,
+  }));
+  return consentOn(workspace, repositories, {
+    directory: cwd,
+    repo: repositories.find((r) => r.root === cwd),
+  });
+}
+
 describe("H2 — the work brief covers the workspace, not one folder", () => {
-  it("from the directory above a workspace, lists the other eligible work by repository", async () => {
-    // Failure prevented: a session started in the parent of the checkouts
-    // was told no durable work exists, or shown one task and nothing else.
-    const { parent } = workspaceUnderParent();
+  it("from the directory above a workspace, the session is off and makes no requests", async () => {
+    // Before consent, a session started in the parent of the checkouts read
+    // the workspace below it and loaded its work. The parent was never turned
+    // on, so now nothing happens there, even with the workspace itself on.
+    const { parent, workspace } = workspaceUnderParent();
+    const file = path.join(workspace, ".mindgraph", "workspace.json");
+    const store = writeStore(process.env.MINDGRAPH_HOME!, [
+      workspaceEntry(workspace, { file, sha256: sha256File(file) }, [
+        { root: path.join(workspace, "a"), repo_id: "example/a", space_uid: null },
+        { root: path.join(workspace, "b"), repo_id: "example/b", space_uid: null },
+      ]),
+    ]);
+    try {
+      const sessions: unknown[] = [];
+      const { client, plans } = hookClient(WORKSPACE_BRIEF);
+      client.session = async (request) => {
+        sessions.push(request);
+        return { uid: "session-graph" };
+      };
+      // No consent option: the hook decides from the store, as in production.
+      expect(await sessionStart(parent, client)).toBe("{}");
+      expect(sessions).toEqual([]);
+      expect(plans).toEqual([]);
+      // The workspace root itself is on, from the same store.
+      await sessionStart(workspace, client);
+      expect(plans.find((request) => request.action === "resume_work")).toBeDefined();
+    } finally {
+      fs.rmSync(store, { force: true });
+    }
+  });
+
+  it("from the workspace root, lists the other eligible work by repository", async () => {
+    const { workspace } = workspaceUnderParent();
     const { client, plans } = hookClient(WORKSPACE_BRIEF);
-    const context = await sessionStart(parent, client);
+    const context = await sessionStart(workspace, client, workspaceOn(workspace, workspace));
 
     const resume = plans.find((request) => request.action === "resume_work")!;
     expect([...(resume.scope_uids as string[])].sort()).toEqual(["uid:example/a", "uid:example/b"]);
@@ -111,7 +163,7 @@ describe("H2 — the work brief covers the workspace, not one folder", () => {
     const { workspace } = workspaceUnderParent();
     for (const cwd of [workspace, path.join(workspace, "a")]) {
       const { client, plans } = hookClient(WORKSPACE_BRIEF);
-      await sessionStart(cwd, client);
+      await sessionStart(cwd, client, workspaceOn(workspace, cwd));
       const resume = plans.find((request) => request.action === "resume_work")!;
       expect([...(resume.scope_uids as string[])].sort()).toEqual(["uid:example/a", "uid:example/b"]);
     }
@@ -121,7 +173,11 @@ describe("H2 — the work brief covers the workspace, not one folder", () => {
     const root = tempDir("mindgraph-h2-single-");
     fs.mkdirSync(path.join(root, ".git"));
     const { client, plans } = hookClient({ ...WORKSPACE_BRIEF, other_eligible: [], eligible_total: 1 });
-    const context = await sessionStart(root, client);
+    const context = await sessionStart(
+      root,
+      client,
+      consentOn(root, [{ root, repo_id: "example/single", space_uid: null }]),
+    );
     const resume = plans.find((request) => request.action === "resume_work")!;
     expect(resume.scope_uids).toHaveLength(1);
     expect(resume).not.toHaveProperty("limit");
@@ -130,10 +186,10 @@ describe("H2 — the work brief covers the workspace, not one folder", () => {
   });
 
   it("a server that predates the list still yields the one-task brief", async () => {
-    const { parent } = workspaceUnderParent();
+    const { workspace } = workspaceUnderParent();
     const { task, selection_reason } = WORKSPACE_BRIEF;
     const { client } = hookClient({ action: "resume_work", task, selection_reason });
-    const context = await sessionStart(parent, client);
+    const context = await sessionStart(workspace, client, workspaceOn(workspace, workspace));
     expect(context).toContain("Ship the B change [task-b1]");
     expect(context).not.toContain("Other eligible work");
   });

@@ -17,6 +17,10 @@ import {
   uninstallClaudeHooks,
 } from "../src/hook-installer.js";
 import { loadHookEnv, saveHookEnv } from "../src/hook-env.js";
+import { consentOn, pinned } from "./fixtures/consent.js";
+
+/** The hooks in this file run where MindGraph is on (the event cwd). */
+const ON = consentOn(os.tmpdir(), [pinned(os.tmpdir())]);
 
 const FIXTURE = path.join(__dirname, "fixtures", "claude-transcript.jsonl");
 const cleanup: string[] = [];
@@ -161,8 +165,8 @@ describe("UserPromptSubmit recall", () => {
   it("records per-event hook statistics for the session", async () => {
     const runtimeDir = tempDir();
     const { client } = fake(CONTEXT);
-    await runClaudeHook(promptInput("How should we bound prompt recall?"), client, { runtimeDir });
-    await runClaudeHook(promptInput("Something unrelated entirely to anything stored"), client, { runtimeDir });
+    await runClaudeHook(promptInput("How should we bound prompt recall?"), client, { consent: ON, runtimeDir });
+    await runClaudeHook(promptInput("Something unrelated entirely to anything stored"), client, { consent: ON, runtimeDir });
     const stats = readHookStats(undefined, { runtimeDir })!;
     expect(stats.events.UserPromptSubmit.count).toBe(2);
     expect(stats.events.UserPromptSubmit.injectedChars).toBe(
@@ -187,6 +191,7 @@ describe("UserPromptSubmit recall", () => {
     const runtimeDir = tempDir();
     const { client, requests } = fake(CONTEXT);
     const first = await runClaudeHook(promptInput("How should we bound prompt recall?"), client, {
+      consent: ON,
       runtimeDir,
     });
     expect(requests[0]).toEqual({
@@ -203,6 +208,7 @@ describe("UserPromptSubmit recall", () => {
       },
     });
     const second = await runClaudeHook(promptInput("Bound prompt recall again please"), client, {
+      consent: ON,
       runtimeDir,
     });
     expect(second).toEqual({});
@@ -211,10 +217,11 @@ describe("UserPromptSubmit recall", () => {
   it("fails open on errors, timeouts and when disabled", async () => {
     const runtimeDir = tempDir();
     const failing = fake(() => Promise.reject(new Error("503")));
-    expect(await runClaudeHook(promptInput("what about the deploy plan"), failing.client, { runtimeDir })).toEqual({});
+    expect(await runClaudeHook(promptInput("what about the deploy plan"), failing.client, { consent: ON, runtimeDir })).toEqual({});
     const hanging = fake(() => new Promise(() => undefined));
     expect(
       await runClaudeHook(promptInput("what about the deploy plan"), hanging.client, {
+        consent: ON,
         runtimeDir,
         promptRecallTimeoutMs: 20,
       }),
@@ -222,6 +229,7 @@ describe("UserPromptSubmit recall", () => {
     const disabled = fake(CONTEXT);
     expect(
       await runClaudeHook(promptInput("what about the deploy plan"), disabled.client, {
+        consent: ON,
         runtimeDir,
         promptRecall: false,
       }),
@@ -257,10 +265,10 @@ describe("transcript capture", () => {
       transcript_path: transcript,
     };
     // Off by default: nothing is sent.
-    expect(await runClaudeHook(input, client, { runtimeDir, agentId: "a1" })).toEqual({});
+    expect(await runClaudeHook(input, client, { consent: ON, runtimeDir, agentId: "a1" })).toEqual({});
     expect(ingests).toHaveLength(0);
 
-    await runClaudeHook(input, client, { runtimeDir, agentId: "a1", capture: true });
+    await runClaudeHook(input, client, { consent: ON, runtimeDir, agentId: "a1", capture: true });
     expect(ingests).toHaveLength(1);
     expect(ingests[0]).toEqual({
       content:
@@ -276,7 +284,7 @@ describe("transcript capture", () => {
     expect(sent).not.toContain("private reasoning");
 
     // Nothing new: no second ingest. New turns: only those are sent, at SessionEnd too.
-    await runClaudeHook(input, client, { runtimeDir, agentId: "a1", capture: true });
+    await runClaudeHook(input, client, { consent: ON, runtimeDir, agentId: "a1", capture: true });
     expect(ingests).toHaveLength(1);
     fs.appendFileSync(
       transcript,
@@ -288,7 +296,7 @@ describe("transcript capture", () => {
     await runClaudeHook(
       { ...input, hook_event_name: "SessionEnd", reason: "exit" },
       client,
-      { runtimeDir, agentId: "a1", capture: true },
+      { consent: ON, runtimeDir, agentId: "a1", capture: true },
     );
     expect(ingests).toHaveLength(2);
     expect(ingests[1].content).toBe("User: One more question");
@@ -308,9 +316,9 @@ describe("transcript capture", () => {
       hook_event_name: "PreCompact",
       transcript_path: transcript,
     };
-    expect(await runClaudeHook(input, client, { runtimeDir, capture: true })).toEqual({});
+    expect(await runClaudeHook(input, client, { consent: ON, runtimeDir, capture: true })).toEqual({});
     fail = false;
-    await runClaudeHook(input, client, { runtimeDir, capture: true });
+    await runClaudeHook(input, client, { consent: ON, runtimeDir, capture: true });
     expect(sent).toHaveLength(1);
   });
 });

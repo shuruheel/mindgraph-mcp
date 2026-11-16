@@ -4,7 +4,13 @@ import * as os from "os";
 import * as crypto from "crypto";
 import { execFileSync } from "child_process";
 import { MindGraph } from "mindgraph";
-import { loadHookEnv, saveHookEnv, stableAgentId } from "./hook-env.js";
+import {
+  loadHookEnv,
+  resolvedHookFeatures,
+  saveHookEnv,
+  stableAgentId,
+} from "./hook-env.js";
+import { consentFor, eventDirectory } from "./consent.js";
 import {
   classifyMcpAddFailure,
   mcpAddFailureOutput,
@@ -12,13 +18,15 @@ import {
 } from "./cli-args.js";
 import { httpSkillsApi, skillsPull, skillsPush } from "./skills-cli.js";
 import {
+  claudeHookOutput,
   readHookInput,
   runClaudeHook,
+  type ClaudeHookInput as HookInput,
   type HookClient,
 } from "./claude-hooks.js";
-import { runCodexHook } from "./codex-hooks.js";
+import { codexHookOutput, runCodexHook } from "./codex-hooks.js";
 import { installCursor, uninstallCursor } from "./cursor-install.js";
-import { previewCapture, readHookStats } from "./hook-core.js";
+import { offOutput, previewCapture, readHookStats } from "./hook-core.js";
 import {
   installClaudeHooks,
   installCodexHooks,
@@ -896,9 +904,9 @@ async function main(): Promise<void> {
       console.log(`Saved hook connection settings to ${envPath} (mode 600)`);
       if (!apiKey && !baseUrl) {
         console.log(
-          "Note: hooks resolve MINDGRAPH_API_KEY/MINDGRAPH_BASE_URL from the " +
-            "environment or ~/.mindgraph/hooks.json — pass --api-key/--base-url " +
-            "to persist them now."
+          "Note: hooks read the API key and base URL only from " +
+            `${envPath} — pass --api-key/--base-url ` +
+            "to save them now."
         );
       }
       break;
@@ -923,31 +931,44 @@ async function main(): Promise<void> {
     }
 
     case "hook": {
-      // Command hooks must fail open. A missing key or transient API failure
-      // disables context/checkpoint nudges but never blocks Claude Code.
-      // Resolution order: process env / flags, then ~/.mindgraph/hooks.json.
-      const stored = loadHookEnv();
+      // Command hooks must fail open: nothing here may block the harness.
       const hookHarness = harness || "claude-code";
       if (hookHarness !== "claude-code" && hookHarness !== "codex") {
         throw new Error("--harness must be claude-code or codex");
       }
-      const hookApiKey = apiKey ?? stored.apiKey;
-      const hookBaseUrl = baseUrl ?? stored.baseUrl;
+      const wire = hookHarness === "codex" ? codexHookOutput : claudeHookOutput;
+      let input: HookInput;
+      try {
+        input = await readHookInput();
+      } catch (error) {
+        recordHookHealth(hookHarness, (error as Error)?.message || "unreadable hook input");
+        process.stdout.write("{}\n");
+        break;
+      }
+      // MindGraph acts only in a directory the user turned it on for. Outside
+      // one, the hook checks no key, writes no file and builds no client.
+      const decision = consentFor(eventDirectory(input));
+      if (decision.state !== "on") {
+        process.stdout.write(`${JSON.stringify(wire(offOutput(input, decision)))}\n`);
+        break;
+      }
+      // The destination comes only from hooks.json, which the user's own
+      // install wrote; the hook environment cannot redirect it.
+      const stored = loadHookEnv();
+      const hookApiKey = stored.apiKey;
+      const hookBaseUrl = stored.baseUrl || "https://api.mindgraph.cloud";
       if (!hookApiKey) {
         recordHookHealth(hookHarness, "no-api-key");
         process.stdout.write("{}\n");
         break;
       }
       try {
-        const input = await readHookInput();
         const client = new MindGraph({
-          baseUrl: hookBaseUrl || "https://api.mindgraph.cloud",
+          baseUrl: hookBaseUrl,
           apiKey: hookApiKey,
-          // Hooks run with the harness's environment, which usually lacks
-          // MINDGRAPH_ORG_ID even when the MCP registration pins it — on a
-          // multi-org key the hooks would otherwise track work in the key's
-          // DEFAULT org while the MCP tools write to the pinned one.
-          orgId: process.env.MINDGRAPH_ORG_ID || stored.orgId,
+          // The org pin is stored beside the key, so hooks and the MCP tools
+          // write to the same organization on a multi-org key.
+          orgId: stored.orgId,
           maxRetries: 0,
           telemetrySurface: "mcp",
           // Prompt recall must never hold the prompt: abort the request at
@@ -956,38 +977,26 @@ async function main(): Promise<void> {
             ? { timeoutMs: 4_000 }
             : {}),
         });
+        const features = resolvedHookFeatures(stored);
         const hookOptions = {
+          consent: decision,
           // Recall runs only for an explicit opt-in: a UserPromptSubmit entry
           // left in a settings file no install has refreshed does nothing.
-          promptRecall: stored.promptRecall === true,
-          capture: stored.capture,
+          promptRecall: features.promptRecall,
+          capture: features.capture,
           // No harness-name fallback here: hook-core derives a stable
           // per-user default shared by both harnesses, which is what lets a
           // task claimed under Codex rebind under Claude Code.
           agentId: process.env.MINDGRAPH_AGENT_ID || stored.agentId,
           scopeCacheTenant: crypto.createHash("sha256")
-            .update(
-              [
-                hookBaseUrl || "https://api.mindgraph.cloud",
-                hookApiKey,
-                process.env.MINDGRAPH_ORG_ID || stored.orgId || "",
-              ].join("\n"),
-            )
+            .update([hookBaseUrl, hookApiKey, stored.orgId || ""].join("\n"))
             .digest("hex")
             .slice(0, 16),
         };
         const output =
           hookHarness === "codex"
-            ? await runCodexHook(
-                input,
-                client as unknown as HookClient,
-                hookOptions
-              )
-            : await runClaudeHook(
-                input,
-                client as unknown as HookClient,
-                hookOptions
-              );
+            ? await runCodexHook(input, client as unknown as HookClient, hookOptions)
+            : await runClaudeHook(input, client as unknown as HookClient, hookOptions);
         clearHookHealth(hookHarness);
         process.stdout.write(`${JSON.stringify(output)}\n`, () => {
           // A recall that hit its deadline can leave a socket open that keeps

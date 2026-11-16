@@ -10,6 +10,12 @@ import {
   installCodexHooks,
   uninstallCodexHooks,
 } from "../src/hook-installer.js";
+import { consentOn, pinned } from "./fixtures/consent.js";
+
+/** MindGraph turned on for the single repository at `root`. */
+function on(root: string) {
+  return consentOn(root, [pinned(root)]);
+}
 
 const cleanup: string[] = [];
 
@@ -31,6 +37,9 @@ function fakeClient() {
   const plans: Array<Record<string, unknown>> = [];
   let revision = "first";
   const client: HookClient = {
+    async entity() {
+      return { uid: "repository-codex", status: "existing" };
+    },
     async session(request) {
       sessions.push(request);
       return { uid: "codex-session-graph" };
@@ -92,15 +101,18 @@ describe("Codex normalized hook adapter", () => {
     const first = await runCodexHook(input, fixture.client, {
       agentId: "codex-b7",
       runtimeDir,
+      consent: on(cwd),
     });
     const repeated = await runCodexHook(input, fixture.client, {
       agentId: "codex-b7",
       runtimeDir,
+      consent: on(cwd),
     });
     fixture.changeBrief();
     const changed = await runCodexHook(input, fixture.client, {
       agentId: "codex-b7",
       runtimeDir,
+      consent: on(cwd),
     });
 
     expect(
@@ -131,7 +143,7 @@ describe("Codex normalized hook adapter", () => {
         source: "startup",
       },
       fixture.client,
-      { agentId: "codex-b7", runtimeDir },
+      { agentId: "codex-b7", runtimeDir, consent: on(cwd) },
     );
 
     const output = await runCodexHook(
@@ -152,7 +164,7 @@ describe("Codex normalized hook adapter", () => {
         },
       },
       fixture.client,
-      { agentId: "codex-b7", runtimeDir },
+      { agentId: "codex-b7", runtimeDir, consent: on(cwd) },
     );
     const hookOutput = output.hookSpecificOutput as Record<string, unknown>;
     const updated = hookOutput.updatedInput as Record<string, unknown>;
@@ -188,7 +200,7 @@ describe("Codex normalized hook adapter", () => {
         source: "startup",
       },
       fixture.client,
-      { agentId: "codex-b7", runtimeDir },
+      { agentId: "codex-b7", runtimeDir, consent: on(cwd) },
     );
     for (const toolUseId of ["tool_1", "tool_2"]) {
       await runCodexHook(
@@ -202,7 +214,7 @@ describe("Codex normalized hook adapter", () => {
           tool_response: { ok: true },
         },
         fixture.client,
-        { agentId: "codex-b7", runtimeDir },
+        { agentId: "codex-b7", runtimeDir, consent: on(cwd) },
       );
     }
 
@@ -214,7 +226,7 @@ describe("Codex normalized hook adapter", () => {
         stop_hook_active: false,
       },
       fixture.client,
-      { agentId: "codex-b7", runtimeDir },
+      { agentId: "codex-b7", runtimeDir, consent: on(cwd) },
     );
     const reentry = await runCodexHook(
       {
@@ -224,7 +236,7 @@ describe("Codex normalized hook adapter", () => {
         stop_hook_active: true,
       },
       fixture.client,
-      { agentId: "codex-b7", runtimeDir },
+      { agentId: "codex-b7", runtimeDir, consent: on(cwd) },
     );
     await runCodexHook(
       {
@@ -234,7 +246,7 @@ describe("Codex normalized hook adapter", () => {
         reason: "other",
       },
       fixture.client,
-      { agentId: "codex-b7", runtimeDir },
+      { agentId: "codex-b7", runtimeDir, consent: on(cwd) },
     );
 
     expect(firstStop).toMatchObject({ decision: "block" });
@@ -266,7 +278,7 @@ describe("Codex normalized hook adapter", () => {
         source: "startup",
       },
       fixture.client,
-      { agentId: "codex-b7", runtimeDir },
+      { agentId: "codex-b7", runtimeDir, consent: on(cwd) },
     );
     for (const toolName of ["apply_patch", "apply_patch"]) {
       await runCodexHook(
@@ -279,7 +291,7 @@ describe("Codex normalized hook adapter", () => {
           tool_response: { ok: true },
         },
         fixture.client,
-        { agentId: "codex-b7", runtimeDir },
+        { agentId: "codex-b7", runtimeDir, consent: on(cwd) },
       );
     }
     await runCodexHook(
@@ -292,7 +304,7 @@ describe("Codex normalized hook adapter", () => {
         tool_response: { uid: "skill-1", status: "candidate" },
       },
       fixture.client,
-      { agentId: "codex-b7", runtimeDir },
+      { agentId: "codex-b7", runtimeDir, consent: on(cwd) },
     );
 
     const stopped = await runCodexHook(
@@ -303,7 +315,7 @@ describe("Codex normalized hook adapter", () => {
         stop_hook_active: false,
       },
       fixture.client,
-      { agentId: "codex-b7", runtimeDir },
+      { agentId: "codex-b7", runtimeDir, consent: on(cwd) },
     );
     expect(stopped).toEqual({});
   });

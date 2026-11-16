@@ -7,6 +7,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { built } from "./fixtures/consent.js";
 
 const ENTRY = path.join(__dirname, "..", "dist", "index.js");
 const cleanup: string[] = [];
@@ -39,7 +40,7 @@ async function connect(mode: "auto" | "legacy") {
   return mcp;
 }
 
-describe.runIf(fs.existsSync(ENTRY))("stdio entry protocol eras", () => {
+describe.runIf(built(ENTRY))("stdio entry protocol eras", () => {
   it("serves a 2026-07-28 host", async () => {
     const mcp = await connect("auto");
     expect(mcp.getNegotiatedProtocolVersion()).toBe("2026-07-28");

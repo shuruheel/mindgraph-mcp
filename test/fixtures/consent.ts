@@ -188,3 +188,42 @@ export function countingFs(): { fs: ConsentFs; counts: FsCounts } {
     },
   };
 }
+
+/** Every file and directory under `dir` with its size, mode and content hash;
+ * {} when `dir` does not exist. Two equal snapshots mean nothing was written. */
+export function snapshotTree(dir: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const walk = (current: string) => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      const rel = path.relative(dir, full);
+      const stat = fs.lstatSync(full);
+      if (entry.isDirectory()) {
+        out[`${rel}/`] = `dir ${stat.mode}`;
+        walk(full);
+      } else if (entry.isSymbolicLink()) {
+        out[rel] = `link ${fs.readlinkSync(full)}`;
+      } else {
+        out[rel] = `file ${stat.size} ${stat.mode} ${sha256File(full)}`;
+      }
+    }
+  };
+  walk(dir);
+  return out;
+}
+
+/** Whether a built file a spawn-based suite needs exists. Locally a missing
+ * build skips the suite; in CI, which builds before testing, it is an error. */
+export function built(file: string): boolean {
+  if (fs.existsSync(file)) return true;
+  if (process.env.CI) {
+    throw new Error(`${file} is missing; run npm run build before the tests.`);
+  }
+  return false;
+}
