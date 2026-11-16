@@ -26,6 +26,17 @@ import {
 } from "./hook-memory.js";
 import { nodeGit } from "./consent-plan.js";
 import {
+  actionCandidate,
+  actionSpentLine,
+  checkScope,
+  formatScope,
+  renderActionLine,
+  worktreeTop,
+  type ActionCandidate,
+  type ScopeRecord,
+  type ScopeResult,
+} from "./action-line.js";
+import {
   anchorTable,
   CHARS_PER_TOKEN,
   DEFAULT_BUDGET_TOKENS,
@@ -37,6 +48,7 @@ import {
   selectIndex,
   workChars,
   writePrivateJson,
+  type IndexItem,
   type IndexState,
 } from "./session-block.js";
 
@@ -107,17 +119,32 @@ interface RuntimeLedger {
    * budget. */
   contextEpoch?: number;
   /** Tokens injected per `<agent>#<epoch>` against the session budget. */
-  /** Per-context token budgets. `spentNoted`: prompt recall has already said
-   * once in this context that the budget is spent. */
-  budgets?: Record<string, { limit: number; used: number; spentNoted?: boolean }>;
+  budgets?: Record<string, ContextBudget>;
   /** The last session block injected. */
   block?: { titles: number; leftOut: number; tokens: number; budget: number; handles: string[] };
   /** Handles the model opened with mindgraph_memory action=open. */
   handlesOpened?: string[];
   /** Times a hook failed open (injected nothing extra), and the last one. */
   failOpen?: { count: number; last?: { event: string; reason: string; at: number } };
+  /** Action-time lines shown, and lines left out because the budget was spent. */
+  actionLines?: { shown: number; withheld: number };
+  /** What the scope check reads: items a hook may inject and those it did. */
+  scope?: ScopeRecord;
   updatedAt: number;
 }
+
+interface ContextBudget {
+  limit: number;
+  used: number;
+  /** Prompt recall has said once in this context that the budget is spent. */
+  spentNoted?: boolean;
+  /** The action-time line has said so. */
+  actionSpent?: boolean;
+  /** Real paths that already had their action-time line in this context. */
+  files?: string[];
+}
+
+const SCOPE_RECORD_MAX = 300;
 
 export interface HookRuntimeOptions {
   runtimeDir?: string;
@@ -159,6 +186,8 @@ interface CoreHookRuntimeOptions extends HookRuntimeOptions {
 /** Options inside a consented root: the decision is always an on decision. */
 interface GatedHookRuntimeOptions extends CoreHookRuntimeOptions {
   decision: OnDecision;
+  /** The name this event's time is recorded under in `hooks stats`. */
+  stat?: { event: string };
 }
 
 export interface HookEventStats {
@@ -1041,6 +1070,9 @@ async function sessionStart(
       ledger.lastLeaseRenewalAt = undefined;
     }
     ledger.lastBriefHash = briefHash;
+    if (index.state.state === "ok") {
+      recordScope(ledger, index.state.selection.read.items, inject ? block.handles : [], options.decision.space_uid ?? "");
+    }
     return inject;
   });
   if (index.state.state === "ok") {
@@ -1062,6 +1094,29 @@ async function sessionStart(
     return { kind: "context", context: contextText, ...(notice ? { notice } : {}) };
   }
   return notice ? { kind: "notice", message: notice } : NOOP;
+}
+
+/** Records, for the scope check, where each item a hook may inject (shown
+ * in the block or anchored to a file) is stored, and which were injected. */
+function recordScope(ledger: RuntimeLedger, items: IndexItem[], injected: string[], space: string): void {
+  const scope = (ledger.scope ??= {});
+  const known = (scope.known ??= {});
+  const shown = new Set(injected);
+  let size = Object.keys(known).length;
+  // Shown items first, so a full record never loses one that was injected.
+  for (const item of [...items.filter((i) => shown.has(i.handle)), ...items.filter((i) => !shown.has(i.handle) && i.anchors.length)]) {
+    if (!(item.handle in known) && size++ >= SCOPE_RECORD_MAX) break;
+    known[item.handle] = [item.uid, item.space];
+  }
+  noteInjected(scope, injected, space);
+}
+
+function noteInjected(scope: ScopeRecord, handles: string[], space: string): void {
+  const record = (scope.injected ??= {});
+  let size = Object.keys(record).length;
+  for (const handle of handles) {
+    if (handle in record || size++ < SCOPE_RECORD_MAX) record[handle] = space;
+  }
 }
 
 /** The developer's one line at session start (shown only behind a switch:
@@ -1234,13 +1289,29 @@ const FENCED_PLAN_ACTIONS = new Set([
 async function postTool(
   input: HookInput,
   client: HookClient,
-  options: CoreHookRuntimeOptions,
+  options: GatedHookRuntimeOptions,
 ): Promise<HookCoreOutput> {
   const name = input.tool_name || "";
   const args = input.tool_input || {};
   const action = string(args.action);
   const payload = responsePayload(input.tool_response);
   const nowSeconds = (options.now || (() => Date.now() / 1000))();
+  // The action-time line reads local files only; whether it is shown is
+  // decided under the ledger lock with the budget.
+  let candidate: ActionCandidate | undefined;
+  if (options.harness === "claude-code") {
+    try {
+      const decision = options.decision;
+      const root = decision.repo?.root ?? decision.root;
+      // In a linked worktree the table is still keyed by the main checkout.
+      const worktree = decision.reason === "consented_worktree" ? worktreeTop(decision.directory) : undefined;
+      candidate = actionCandidate(input, { root, worktree }, anchorTablePath(input.session_id, options));
+    } catch (error) {
+      recordFailOpen(input.session_id, "PostToolUse", `action line: ${(error as Error)?.message}`, options);
+    }
+  }
+  let actionText: string | undefined;
+  let actionError: unknown;
   let renewal:
     | {
         kind: "heartbeat" | "reclaim";
@@ -1276,6 +1347,18 @@ async function postTool(
         (name.includes("mindgraph_plan") && action === "assess_risk")
       ) {
         ledger.memoryWritten = true;
+      }
+    }
+    // A replaced item is not named again at action time this session.
+    if (name.startsWith("mcp__mindgraph__") && typeof args.supersedes_uid === "string" && !payload?.error) {
+      const replaced = ((ledger.scope ??= {}).replaced ??= []);
+      if (!replaced.includes(args.supersedes_uid) && replaced.length < SCOPE_RECORD_MAX) replaced.push(args.supersedes_uid);
+    }
+    if (candidate) {
+      try {
+        actionText = actionLine(ledger, candidate, input, options);
+      } catch (error) {
+        actionError = error;
       }
     }
     // An opened item's text starts with its handle; an error is JSON.
@@ -1396,7 +1479,13 @@ async function postTool(
     }
     return undefined;
   });
+  if (actionError) {
+    recordFailOpen(input.session_id, "PostToolUse", `action line: ${(actionError as Error)?.message}`, options);
+  }
   if (renewal) {
+    // Lease renewal keeps its network call; its time is reported apart from
+    // the injection path's.
+    if (options.stat) options.stat.event = "PostToolUse/renew";
     const active = renewal;
     try {
       const response = object(
@@ -1460,7 +1549,53 @@ async function postTool(
       }
     }
   }
-  return NOOP;
+  return actionText ? { kind: "context", context: actionText, event: "PostToolUse" } : NOOP;
+}
+
+/**
+ * The action-time line for a file this context has not had one for, charged
+ * to the context's budget. When the budget cannot hold one title, a single
+ * line says so once per context; after that nothing is said, and each line
+ * left out is counted. In-memory only: it runs under the ledger lock.
+ */
+function actionLine(
+  ledger: RuntimeLedger,
+  candidate: ActionCandidate,
+  input: HookInput,
+  options: GatedHookRuntimeOptions,
+): string | undefined {
+  const limit = options.budgetTokens ?? DEFAULT_BUDGET_TOKENS;
+  const entry = ((ledger.budgets ??= {})[`${input.agent_id || "main"}#${ledger.contextEpoch ?? 0}`] ??= { limit, used: 0 });
+  const files = (entry.files ??= []);
+  if (files.includes(candidate.real)) return undefined;
+  if (files.length < 200) files.push(candidate.real);
+  const scope = (ledger.scope ??= {});
+  const replaced = new Set(scope.replaced ?? []);
+  const uid = (handle: string) => scope.known?.[handle]?.[0] ?? "";
+  // The file is read and hashed only here, once a line is to be composed.
+  const entries = candidate.entries
+    .filter((e) => !replaced.has(uid(e.handle)))
+    .map((e) => ({ ...e, stale: candidate.stale(e) }));
+  if (entries.length === 0) return undefined;
+  const counts = (ledger.actionLines ??= { shown: 0, withheld: 0 });
+  const line = renderActionLine({ ...candidate, entries }, Math.max(0, entry.limit - entry.used) * CHARS_PER_TOKEN);
+  let text: string;
+  if (line) {
+    counts.shown += 1;
+    noteInjected(scope, line.handles, options.decision.space_uid ?? "");
+    const named = (scope.named ??= []);
+    for (const handle of line.handles) {
+      if (named.length < SCOPE_RECORD_MAX) named.push([handle, uid(handle), scope.replaced?.length ?? 0]);
+    }
+    text = line.text;
+  } else {
+    counts.withheld += 1;
+    if (entry.actionSpent) return undefined;
+    entry.actionSpent = true;
+    text = actionSpentLine(entry.limit, entries.length);
+  }
+  entry.used += Math.ceil(text.length / CHARS_PER_TOKEN);
+  return text;
 }
 
 /** Adopt the server's current fencing state from a structured conflict
@@ -1592,7 +1727,7 @@ function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
 async function promptRecall(
   input: HookInput,
   client: HookClient,
-  options: CoreHookRuntimeOptions,
+  options: GatedHookRuntimeOptions,
 ): Promise<HookCoreOutput> {
   if (
     options.promptRecall === false ||
@@ -1608,7 +1743,8 @@ async function promptRecall(
       client.retrieveContext(promptRecallRequest(query)),
       options.promptRecallTimeoutMs ?? 4_000,
     );
-    const recalled = renderPromptRecall(response, query);
+    const shown: Array<[string, string]> = [];
+    const recalled = renderPromptRecall(response, query, shown);
     if (!recalled) return NOOP;
     const hash = crypto.createHash("sha256").update(recalled).digest("hex");
     // Recall spends the same per-context budget as the session block: lines
@@ -1631,6 +1767,14 @@ async function promptRecall(
       if (kept.length === 1) {
         if (entry.spentNoted) return undefined;
         entry.spentNoted = true;
+      }
+      // Recall reads across spaces: each item injected is recorded with the
+      // space the response gave it, for the scope check.
+      const record = ((ledger.scope ??= {}).recalled ??= {});
+      for (const [key, space] of shown.slice(0, kept.length - 1)) {
+        if (key in record || Object.keys(record).length < SCOPE_RECORD_MAX) {
+          record[key] = [space, options.decision.space_uid ?? ""];
+        }
       }
       if (cut) kept.push(`${cut} recalled line${cut === 1 ? "" : "s"} left out: this context's ${limit.toLocaleString("en-US")}-token memory budget is spent.`);
       const text = kept.join("\n");
@@ -1764,7 +1908,8 @@ export async function runHookCore(
   const decision = decide(input, options.consent);
   if (decision.state !== "on") return offOutput(input, decision);
   const started = performance.now();
-  const output = await dispatchHook(input, client, { ...options, decision });
+  const stat = { event: input.hook_event_name };
+  const output = await dispatchHook(input, client, { ...options, decision, stat });
   // A PreToolUse for another server's tool does no work and keeps no record.
   if (
     input.session_id &&
@@ -1775,7 +1920,7 @@ export async function runHookCore(
       const injected = output.kind === "context" ? output.context.length : 0;
       withLedger(input.session_id, options, (ledger) => {
         const stats = (ledger.hookStats ??= {});
-        const entry = (stats[input.hook_event_name] ??= {
+        const entry = (stats[stat.event] ??= {
           count: 0,
           totalMs: 0,
           maxMs: 0,
@@ -1889,6 +2034,9 @@ export interface HookSessionStats {
   handlesOpened: string[];
   failOpen: number;
   lastFailOpen?: { event: string; reason: string; at: number };
+  actionLines?: { shown: number; withheld: number };
+  /** The scope check over what this session recorded. */
+  scope: ScopeResult;
 }
 
 /** `hooks stats`: per-event calls and in-process times (with p99), what
@@ -1909,8 +2057,16 @@ export function formatHookStats(stats: HookSessionStats): string {
     );
   }
   out.push(
-    `Injected into context: ${injected} characters (about ${Math.round(injected / 4)} tokens). Times are measured inside the hook and exclude process start; p99 is over the last ${SAMPLES_KEPT} calls of each event.`,
+    `Injected into context: ${injected} characters (about ${Math.round(injected / 4)} tokens). Times are measured inside the hook and exclude process start; p99 is over the last ${SAMPLES_KEPT} calls of each event.${
+      stats.events["PostToolUse/renew"] ? " PostToolUse/renew: tool calls after which the hook also renewed the task lease over the network." : ""
+    }`,
   );
+  if (stats.actionLines) {
+    out.push(
+      `Memory lines at edited files: ${stats.actionLines.shown} shown, ${stats.actionLines.withheld} left out because the budget was spent.`,
+    );
+  }
+  out.push(formatScope(stats.scope));
   if (stats.block) {
     out.push(
       `Session block: ${stats.block.titles} memory titles shown, ${stats.block.leftOut} left out; ${stats.block.tokens} of ${stats.block.budget} tokens.`,
@@ -1955,6 +2111,8 @@ export function readHookStats(
           handlesOpened: ledger.handlesOpened ?? [],
           failOpen: ledger.failOpen?.count ?? 0,
           lastFailOpen: ledger.failOpen?.last,
+          actionLines: ledger.actionLines,
+          scope: checkScope(ledger.scope),
         };
       }
     } catch {

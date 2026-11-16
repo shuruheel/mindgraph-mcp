@@ -152,11 +152,19 @@ function nodeType(node: Rec): string {
  * per item (type, label, one-line summary, source document title), at most
  * PROMPT_RECALL_LIMIT items and PROMPT_RECALL_MAX_CHARS characters. Returns
  * undefined when nothing is worth injecting. With `query` (the keywords the
- * request was built from) items below the relevance floor are dropped. */
-export function renderPromptRecall(response: unknown, query?: string): string | undefined {
+ * request was built from) items below the relevance floor are dropped. With
+ * `shown`, it receives one entry per rendered line, in order: the item's uid
+ * (or label) and its space as the response reported it ("" when absent). */
+export function renderPromptRecall(
+  response: unknown,
+  query?: string,
+  shown?: Array<[string, string]>,
+): string | undefined {
   const payload = rec(response);
   if (!payload) return undefined;
   const lines: string[] = [];
+  const items: Array<[string, string]> = [];
+  const spaceOf = (item: Rec): string => str(item.space_uid) ?? str(rec(item.props)?.space_uid) ?? "";
   const nodes = Array.isArray(rec(payload.graph)?.nodes) ? (rec(payload.graph)!.nodes as unknown[]) : [];
   for (const raw of nodes) {
     const node = rec(raw);
@@ -180,6 +188,7 @@ export function renderPromptRecall(response: unknown, query?: string): string | 
     if (summary && summary !== label) line += ` — ${oneLine(summary, 240)}`;
     if (source) line += ` (source: ${oneLine(source, 100)})`;
     lines.push(line);
+    items.push([str(node.uid) ?? label, spaceOf(node)]);
   }
   const articles = Array.isArray(payload.articles) ? payload.articles : [];
   for (const raw of articles) {
@@ -190,12 +199,14 @@ export function renderPromptRecall(response: unknown, query?: string): string | 
     const content = str(article.content);
     if (!relevant(query, `${label} ${content ?? ""}`)) continue;
     lines.push(`- [Article] ${oneLine(label, 140)}${content ? ` — ${oneLine(content, 240)}` : ""}`);
+    items.push([str(article.uid) ?? label, spaceOf(article)]);
   }
   if (lines.length === 0) return undefined;
   let block = "MindGraph recall (bounded):";
-  for (const line of lines) {
+  for (const [i, line] of lines.entries()) {
     if (block.length + 1 + line.length > PROMPT_RECALL_MAX_CHARS) break;
     block += `\n${line}`;
+    shown?.push(items[i]);
   }
   return block;
 }

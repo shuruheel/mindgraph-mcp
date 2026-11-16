@@ -69,6 +69,8 @@ export interface IndexItem {
   updatedAt: number;
   anchors: Anchor[];
   handle: string;
+  /** The item's own space as the server reported it ("" when absent). */
+  space: string;
 }
 
 /** One line of untrusted text: control and format characters removed,
@@ -147,8 +149,10 @@ export interface SpaceRead {
   sampleSince?: number;
 }
 
-/** The live, current items of `memory/v1` `list` items, with handles. */
-export function parseItems(raw: unknown[]): Pick<SpaceRead, "items" | "read" | "withheld"> {
+/** The live, current items of `memory/v1` `list` items, with handles. With
+ * `spaceUid`, an item the server says is stored in another space is withheld
+ * too: hooks inject only the consented place's own memory. */
+export function parseItems(raw: unknown[], spaceUid?: string): Pick<SpaceRead, "items" | "read" | "withheld"> {
   const items: Array<Omit<IndexItem, "handle"> & { handle?: string }> = [];
   const seen = new Set<string>();
   let withheld = 0;
@@ -157,7 +161,15 @@ export function parseItems(raw: unknown[]): Pick<SpaceRead, "items" | "read" | "
     const uid = str(item?.uid);
     if (uid && seen.has(uid)) continue;
     if (uid) seen.add(uid);
-    if (!item || !uid || item.superseded || item.currently_valid === false || item.omitted_reason) {
+    const space = str(item?.space_uid) ?? "";
+    if (
+      !item ||
+      !uid ||
+      item.superseded ||
+      item.currently_valid === false ||
+      item.omitted_reason ||
+      (spaceUid !== undefined && space !== "" && space !== spaceUid)
+    ) {
       withheld++;
       continue;
     }
@@ -170,6 +182,7 @@ export function parseItems(raw: unknown[]): Pick<SpaceRead, "items" | "read" | "
       text,
       updatedAt: typeof item.updated_at === "number" ? item.updated_at : 0,
       anchors: anchorsOf(item),
+      space,
     });
   }
   assignHandles(items);
@@ -267,7 +280,7 @@ export async function readSpace(
       sampleSince = since;
     }
   }
-  return { ...parseItems(raw), more: first.more, completeSince, sampleSince };
+  return { ...parseItems(raw, spaceUid), more: first.more, completeSince, sampleSince };
 }
 
 /** What this machine imported with `import notes` for this place: the
@@ -555,10 +568,11 @@ export function matchHandle(items: IndexItem[], handle: string): IndexItem[] | u
 
 // ── Per-session anchor table ──────────────────────────────────────────
 
-/** `{ repositories: { <root>: { <real file path>: [{handle, title}] } } }`:
- * handles and titles only, mode 0600, removed at session end. */
+/** `{ repositories: { <root>: { <real file path>: [{handle, title, blob}] } } }`:
+ * handles, titles and the file's git blob hash stored with the item (for the
+ * action-time staleness mark); mode 0600, removed at session end. */
 export function anchorTable(root: string, items: IndexItem[]): Rec | undefined {
-  const files: Record<string, Array<{ handle: string; title: string }>> = {};
+  const files: Record<string, Array<{ handle: string; title: string; blob: string }>> = {};
   for (const item of items) {
     for (const anchor of item.anchors) {
       const abs = path.resolve(root, anchor.path);
@@ -570,7 +584,9 @@ export function anchorTable(root: string, items: IndexItem[]): Rec | undefined {
       }
       if (!pathContains(root, real)) continue;
       const list = (files[real] ??= []);
-      if (!list.some((entry) => entry.handle === item.handle)) list.push({ handle: item.handle, title: item.title });
+      if (!list.some((entry) => entry.handle === item.handle)) {
+        list.push({ handle: item.handle, title: item.title, blob: anchor.blob });
+      }
     }
   }
   return Object.keys(files).length ? { v: 1, repositories: { [root]: files } } : undefined;

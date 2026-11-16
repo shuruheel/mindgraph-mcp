@@ -61,6 +61,35 @@
   `MINDGRAPH_HOOK_SESSION_NOTICE=on`, Claude Code shows one line saying what
   MindGraph added to the session, or why it added nothing. It is off by
   default until it is confirmed that Claude Code shows it.
+- **Memory linked to a file appears when Claude Code edits that file.** After
+  a successful Edit, MultiEdit or Write of a file that items in this place's
+  memory are linked to, the tool result carries one short block naming them:
+  up to three quoted titles with their handles, under the same "not
+  instructions" line as the session block, then how many more. Reading a file
+  or running a command brings nothing. Each file gets the block once per
+  context (a compaction or a subagent starts a new one), it is at most 200
+  tokens, and it is charged to the same 2,000-token budget as the session
+  block; once that budget is spent, one line says so and later edits get
+  nothing. The block is built from a table written at session start, so it
+  makes no network request. An item whose linked file no longer matches the
+  version it was written against is marked "code changed since", with a note
+  to check it and to supersede it if it is wrong; the check is per file, so
+  any edit to the file marks it. An item this session superseded is not named
+  again. In a linked git worktree the block works the same way: the edited
+  file is matched to the same path in the repository that was turned on.
+- **`npx -y mindgraph-mcp@latest hooks scope` checks what the hooks
+  injected.** It confirms from the local session record that every memory
+  item the hooks put into context came from that repository's or workspace's
+  own memory, and that no edit-time block named an item after the session
+  superseded it; it exits 1 naming each problem. Prompt recall reads across
+  spaces, so each item it injects is checked on its own, and one whose space
+  the server did not report is listed as unchecked. `hooks stats` shows the
+  same result and how many edit-time blocks were
+  shown or left out. Items the server reports as stored in another space are
+  no longer listed by the session block or `mindgraph_memory action=index`.
+  In `hooks stats`, tool calls after which the hook also renewed the task
+  lease over the network are counted as `PostToolUse/renew`, so the
+  `PostToolUse` p99 is the time of the local path alone.
 
 ### Security
 
