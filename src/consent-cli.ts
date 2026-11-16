@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { requireHumanTerminal } from "./agent-shell.js";
+import { evalHomeRefusal, evalMode } from "./eval-guard.js";
 import {
   loadConsentStore,
   nodeConsentFs,
@@ -75,13 +76,15 @@ export interface ConsentIo {
  * this bundle and rewrite the user-scope hook entries (never a project's
  * settings). `MINDGRAPH_HOOK_AUTOUPDATE=off` is honoured, except for a runner
  * that predates consent: turning consent on or off with a runner that ignores
- * it would mean nothing.
+ * it would mean nothing. An evaluation run (MINDGRAPH_EVAL=1) refreshes
+ * nothing: its runner and settings are the ones the trial installed.
  */
 export function refreshRunnerForConsent(
   version: string,
   bundle: string,
   homeDir?: string,
 ): string | undefined {
+  if (evalMode()) return undefined;
   const forced = runnerPredatesGate(homeDir);
   const result = refreshHookRunner(version, bundle, homeDir, { force: forced });
   if (!result.refreshed) return undefined;
@@ -337,6 +340,12 @@ export async function runOn(target: string | undefined, io: ConsentIo): Promise<
     io.err(terminal.message);
     return 2;
   }
+  // An evaluation run records consent only in its own MINDGRAPH_HOME.
+  const homeRefusal = evalHomeRefusal(io.env);
+  if (homeRefusal) {
+    io.err(homeRefusal);
+    return 1;
+  }
   const loaded = loadConsentStore(io.env);
   const problem = storeProblem(loaded);
   if (problem) {
@@ -569,6 +578,12 @@ function stillThere(root: string): boolean {
 
 /** `off [path]`. Allowed from any shell: it can only remove consent. */
 export async function runOff(target: string | undefined, io: ConsentIo): Promise<number> {
+  // An evaluation run changes only its own MINDGRAPH_HOME's consent store.
+  const homeRefusal = evalHomeRefusal(io.env);
+  if (homeRefusal) {
+    io.err(homeRefusal);
+    return 1;
+  }
   const loaded = loadConsentStore(io.env);
   const problem = storeProblem(loaded);
   if (problem) {

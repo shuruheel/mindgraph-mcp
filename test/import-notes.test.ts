@@ -649,3 +649,65 @@ describe("where the notes are", () => {
     expect(anchorCandidates("`a/b.ts:3` `c.rs` `run the thing` `https://x.y/z` `--flag`")).toEqual(["a/b.ts", "c.rs"]);
   });
 });
+
+describe("import notes under MINDGRAPH_EVAL=1", () => {
+  function pointAt(store: string, baseUrl: string) {
+    const file = path.join(store, "hooks.json");
+    const raw = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    fs.writeFileSync(file, `${JSON.stringify({ ...raw, baseUrl }, null, 2)}\n`, { mode: 0o600 });
+  }
+
+  it("refuses a hosted MindGraph before the card, so nothing is asked or sent", async () => {
+    const ctx = setup();
+    note(ctx.memory, "a.md", "Note a.\n");
+    pointAt(ctx.store, "https://api.mindgraph.cloud");
+    for (const dryRun of [false, true]) {
+      const server = fakeServer();
+      const run = person(ctx, ["1"], { MINDGRAPH_EVAL: "1" });
+      expect(await runImportNotes(undefined, run.io, { client: server.factory, dryRun })).toBe(1);
+      expect(server.calls).toEqual([]);
+      expect(run.out).toEqual([]);
+      expect(run.err.join("\n")).toContain("eval_requires_loopback");
+      expect(run.err.join("\n")).toContain("api.mindgraph.cloud");
+      expect(fs.existsSync(manifestPath(run.env))).toBe(false);
+    }
+  });
+
+  it("refuses without an accepted MINDGRAPH_HOME, before any store is read", async () => {
+    const ctx = setup();
+    note(ctx.memory, "a.md", "Note a.\n");
+    // Inside a git work tree the override is refused; a relative one too.
+    for (const home of [path.join(ctx.root, "store"), "relative-store"]) {
+      const server = fakeServer();
+      const run = person(ctx, ["1"], { MINDGRAPH_EVAL: "1", MINDGRAPH_HOME: home });
+      expect(await runImportNotes(undefined, run.io, { client: server.factory, dryRun: true })).toBe(1);
+      expect(server.calls).toEqual([]);
+      expect(run.out).toEqual([]);
+      expect(run.err.join("\n")).toContain("eval_requires_home");
+      expect(fs.existsSync(path.join(ctx.root, "store"))).toBe(false);
+    }
+  });
+
+  it("refuses without the trial's own CLAUDE_CONFIG_DIR, before any note or setting is read", async () => {
+    const ctx = setup();
+    note(ctx.memory, "a.md", "Note a.\n");
+    for (const configDir of ["", "relative-claude"]) {
+      const server = fakeServer();
+      const run = person(ctx, ["1"], { MINDGRAPH_EVAL: "1", CLAUDE_CONFIG_DIR: configDir });
+      expect(await runImportNotes(undefined, run.io, { client: server.factory, dryRun: true })).toBe(1);
+      expect(server.calls).toEqual([]);
+      expect(run.out).toEqual([]);
+      expect(run.err.join("\n")).toContain("eval_requires_config_dir");
+      expect(fs.existsSync(manifestPath(run.env))).toBe(false);
+    }
+  });
+
+  it("imports into a loopback server as usual", async () => {
+    const ctx = setup();
+    note(ctx.memory, "a.md", "Note a.\n");
+    const server = fakeServer();
+    const run = person(ctx, ["1"], { MINDGRAPH_EVAL: "1" });
+    expect(await runImportNotes(undefined, run.io, { client: server.factory })).toBe(0);
+    expect(server.items.size).toBe(1);
+  });
+});

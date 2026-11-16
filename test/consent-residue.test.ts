@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConsentIo } from "../src/consent-cli.js";
 import { loadConsentStore, resolveConsent } from "../src/consent.js";
 import { nodeGit, resolveRepositoryId } from "../src/consent-plan.js";
@@ -342,6 +342,63 @@ describe("off --all", () => {
     // Reached both directly and through its linked worktree.
     expect(residue.identityFiles).not.toContain(rsId);
     expect(residue.identityFiles).toContain(m.ids.fromLedger);
+  });
+
+  it("under MINDGRAPH_HOME also clears the runtime files earlier installs left under $HOME/.mindgraph", async () => {
+    const m = machine();
+    const home = path.join(m.base, "home");
+    const legacy = path.join(home, ".mindgraph", "runtime");
+    const oldLedger = writeJson(path.join(legacy, `${hex("old-ledger")}.json`), { repoContextCwd: m.repos.never });
+    const oldCall = writeJson(path.join(legacy, "calls", `${hex("old-call")}.${hex("old-call-2", 16)}.json`), {
+      projectDir: m.repos.never,
+      fills: {},
+      createdAt: 1,
+    });
+    const oldTable = writeJson(path.join(legacy, "anchors", `${hex("old-table")}.json`), { v: 1 });
+    const oldScopes = writeJson(path.join(legacy, "repository-scopes.json"), {
+      v: 1,
+      tenant: "t",
+      entries: { "github.com/acme/old": { uid: "u3", at: 1 } },
+    });
+    vi.stubEnv("HOME", home);
+    try {
+      // MINDGRAPH_RUNTIME_DIR unset: the runtime is MINDGRAPH_HOME's, and the
+      // one under $HOME is searched too.
+      const p = person(m, ["1"], { MINDGRAPH_RUNTIME_DIR: "" });
+      const current = path.join(m.store, "runtime");
+      const currentLedger = writeJson(path.join(current, `${hex("current")}.json`), { repoContextCwd: m.repos.never });
+      expect(await runOffAll(p.io, { claudeConfig: m.claudeConfig })).toBe(0);
+      for (const file of [oldLedger, oldCall, oldTable, currentLedger]) expect(exists(file), file).toBe(false);
+      expect(JSON.parse(fs.readFileSync(oldScopes, "utf8")).entries).toEqual({});
+      // The --runtime-dir residue of the test machine is not part of this run.
+      expect(exists(m.ledgers.never)).toBe(true);
+
+      // An evaluation run never looks at $HOME's runtime directory.
+      const kept = writeJson(path.join(legacy, `${hex("kept")}.json`), { repoContextCwd: m.repos.never });
+      const trial = person(m, ["1"], {
+        MINDGRAPH_RUNTIME_DIR: "",
+        MINDGRAPH_EVAL: "1",
+        CLAUDE_CONFIG_DIR: path.join(m.base, "trial-claude"),
+      });
+      expect(await runOffAll(trial.io)).toBe(0);
+      expect(exists(kept)).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("in an evaluation run, refuses without the trial's MINDGRAPH_HOME or CLAUDE_CONFIG_DIR and changes nothing", async () => {
+    const m = machine();
+    const before = snapshotTree(m.base);
+    const noHome = person(m, ["1"], { MINDGRAPH_EVAL: "1", MINDGRAPH_HOME: path.join(m.repos.never, "store") });
+    expect(await runOffAll(noHome.io, { claudeConfig: m.claudeConfig })).toBe(1);
+    expect(noHome.err.join("\n")).toContain("eval_requires_home");
+    // Without CLAUDE_CONFIG_DIR the project list would be the person's real one.
+    const noConfig = person(m, ["1"], { MINDGRAPH_EVAL: "1", CLAUDE_CONFIG_DIR: "" });
+    expect(await runOffAll(noConfig.io, { dryRun: true })).toBe(1);
+    expect(noConfig.err.join("\n")).toContain("eval_requires_config_dir");
+    expect(noConfig.asked).toEqual([]);
+    expect(snapshotTree(m.base)).toEqual(before);
   });
 
   it("reads Claude Code's project list from CLAUDE_CONFIG_DIR", async () => {

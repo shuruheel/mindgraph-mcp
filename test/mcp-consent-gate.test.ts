@@ -456,8 +456,9 @@ const STALE_SETTINGS = `${JSON.stringify(
   2,
 )}\n`;
 
+// The runner lives beside hooks.json, in MINDGRAPH_HOME's bin/.
 function installRunner(m: Machine, version: string) {
-  const bin = path.join(m.home, ".mindgraph", "bin");
+  const bin = path.join(m.store, "bin");
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, "mindgraph-hook.cjs"), `// runner ${version}\n`);
   fs.writeFileSync(path.join(bin, "mindgraph-hook.cjs.version"), `${version}\n`);
@@ -502,16 +503,19 @@ describe.runIf(ready)("runner refresh at server start, outside consent", () => {
     writeStore(m.store, [repoEntry(consented)]);
     // An unconsented repository committing a stale runner and owned hooks.
     const x = projectWithOwnedHooks();
-    const bin = path.join(x, ".mindgraph", "bin");
-    fs.mkdirSync(bin, { recursive: true });
-    fs.writeFileSync(path.join(bin, "mindgraph-hook.cjs"), "// runner 0.20.0\n");
-    fs.writeFileSync(path.join(bin, "mindgraph-hook.cjs.version"), "0.20.0\n");
+    for (const bin of [path.join(x, ".mindgraph", "bin"), path.join(m.store, "bin")]) {
+      fs.mkdirSync(bin, { recursive: true });
+      fs.writeFileSync(path.join(bin, "mindgraph-hook.cjs"), "// runner 0.20.0\n");
+      fs.writeFileSync(path.join(bin, "mindgraph-hook.cjs.version"), "0.20.0\n");
+    }
     const before = snapshotTree(x);
+    const storeBefore = snapshotTree(m.store);
     for (const profile of ["coding", "general"]) {
       const { mcp, stderr } = await serve(m, x, { HOME: x, MINDGRAPH_PROFILE: profile });
       await mcp.listTools();
       await mcp.close();
       expect(snapshotTree(x), profile).toEqual(before);
+      expect(snapshotTree(m.store), profile).toEqual(storeBefore);
       expect(stderr(), profile).not.toContain("refreshed");
       expect(stderr(), profile).toContain("predates consent and ignores it");
     }
@@ -536,12 +540,16 @@ describe.runIf(ready)("runner refresh at server start, outside consent", () => {
     installRunner(m, "0.20.0");
     const repo = projectWithOwnedHooks();
     const before = snapshotTree(m.home);
+    const storeBefore = snapshotTree(m.store);
     const { mcp, stderr } = await serve(m, repo, { MINDGRAPH_HOOK_AUTOUPDATE: "off" });
     await mcp.listTools();
     await mcp.close();
     expect(snapshotTree(m.home)).toEqual(before);
+    expect(snapshotTree(m.store)).toEqual(storeBefore);
     expect(stderr()).toContain(
-      "[mindgraph-mcp] the installed hook runner v0.20.0 predates consent and ignores it; run npx -y mindgraph-mcp@latest install-hooks",
+      // Under MINDGRAPH_HOME install-hooks refuses project scope (its
+      // default), so the remedy names user scope.
+      "[mindgraph-mcp] the installed hook runner v0.20.0 predates consent and ignores it; run npx -y mindgraph-mcp@latest install-hooks --scope user",
     );
   }, 30_000);
 });

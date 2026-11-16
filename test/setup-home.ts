@@ -12,6 +12,12 @@ const home = fs.realpathSync.native(
   fs.mkdtempSync(path.join(os.tmpdir(), "mindgraph-test-home-")),
 );
 process.env.MINDGRAPH_HOME = home;
+// Under an accepted MINDGRAPH_HOME the consent floor still checks (and
+// refreshes) the portable runner at $HOME/.mindgraph/bin, which existing
+// entries run. Point $HOME (what os.homedir() reads) at a fresh directory so
+// no test can read or replace the developer's real runner.
+process.env.HOME = path.join(home, "home");
+fs.mkdirSync(process.env.HOME);
 // `off --all` reads Claude Code's project list from here instead of the
 // account's real ~/.claude.json.
 process.env.CLAUDE_CONFIG_DIR = path.join(home, "claude-config");

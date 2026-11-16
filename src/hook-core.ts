@@ -17,7 +17,8 @@ import {
 } from "./workspace-scope.js";
 import { recordPendingCall } from "./call-ledger.js";
 import { conflictState } from "./error-detail.js";
-import { stableAgentId } from "./hook-env.js";
+import { evalMode } from "./eval-guard.js";
+import { mindgraphRuntimeDir, stableAgentId } from "./hook-env.js";
 import {
   buildCaptureRequest,
   promptRecallQuery,
@@ -233,9 +234,7 @@ function defaultLedger(
 
 function runtimeDir(options: HookRuntimeOptions): string {
   return (
-    options.runtimeDir ||
-    process.env.MINDGRAPH_RUNTIME_DIR ||
-    path.join(os.homedir(), ".mindgraph", "runtime")
+    options.runtimeDir || mindgraphRuntimeDir()
   );
 }
 
@@ -735,6 +734,11 @@ function pathIsWithin(ancestor: string, descendant: string): boolean {
  * and cwd-project scope in ~/.claude.json, plus .mcp.json up the tree);
  * absence anywhere else is deliberately not guessed at, and exotic setups
  * can silence the check with MINDGRAPH_SKIP_MCP_REGISTRATION_CHECK=1.
+ * The config file is `$CLAUDE_CONFIG_DIR/.claude.json` when that variable is
+ * an absolute path, as Claude Code keeps it. An evaluation run
+ * (MINDGRAPH_EVAL=1) skips the check: its harness asserts the registration
+ * itself, and a note drawn from the machine's real config would change what
+ * a trial injects.
  * Never throws — a broken diagnostic must not cost the session its brief. */
 function claudeMcpRegistrationNote(
   input: HookInput,
@@ -742,9 +746,14 @@ function claudeMcpRegistrationNote(
 ): string | undefined {
   if (options.harness !== "claude-code") return undefined;
   if (process.env.MINDGRAPH_SKIP_MCP_REGISTRATION_CHECK === "1") return undefined;
+  if (evalMode()) return undefined;
   try {
+    const configDir = process.env.CLAUDE_CONFIG_DIR;
     const configPath =
-      options.claudeConfigPath || path.join(os.homedir(), ".claude.json");
+      options.claudeConfigPath ||
+      (configDir && path.isAbsolute(configDir)
+        ? path.join(configDir, ".claude.json")
+        : path.join(os.homedir(), ".claude.json"));
     // No config file means a layout this check does not understand — stay
     // quiet rather than warn on unknowns.
     if (!fs.existsSync(configPath)) return undefined;
@@ -2098,7 +2107,9 @@ export function readHookStats(
   for (const name of names) {
     try {
       const ledger = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) as Partial<RuntimeLedger>;
-      if (!ledger.harnessSessionId || !ledger.hookStats) continue;
+      // A session whose every hook failed open (an evaluation refusal, say)
+      // has no timings but still counts: its fail-opens are what to show.
+      if (!ledger.harnessSessionId || (!ledger.hookStats && !ledger.failOpen)) continue;
       if (sessionId && ledger.harnessSessionId !== sessionId) continue;
       const updatedAt = Number(ledger.updatedAt) || 0;
       if (!best || updatedAt > best.updatedAt) {
@@ -2106,7 +2117,7 @@ export function readHookStats(
           harness: String(ledger.harness ?? "unknown"),
           sessionId: ledger.harnessSessionId,
           updatedAt,
-          events: ledger.hookStats,
+          events: ledger.hookStats ?? {},
           block: ledger.block,
           handlesOpened: ledger.handlesOpened ?? [],
           failOpen: ledger.failOpen?.count ?? 0,

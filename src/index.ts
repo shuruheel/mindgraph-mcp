@@ -16,6 +16,7 @@ import {
 } from "./hook-installer.js";
 import { consentFor, type ConsentDecision } from "./consent.js";
 import { notOptedIn, otherRoot, type ConsentCheck } from "./consent-refusal.js";
+import { evalBaseUrlRefusal, evalHomeRefusal, evalMode } from "./eval-guard.js";
 
 declare const __PACKAGE_VERSION__: string;
 
@@ -24,6 +25,16 @@ declare const __PACKAGE_VERSION__: string;
 const API_KEY = process.env.MINDGRAPH_API_KEY;
 const BASE_URL =
   process.env.MINDGRAPH_BASE_URL || "https://api.mindgraph.cloud";
+
+// An evaluation run (MINDGRAPH_EVAL=1) talks only to a loopback server and
+// keeps its state in its own MINDGRAPH_HOME. The server exits here, before
+// hooks.json is read or any client exists, so nothing is read from the real
+// ~/.mindgraph, no request is made, and the host lists this server as failed.
+const EVAL_REFUSAL = evalHomeRefusal() ?? evalBaseUrlRefusal(BASE_URL);
+if (EVAL_REFUSAL) {
+  console.error(`Error: ${EVAL_REFUSAL}`);
+  process.exit(1);
+}
 // Must resolve to the SAME identity as the hooks (hook-env resolution): the
 // hooks claim/heartbeat leases under this id, and every tool call carries it
 // as agent_id. Two different defaults meant the model's fenced writes fought
@@ -101,9 +112,12 @@ const consentGate = GATED
 // sibling bundle and the refresh is a no-op.
 //
 // Which entries it may rewrite is decided in runnerRefreshScopes; it never
-// writes when $HOME is not the account's home directory.
+// writes when $HOME is not the account's home directory. An evaluation run
+// never self-heals: the trial's runner and settings are the ones its harness
+// installed, whatever MINDGRAPH_HOOK_AUTOUPDATE says.
 const INSIDE_CONSENT = START_DECISION?.state === "on";
 const REFRESH_SCOPES = (() => {
+  if (evalMode()) return undefined;
   try {
     return runnerRefreshScopes(
       INSIDE_CONSENT,
