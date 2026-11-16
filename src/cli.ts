@@ -20,6 +20,7 @@ import {
   runOff,
   runOn,
 } from "./consent-cli.js";
+import { runOffAll } from "./consent-residue.js";
 import {
   classifyMcpAddFailure,
   mcpAddFailureOutput,
@@ -529,6 +530,10 @@ USAGE:
   mindgraph-mcp on [path]        Turn MindGraph on for a repository or workspace
                                  (asks first; run it in your own terminal)
   mindgraph-mcp off [path]       Turn MindGraph off for a repository or workspace
+  mindgraph-mcp off --all [--dry-run]
+                                 Turn MindGraph off everywhere and remove its
+                                 local files from repositories you never turned
+                                 on (asks first; run it in your own terminal)
   mindgraph-mcp status           Show this directory's consent state and the
                                  installation status
   mindgraph-mcp skills pull [--dir .claude/skills]
@@ -1122,10 +1127,15 @@ async function main(): Promise<void> {
 
     case "on":
     case "off": {
-      if (command === "off" && process.argv.slice(3).includes("--all")) {
-        console.error(
-          "off --all is not available in this version. Turn off one place at a time: npx -y mindgraph-mcp@latest off <path>"
-        );
+      const flags = process.argv.slice(3);
+      const all = command === "off" && flags.includes("--all");
+      const dryRun = flags.includes("--dry-run");
+      if (dryRun && !all) {
+        console.error("--dry-run works only with: npx -y mindgraph-mcp@latest off --all --dry-run");
+        process.exit(1);
+      }
+      if (all && positionals.length > 0) {
+        console.error("Usage: npx -y mindgraph-mcp@latest off --all [--dry-run]");
         process.exit(1);
       }
       if (positionals.length > 1) {
@@ -1138,7 +1148,9 @@ async function main(): Promise<void> {
         code =
           command === "on"
             ? await runOn(positionals[0], io)
-            : await runOff(positionals[0], io);
+            : all
+              ? await runOffAll(io, { dryRun })
+              : await runOff(positionals[0], io);
       } catch (error) {
         code = hookConfigFailure(error, console.error);
       } finally {

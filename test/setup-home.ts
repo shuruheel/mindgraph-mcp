@@ -12,6 +12,9 @@ const home = fs.realpathSync.native(
   fs.mkdtempSync(path.join(os.tmpdir(), "mindgraph-test-home-")),
 );
 process.env.MINDGRAPH_HOME = home;
+// `off --all` reads Claude Code's project list from here instead of the
+// account's real ~/.claude.json.
+process.env.CLAUDE_CONFIG_DIR = path.join(home, "claude-config");
 
 // A refused MINDGRAPH_HOME (for example a temporary directory inside a git
 // work tree) falls back to the real store. Stop before any test touches it.

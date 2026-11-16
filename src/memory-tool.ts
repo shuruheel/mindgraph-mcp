@@ -80,7 +80,7 @@ export const MEMORY_TOOL: Tool = {
         type: "string",
         enum: ["workspace"],
         description:
-          "For continuity/resume on a local server: select work across every repository the working directory's .mindgraph/workspace.json declares, and list the other eligible tasks grouped by repository",
+          "Coding setup only (install-code), for continuity/resume: select work across every repository the working directory's .mindgraph/workspace.json declares, and list the other eligible tasks grouped by repository",
       },
       node_types: {
         type: "array",
@@ -794,7 +794,7 @@ export async function handleMemoryTool(
     if (args.scope === "workspace") {
       if (!config.resolveWorkspaceScope) {
         return error(
-          "scope='workspace' needs the local MindGraph MCP server, which reads .mindgraph/workspace.json beside the checkout; this server has no working directory. Pass scope_uids instead.",
+          "scope='workspace' works only in the local coding setup (mindgraph-mcp install-code) inside a workspace where MindGraph is turned on; this server does not offer it. Pass scope_uids instead.",
         );
       }
       workspace = await config.resolveWorkspaceScope(agentId ?? "mcp");

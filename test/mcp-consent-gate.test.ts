@@ -435,7 +435,7 @@ describe.runIf(ready)("the general profile is not gated", () => {
         arguments: { action: "context", mode: "resume", scope: "workspace" },
       });
       expect(result.isError).toBe(true);
-      expect(JSON.stringify(body(result))).toContain("scope='workspace' needs the local");
+      expect(JSON.stringify(body(result))).toContain("scope='workspace' works only in the local coding setup");
     } finally {
       await mcp.close();
     }

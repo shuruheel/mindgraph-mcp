@@ -292,7 +292,7 @@ export function workspaceCard(plan: WorkspacePlan, stored: HookEnv, git: GitRunn
 
 // ── on ────────────────────────────────────────────────────────────────
 
-function storeProblem(loaded: LoadedConsentStore): string | undefined {
+export function storeProblem(loaded: LoadedConsentStore): string | undefined {
   switch (loaded.status) {
     case "ok":
     case "missing":
@@ -310,7 +310,7 @@ function storeProblem(loaded: LoadedConsentStore): string | undefined {
 
 /** The env consent resolves with for on/off: MINDGRAPH_HOOKS=off pauses the
  * hooks, but must not hide which entry a path belongs to. */
-function resolutionEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function resolutionEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const { MINDGRAPH_HOOKS: _paused, ...rest } = env;
   return rest;
 }
