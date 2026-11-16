@@ -19,8 +19,10 @@ export interface ClaudeHookFeatures {
 }
 
 function storedFeatures(homeDir?: string): ClaudeHookFeatures {
+  // Without an explicit home, read the same hooks.json the installer writes
+  // (the account's MindGraph directory), not one under $HOME.
   const { promptRecall, capture } = loadHookEnv(
-    path.join(homeDir || os.homedir(), ".mindgraph"),
+    homeDir ? path.join(homeDir, ".mindgraph") : undefined,
   );
   return { promptRecall, capture };
 }

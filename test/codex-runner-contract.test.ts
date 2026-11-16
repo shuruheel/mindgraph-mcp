@@ -138,6 +138,7 @@ global.fetch = async (url, init = {}) => {
       ...process.env,
       HOME: home,
       USERPROFILE: home,
+      MINDGRAPH_HOME: path.join(home, ".mindgraph"),
       NODE_OPTIONS: `--require=${preload}`,
       MINDGRAPH_API_KEY: "mg_runner_contract",
       MINDGRAPH_BASE_URL: "http://mindgraph.invalid",

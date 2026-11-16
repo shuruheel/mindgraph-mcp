@@ -395,7 +395,13 @@ describe("R7 — pinned hook runner replaces per-invocation npx", () => {
           tool_name: "mcp__mindgraph__mindgraph_memory",
           tool_input: { action: "status" },
         }),
-        env: { ...process.env, MINDGRAPH_API_KEY: "", MINDGRAPH_RUNTIME_DIR: iso, HOME: iso },
+        env: {
+          ...process.env,
+          MINDGRAPH_API_KEY: "",
+          MINDGRAPH_RUNTIME_DIR: iso,
+          HOME: iso,
+          MINDGRAPH_HOME: path.join(iso, ".mindgraph"),
+        },
       });
       expect(out.toString().trim(), event).toBe("{}");
     }
@@ -671,6 +677,7 @@ describe("R16 — the verbatim Codex hook command is self-contained", () => {
           ...process.env,
           HOME: home,
           USERPROFILE: home,
+          MINDGRAPH_HOME: path.join(home, ".mindgraph"),
           MINDGRAPH_API_KEY: "",
           MINDGRAPH_RUNTIME_DIR: path.join(home, "runtime"),
         },
