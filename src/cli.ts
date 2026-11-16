@@ -21,6 +21,7 @@ import {
   runOn,
 } from "./consent-cli.js";
 import { runOffAll } from "./consent-residue.js";
+import { runImportNotes } from "./import-notes.js";
 import {
   classifyMcpAddFailure,
   mcpAddFailureOutput,
@@ -534,6 +535,12 @@ USAGE:
                                  Turn MindGraph off everywhere and remove its
                                  local files from repositories you never turned
                                  on (asks first; run it in your own terminal)
+  mindgraph-mcp import notes [path] [--include-user] [--dry-run]
+                                 Copy Claude Code's auto-memory notes for a
+                                 place you turned on into its MindGraph memory,
+                                 one item per note (asks first; run it in your
+                                 own terminal). --dry-run lists what would be
+                                 sent and sends nothing.
   mindgraph-mcp status           Show this directory's consent state and the
                                  installation status
   mindgraph-mcp skills pull [--dir .claude/skills]
@@ -1151,6 +1158,28 @@ async function main(): Promise<void> {
             : all
               ? await runOffAll(io, { dryRun })
               : await runOff(positionals[0], io);
+      } catch (error) {
+        code = hookConfigFailure(error, console.error);
+      } finally {
+        io.close();
+      }
+      process.exit(code);
+    }
+
+    case "import": {
+      const flags = process.argv.slice(3).filter((arg) => arg.startsWith("-"));
+      const unknown = flags.filter((f) => f !== "--dry-run" && f !== "--include-user");
+      if (positionals[0] !== "notes" || positionals.length > 2 || unknown.length > 0) {
+        console.error("Usage: npx -y mindgraph-mcp@latest import notes [path] [--include-user] [--dry-run]");
+        process.exit(1);
+      }
+      const io = nodeConsentIo(__PACKAGE_VERSION__);
+      let code: number;
+      try {
+        code = await runImportNotes(positionals[1], io, {
+          dryRun: flags.includes("--dry-run"),
+          includeUser: flags.includes("--include-user"),
+        });
       } catch (error) {
         code = hookConfigFailure(error, console.error);
       } finally {

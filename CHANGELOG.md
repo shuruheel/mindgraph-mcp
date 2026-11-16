@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Added
+
+- **`npx -y mindgraph-mcp@latest import notes [path]` copies Claude Code's
+  auto-memory notes into MindGraph.** Run it in a repository or workspace
+  where MindGraph is on. It lists every note it would send (size, new or
+  updated, destination, who can read it) and every note it leaves out and why,
+  and sends only after you choose to; `--dry-run` sends nothing. Each note
+  becomes one memory item with no language-model call, keyed by its path and
+  this machine's notes folder, so a second import sends only what changed and
+  hides notes you deleted, and never touches notes a teammate or another
+  machine imported into the same memory. Index
+  files, notes of type `user` (unless `--include-user`), notes over 8 KB,
+  notes marked `mindgraph: skip`, and notes whose text, file name or folder
+  name looks like a secret are never sent. A note that was imported and later gains a secret is
+  hidden on the next import; hiding is not deletion, and the earlier revision
+  stays in the item's history on the server, so rotate any secret that reached
+  MindGraph this way. For backticked paths to files git tracks, the import
+  records each file's git blob hash locally and sends it with the note
+  (MindGraph does not keep it yet). The command never writes to the notes
+  folder, ignores `autoMemoryDirectory` in the checked-in
+  `.claude/settings.json`, refuses a notes folder inside a git repository or
+  one that is a file-system root, your home folder or above the repository,
+  and refuses to run from inside a coding agent's shell.
+
 ### Security
 
 - **`mindgraph_code` and `mindgraph_sync` now run only in the local coding
