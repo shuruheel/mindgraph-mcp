@@ -1,80 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.28.0 (2026-11-16)
 
-### Added
-
-- **`npx -y mindgraph-mcp@latest import notes [path]` copies Claude Code's
-  auto-memory notes into MindGraph.** Run it in a repository or workspace
-  where MindGraph is on. It lists every note it would send (size, new or
-  updated, destination, who can read it) and every note it leaves out and why,
-  and sends only after you choose to; `--dry-run` sends nothing. Each note
-  becomes one memory item with no language-model call, keyed by its path and
-  this machine's notes folder, so a second import sends only what changed and
-  hides notes you deleted, and never touches notes a teammate or another
-  machine imported into the same memory. Index
-  files, notes of type `user` (unless `--include-user`), notes over 8 KB,
-  notes marked `mindgraph: skip`, and notes whose text, file name or folder
-  name looks like a secret are never sent. A note that was imported and later gains a secret is
-  hidden on the next import; hiding is not deletion, and the earlier revision
-  stays in the item's history on the server, so rotate any secret that reached
-  MindGraph this way. For backticked paths to files git tracks, the import
-  records each file's git blob hash locally and sends it with the note
-  (MindGraph does not keep it yet). The command never writes to the notes
-  folder, ignores `autoMemoryDirectory` in the checked-in
-  `.claude/settings.json`, refuses a notes folder inside a git repository or
-  one that is a file-system root, your home folder or above the repository,
-  and refuses to run from inside a coding agent's shell.
-
-### Security
-
-- **`mindgraph_code` and `mindgraph_sync` now run only in the local coding
-  profile.** Before this release they were hidden from the tool list outside the
-  coding profile but still ran when a client called them by name: on a stdio
-  server started with the default profile, and on the hosted server
-  (`mindgraph-mcp/server`). On the hosted server, `mindgraph_sync` with
-  `action: "begin"` and a `repo` path such as `/` read a file from the host
-  machine and stored its content in the caller's own graph. Both tools now
-  return a `not_available` error everywhere except a local server set up with
-  `npx -y mindgraph-mcp@latest install-code`. The hosted server also no longer
-  reads the host's files or runs git for the other tools: a write that carries
-  `code_refs` is saved with `code_anchors.wrote: false` and a caveat that code
-  refs resolve only in the local server, and `mindgraph_plan create_task` uses
-  `scope_uids` only, ignoring `repo` and `invocation_context`.
-- **Code refs and repository scope resolve only in the local coding profile.**
-  On a stdio server started with the default profile, `code_refs` on
-  `mindgraph_capture`, `mindgraph_commit` and `mindgraph_plan` still reached the
-  code-anchoring path: a ref pointing at any local repository ran git and
-  codegraph there, returned that repository's symbol index, wrote it into the
-  graph, and could create `.git/mindgraph/repository-id` in it. `mindgraph_plan
-  create_task` likewise treated `repo` and `invocation_context` as local paths:
-  it ran git there, recorded that repository's remote as the task's scope, and
-  answered differently for a path that exists and one that does not. Outside
-  the coding profile the write now succeeds with `code_anchors.wrote: false`
-  and a caveat, and `create_task` uses `scope_uids` only.
-
-### Added
-
-- **`on`, `off`, `off --all` and a status line: you choose where MindGraph
-  runs.** `npx -y mindgraph-mcp@latest on` turns MindGraph on for the
-  repository or workspace you run it in (or the path you pass). Before changing
-  anything it shows what the hooks will do, what leaves your machine and where
-  it goes, who can read it, and how to undo it, and it records only what you
-  approve. It must be run in a terminal you opened yourself: it refuses inside
-  Claude Code, Codex and Cursor sessions, so a model cannot turn it on for you.
-  At a workspace root it lists the repositories `.mindgraph/workspace.json`
-  declares and lets you pick them; worktrees of a repository you turned on
-  count as that repository. `off [path]` turns one place off and runs anywhere.
-  `off --all` turns MindGraph off everywhere and, after you confirm, removes the
-  local files it left in repositories you never turned on
-  (`.git/mindgraph/repository-id`, old session records and pending tool calls
-  under `~/.mindgraph/runtime/`, and cached repository lookups); `--dry-run`
-  lists them and changes nothing. Only directories that Claude Code or
-  MindGraph's own records remember are checked, and the cloud, `.codegraph/`
-  folders and settings files are never touched. `status` now starts with
-  whether MindGraph is on in the current directory, and why not if it is off.
-  `install-code`, `install-hooks` and `install-cursor` print the `on` command
-  when they finish.
+MindGraph's coding hooks and coding-profile server now act only in repositories you
+turn on yourself, per-prompt recall is off by default, and Claude Code's auto-memory
+notes can be imported. **Breaking for existing hook users:** after upgrading,
+MindGraph is off everywhere until you run `npx -y mindgraph-mcp@latest on` in each
+repository or workspace, from a terminal you opened yourself. 0.28.0 also carries
+the 0.27.1 security fix.
 
 ### Changed
 
@@ -156,6 +89,50 @@
   `include_chunks: true` or `false` still overrides it. Older servers get the local
   rendering exactly as before. The prompt-recall hook is unchanged.
 
+### Added
+
+- **`on`, `off`, `off --all` and a status line: you choose where MindGraph
+  runs.** `npx -y mindgraph-mcp@latest on` turns MindGraph on for the
+  repository or workspace you run it in (or the path you pass). Before changing
+  anything it shows what the hooks will do, what leaves your machine and where
+  it goes, who can read it, and how to undo it, and it records only what you
+  approve. It must be run in a terminal you opened yourself: it refuses inside
+  Claude Code, Codex and Cursor sessions, so a model cannot turn it on for you.
+  At a workspace root it lists the repositories `.mindgraph/workspace.json`
+  declares and lets you pick them; worktrees of a repository you turned on
+  count as that repository. `off [path]` turns one place off and runs anywhere.
+  `off --all` turns MindGraph off everywhere and, after you confirm, removes the
+  local files it left in repositories you never turned on
+  (`.git/mindgraph/repository-id`, old session records and pending tool calls
+  under `~/.mindgraph/runtime/`, and cached repository lookups); `--dry-run`
+  lists them and changes nothing. Only directories that Claude Code or
+  MindGraph's own records remember are checked, and the cloud, `.codegraph/`
+  folders and settings files are never touched. `status` now starts with
+  whether MindGraph is on in the current directory, and why not if it is off.
+  `install-code`, `install-hooks` and `install-cursor` print the `on` command
+  when they finish.
+- **`npx -y mindgraph-mcp@latest import notes [path]` copies Claude Code's
+  auto-memory notes into MindGraph.** Run it in a repository or workspace
+  where MindGraph is on. It lists every note it would send (size, new or
+  updated, destination, who can read it) and every note it leaves out and why,
+  and sends only after you choose to; `--dry-run` sends nothing. Each note
+  becomes one memory item with no language-model call, keyed by its path and
+  this machine's notes folder, so a second import sends only what changed and
+  hides notes you deleted, and never touches notes a teammate or another
+  machine imported into the same memory. Index
+  files, notes of type `user` (unless `--include-user`), notes over 8 KB,
+  notes marked `mindgraph: skip`, and notes whose text, file name or folder
+  name looks like a secret are never sent. A note that was imported and later gains a secret is
+  hidden on the next import; hiding is not deletion, and the earlier revision
+  stays in the item's history on the server, so rotate any secret that reached
+  MindGraph this way. For backticked paths to files git tracks, the import
+  records each file's git blob hash locally and sends it with the note
+  (MindGraph does not keep it yet). The command never writes to the notes
+  folder, ignores `autoMemoryDirectory` in the checked-in
+  `.claude/settings.json`, refuses a notes folder inside a git repository or
+  one that is a file-system root, your home folder or above the repository,
+  and refuses to run from inside a coding agent's shell.
+
 ### Fixed
 
 - **`mindgraph_code` and `code_refs` work against CodeGraph indexes that record no
@@ -174,6 +151,38 @@
   settings entry that held MindGraph's hook, including any other command in the
   same entry. Installs now remove only MindGraph's own hooks, as uninstall
   already did.
+
+## 0.27.1 (2026-11-16)
+
+A security patch on 0.27.0. The only behaviour change is the one described here: code
+features now work only in the local coding setup.
+
+### Security
+
+- **`mindgraph_code` and `mindgraph_sync` now run only in the local coding
+  profile.** Before this release they were hidden from the tool list outside the
+  coding profile but still ran when a client called them by name: on a stdio
+  server started with the default profile, and on the hosted server
+  (`mindgraph-mcp/server`). On the hosted server, `mindgraph_sync` with
+  `action: "begin"` and a `repo` path such as `/` read a file from the host
+  machine and stored its content in the caller's own graph. Both tools now
+  return a `not_available` error everywhere except a local server set up with
+  `npx -y mindgraph-mcp@latest install-code`. The hosted server also no longer
+  reads the host's files or runs git for the other tools: a write that carries
+  `code_refs` is saved with `code_anchors.wrote: false` and a caveat that code
+  refs resolve only in the local server, and `mindgraph_plan create_task` uses
+  `scope_uids` only, ignoring `repo` and `invocation_context`.
+- **Code refs and repository scope resolve only in the local coding profile.**
+  On a stdio server started with the default profile, `code_refs` on
+  `mindgraph_capture`, `mindgraph_commit` and `mindgraph_plan` still reached the
+  code-anchoring path: a ref pointing at any local repository ran git and
+  codegraph there, returned that repository's symbol index, wrote it into the
+  graph, and could create `.git/mindgraph/repository-id` in it. `mindgraph_plan
+  create_task` likewise treated `repo` and `invocation_context` as local paths:
+  it ran git there, recorded that repository's remote as the task's scope, and
+  answered differently for a path that exists and one that does not. Outside
+  the coding profile the write now succeeds with `code_anchors.wrote: false`
+  and a caveat, and `create_task` uses `scope_uids` only.
 
 ## 0.27.0 (2026-11-11)
 
