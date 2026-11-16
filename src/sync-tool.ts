@@ -4,11 +4,13 @@ import path from "node:path";
 import type { Tool } from "@modelcontextprotocol/server";
 import type { MindGraph } from "mindgraph";
 import {
-  CodegraphAdapter,
-  invocationCwd,
+  adapterFor,
+  NotOptedInRepositoryError,
   pathContains,
   type RepositoryIdentity,
 } from "./codegraph.js";
+import type { OnDecision } from "./consent.js";
+import { refusalResult } from "./consent-refusal.js";
 import { toolError } from "./error-detail.js";
 
 type ToolResult = {
@@ -159,28 +161,31 @@ type SyncClient = {
 export async function handleSyncTool(
   client: MindGraph,
   args: Record<string, unknown>,
+  runtime: { consent?: OnDecision; profile?: string; hosted?: boolean } = {},
 ): Promise<ToolResult> {
   try {
     const action = String(args.action || "");
     const context = (args.invocation_context || {}) as InvocationContext;
-    const adapter = new CodegraphAdapter({ cwd: invocationCwd(args) });
+    const adapter = adapterFor(args, runtime);
     const requestedRepo =
       typeof args.repo === "string"
         ? args.repo
         : typeof args.repo_id === "string"
           ? args.repo_id
           : context.repoId;
-    const repository = await adapter.resolveRepository(requestedRepo);
-    const root = repository.repoRoot;
-    const repoId = repository.repoId;
     const provider = String(args.provider || "claude_project");
     const remote = client as unknown as SyncClient;
+    // A workspace scan needs no single repository: inside consent it covers
+    // exactly the pinned set, even at a workspace root.
+    const workspaceScan = action === "scan" && args.workspace === true;
+    const repository = workspaceScan
+      ? undefined
+      : await adapter.resolveRepository(requestedRepo);
 
     if (action === "scan") {
-      const repositories =
-        args.workspace === true
-          ? await adapter.resolveRepositories()
-          : [repository];
+      const repositories = workspaceScan
+        ? await adapter.resolveRepositories()
+        : [repository!];
       if (args.workspace === true && repositories.length === 0) {
         return err(
           "workspace_not_configured",
@@ -214,10 +219,11 @@ export async function handleSyncTool(
       return ok(scans[0]);
     }
 
+    const root = repository!.repoRoot;
     const request: Record<string, unknown> = {
       ...args,
       provider,
-      repo_id: repoId,
+      repo_id: repository!.repoId,
     };
     delete request.invocation_context;
     delete request.paths;
@@ -247,6 +253,7 @@ export async function handleSyncTool(
     }
     return ok(await remote.memorySync(request));
   } catch (error) {
+    if (error instanceof NotOptedInRepositoryError) return refusalResult(error.payload);
     return toolError(error, "sync_failed");
   }
 }

@@ -10,7 +10,8 @@ import {
   handleCodeTool,
   type CodeClient,
 } from "./code-tool.js";
-import { CodegraphAdapter } from "./codegraph.js";
+import { adapterFor, CodegraphAdapter, NotOptedInRepositoryError } from "./codegraph.js";
+import { refusalResult } from "./consent-refusal.js";
 import { handleSyncTool, SYNC_TOOL } from "./sync-tool.js";
 import {
   handleMemoryTool,
@@ -1514,7 +1515,7 @@ export async function handleTool(
         result = await handleCommit(client, args);
         break;
       case "mindgraph_plan":
-        result = await handlePlan(client, args, !runsLocalCode(runtime));
+        result = await handlePlan(client, args, !runsLocalCode(runtime), runtime);
         break;
       case "mindgraph_retrieve":
         result = await handleRetrieve(client, args, memoryConfig.profile);
@@ -1538,10 +1539,10 @@ export async function handleTool(
         result = await handleOntology(client, args);
         break;
       case "mindgraph_code":
-        result = await handleCodeTool(client, args);
+        result = await handleCodeTool(client, args, undefined, runtime);
         break;
       case "mindgraph_sync":
-        result = await handleSyncTool(client, args);
+        result = await handleSyncTool(client, args, runtime);
         break;
       default:
         result = err(`Unknown tool: ${name}`);
@@ -1570,8 +1571,9 @@ export async function handleTool(
         "code refs resolve only in the local coding setup (npx -y mindgraph-mcp@latest install-code)",
       );
     }
-    return await attachCodeRefsToToolResult(client, result, args);
+    return await attachCodeRefsToToolResult(client, result, args, undefined, runtime);
   } catch (e: unknown) {
+    if (e instanceof NotOptedInRepositoryError) return refusalResult(e.payload);
     return toolError(e);
   }
 }
@@ -2169,6 +2171,8 @@ async function repositoryScopeUidsForTask(
      * them would probe the filesystem, run git and may write a repository id.
      * Only `scope_uids` count. */
     noLocalRepo?: boolean;
+    /** The server's runtime: an on decision pins the adapter. */
+    runtime?: ToolRuntime;
   },
 ): Promise<string[] | undefined> {
   if (options.noLocalRepo) return options.scopeUids;
@@ -2181,14 +2185,20 @@ async function repositoryScopeUidsForTask(
 
   const agentId = options.agentId ?? process.env.MINDGRAPH_AGENT_ID ?? "mcp";
   const fallbackSpaceUid = options.repoSpaceUid ?? `space:agent:${agentId}`;
-  const env = { ...process.env };
-  if (!options.repo && repoId) {
-    env.MINDGRAPH_REPO_ID = repoId;
+  let adapter: CodegraphAdapter;
+  if (options.runtime?.consent || runsLocalCode(options.runtime ?? {})) {
+    // Inside consent the pin decides; the caller's cwd and repoId do not.
+    adapter = adapterFor({}, options.runtime);
+  } else {
+    const env = { ...process.env };
+    if (!options.repo && repoId) {
+      env.MINDGRAPH_REPO_ID = repoId;
+    }
+    adapter = new CodegraphAdapter({
+      cwd: cwd ?? process.cwd(),
+      env,
+    });
   }
-  const adapter = new CodegraphAdapter({
-    cwd: cwd ?? process.cwd(),
-    env,
-  });
   const repository = await adapter.resolveRepository(options.repo, fallbackSpaceUid);
   const anchored = await anchorRepository(
     client as unknown as CodeClient,
@@ -2209,6 +2219,7 @@ async function handlePlan(
   client: MindGraph,
   args: Record<string, unknown>,
   noLocalRepo = false,
+  runtime: ToolRuntime = {},
 ): Promise<ToolResult> {
   const {
     action,
@@ -2331,6 +2342,7 @@ async function handlePlan(
               invocationContext: invocation_context,
               noLocalRepo,
               agentId: agent_id,
+              runtime,
             })
           : scope_uids;
       return ok(

@@ -127,6 +127,10 @@ export function renderInstructions(
   return { text, sections };
 }
 
+/** Appended by the coding server when its session directory is off. */
+export const CONSENT_OFF_INSTRUCTION =
+  "MindGraph is off in this directory: do not call its tools unless the user asks; the user can turn it on with npx -y mindgraph-mcp@latest on in a terminal.";
+
 export function buildInstructions(profile: string, harness: string): string {
   return renderInstructions(profile, harness).text;
 }

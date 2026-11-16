@@ -34,6 +34,12 @@ import { getPrompt, PROMPTS } from "./prompts.js";
 import { RESOURCES, RESOURCE_TEMPLATES, readGovernedResource } from "./resources.js";
 import { handleTool, localCodingToolRefusal, toolsForProfile } from "./tools.js";
 import type { ToolRuntime } from "./job-wait.js";
+import type { OnDecision } from "./consent.js";
+import {
+  noConsentDecision,
+  refusalResult,
+  type ConsentCheck,
+} from "./consent-refusal.js";
 
 export type { GeneratedToolsEntry, GovernanceLatch };
 
@@ -61,10 +67,31 @@ export interface ServerWiring {
   generatedTools?: GeneratedToolsEntry;
   /** Present in hosted mode: adds search/fetch/whoami and the attribution rule (D4). */
   hosted?: HostedIdentity & { log?: (event: Record<string, unknown>) => void };
+  /** The local coding profile's consent gate, asked on every tools/list,
+   * tools/call and resources/read. `callCwd` is a call's
+   * invocation_context.cwd when it carries one. The stdio entry supplies it
+   * for the coding profile; a local coding server without it refuses
+   * everything. Hosted mode and the general profile are not gated. */
+  consent?: (callCwd?: unknown) => ConsentCheck;
+}
+
+/** A call's own directory: `invocation_context.cwd` when the key is there
+ * (any value, so a malformed one is refused rather than ignored). */
+function callDirectory(args: Record<string, unknown> | undefined): unknown {
+  const context = args?.invocation_context;
+  if (!context || typeof context !== "object" || Array.isArray(context)) return undefined;
+  return (context as Record<string, unknown>).cwd;
 }
 
 export function buildMindGraphServer(wiring: ServerWiring): Server {
   const { client, hosted } = wiring;
+  // Fail closed: the local coding profile never runs ungated.
+  const gate = hosted
+    ? undefined
+    : (wiring.consent ??
+      (wiring.profile === "coding"
+        ? (): ConsentCheck => ({ allowed: false, payload: noConsentDecision() })
+        : undefined));
   const server = new Server(
     { name: "mindgraph", version: wiring.serverVersion },
     {
@@ -74,6 +101,9 @@ export function buildMindGraphServer(wiring: ServerWiring): Server {
   );
 
   server.setRequestHandler('tools/list', async () => {
+    // Where MindGraph is off, only the static list: fetching the ontology's
+    // tools is a request.
+    if (gate && !gate().allowed) return { tools: toolsForProfile(wiring.profile) };
     // Static tools + per-object-type read tools generated from the active
     // ontology (never throws — empty set if the manifest endpoint is absent).
     const generated = await getGeneratedTools(client, wiring.generatedTools);
@@ -104,12 +134,33 @@ export function buildMindGraphServer(wiring: ServerWiring): Server {
       return refusal;
     }
 
+    // Where MindGraph is off nothing else runs: no hook lookup, governance
+    // probe, ontology fetch or tool. Reads are refused too; each one is a
+    // request. A call that names its own directory must be on as well,
+    // under the same root as this server's session.
+    let decision: OnDecision | undefined;
+    const modelCwd = callDirectory(args as Record<string, unknown> | undefined);
+    if (gate) {
+      const check = gate(modelCwd);
+      if (!check.allowed) return refusalResult(check.payload);
+      decision = check.decision;
+    }
+
     const rawArgs = {
       ...((args as Record<string, unknown>) || {}),
       // H1: session, lease and invocation fields the local hook recorded for
       // this exact call (stdio only; hosted mode has no local hook).
       ...(hosted ? {} : wiring.resolveHookFields?.(name, (args as Record<string, unknown>) || {})),
     };
+    // The hook may have supplied the call's directory; check it the same way.
+    if (gate) {
+      const hookCwd = callDirectory(rawArgs);
+      if (hookCwd !== modelCwd) {
+        const check = gate(hookCwd);
+        if (!check.allowed) return refusalResult(check.payload);
+        decision = check.decision;
+      }
+    }
     // Inject default agent_id if not provided. Static tools declare agent_id;
     // generated ontology tools do not, and their schemas reject it — so the
     // injected copy is kept separate from the args they receive.
@@ -164,7 +215,7 @@ export function buildMindGraphServer(wiring: ServerWiring): Server {
       name,
       toolArgs,
       wiring.memory,
-      toolRuntime(ctx, Boolean(hosted), wiring.profile),
+      toolRuntime(ctx, Boolean(hosted), wiring.profile, decision),
     );
   });
 
@@ -186,6 +237,8 @@ export function buildMindGraphServer(wiring: ServerWiring): Server {
   });
 
   server.setRequestHandler('resources/read', async (request) => {
+    const check = gate?.();
+    if (check && !check.allowed) throw new Error(JSON.stringify(check.payload));
     return readGovernedResource(
       client,
       request.params.uri,
@@ -277,7 +330,12 @@ interface CallContext {
   };
 }
 
-function toolRuntime(ctx: unknown, hosted: boolean, profile: string): ToolRuntime {
+function toolRuntime(
+  ctx: unknown,
+  hosted: boolean,
+  profile: string,
+  consent?: OnDecision,
+): ToolRuntime {
   const request = (ctx as CallContext | undefined)?.mcpReq;
   const token = request?._meta?.progressToken;
   const notify = request?.notify;
@@ -285,6 +343,7 @@ function toolRuntime(ctx: unknown, hosted: boolean, profile: string): ToolRuntim
     signal: request?.signal,
     profile,
     hosted,
+    ...(consent ? { consent } : {}),
     ...(hosted ? { maxWaitSeconds: HOSTED_MAX_JOB_WAIT_SECONDS } : {}),
     ...(!hosted && token !== undefined && notify
       ? {
