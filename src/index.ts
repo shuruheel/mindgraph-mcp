@@ -1,16 +1,21 @@
 import { resolvePendingCall } from "./call-ledger.js";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { MindGraph } from "mindgraph";
-import { loadHookEnv, stableAgentId } from "./hook-env.js";
+import { homeIsAccountHome, loadHookEnv, stableAgentId } from "./hook-env.js";
 import { buildMindGraphServer } from "./server.js";
-import { buildInstructions } from "./instructions.js";
+import { buildInstructions, CONSENT_OFF_INSTRUCTION } from "./instructions.js";
 import { resolveRepositoryScope, type ScopeClient } from "./workspace-scope.js";
 import path from "node:path";
 import {
+  gateFloorWarning,
   refreshHookRunner,
   refreshOwnedClaudeHooks,
+  runnerPredatesGate,
+  runnerRefreshScopes,
   versionSkewNote,
 } from "./hook-installer.js";
+import { consentFor, type ConsentDecision } from "./consent.js";
+import { notOptedIn, otherRoot, type ConsentCheck } from "./consent-refusal.js";
 
 declare const __PACKAGE_VERSION__: string;
 
@@ -28,6 +33,10 @@ const AGENT_ID =
 const ORG_ID = process.env.MINDGRAPH_ORG_ID;
 const PROFILE = process.env.MINDGRAPH_PROFILE || "general";
 const HARNESS = process.env.MINDGRAPH_HARNESS || "generic";
+// The coding profile reads the checkout and runs on the user's repositories,
+// so it works only where the user turned MindGraph on. The general profile
+// is not gated.
+const GATED = PROFILE === "coding";
 
 if (!API_KEY) {
   console.error(
@@ -57,23 +66,66 @@ const client = new MindGraph({
 // holds every profile and harness under Claude Code's 4,096-character cut.
 let INSTRUCTIONS = buildInstructions(PROFILE, HARNESS);
 
+// The session directory is where the host started this server.
+const sessionDecision = (): ConsentDecision => consentFor(process.cwd());
+const START_DECISION = GATED ? sessionDecision() : undefined;
+if (GATED && START_DECISION?.state !== "on") {
+  INSTRUCTIONS += `\n\n${CONSENT_OFF_INSTRUCTION}`;
+}
+
+/** Asked on every request: `on` and `off` can run mid-session. */
+const consentGate = GATED
+  ? (callCwd?: unknown): ConsentCheck => {
+      const session = sessionDecision();
+      if (session.state !== "on") {
+        return { allowed: false, payload: notOptedIn(session, process.cwd()) };
+      }
+      if (callCwd === undefined) return { allowed: true, decision: session };
+      const call = consentFor(callCwd);
+      if (call.state !== "on") {
+        // A call's directory that did not resolve is never echoed back.
+        return { allowed: false, payload: notOptedIn(call) };
+      }
+      if (call.root !== session.root) {
+        return { allowed: false, payload: otherRoot(session, call) };
+      }
+      return { allowed: true, decision: call };
+    }
+  : undefined;
+
 // Self-heal the pinned hook runner: the registration floats on `npx
 // @latest`, so the freshest code in the system is this server — let it
 // refresh the runner (and the owned hook entries' timeout budgets) instead
 // of asking every machine to re-run install-hooks after each release. The
 // bundled cli.js ships as a sibling of this file; in dev/test there is no
 // sibling bundle and the refresh is a no-op.
+//
+// Which entries it may rewrite is decided in runnerRefreshScopes; it never
+// writes when $HOME is not the account's home directory.
+const INSIDE_CONSENT = START_DECISION?.state === "on";
+const REFRESH_SCOPES = (() => {
+  try {
+    return runnerRefreshScopes(
+      INSIDE_CONSENT,
+      !INSIDE_CONSENT && runnerPredatesGate(),
+      homeIsAccountHome(),
+    );
+  } catch {
+    return undefined;
+  }
+})();
 const RUNNER_REFRESH = (() => {
+  if (!REFRESH_SCOPES) return undefined;
   try {
     return refreshHookRunner(__PACKAGE_VERSION__, path.join(__dirname, "cli.js"));
   } catch {
     return undefined;
   }
 })();
-if (RUNNER_REFRESH?.refreshed) {
+if (RUNNER_REFRESH?.refreshed && REFRESH_SCOPES) {
   const refreshedSettings = (() => {
     try {
-      return refreshOwnedClaudeHooks();
+      return refreshOwnedClaudeHooks(undefined, undefined, REFRESH_SCOPES);
     } catch {
       return [] as string[];
     }
@@ -87,6 +139,17 @@ if (RUNNER_REFRESH?.refreshed) {
         : ""),
   );
 }
+
+// A runner below the consent floor that stayed (MINDGRAPH_HOOK_AUTOUPDATE=off,
+// or a failed refresh) ignores consent: say so.
+const GATE_WARNING = (() => {
+  try {
+    return gateFloorWarning();
+  } catch {
+    return undefined;
+  }
+})();
+if (GATE_WARNING) console.error(`[mindgraph-mcp] ${GATE_WARNING}`);
 
 // Hook/server version skew: after a successful refresh the sidecar matches
 // and this stays silent; it fires only when the self-heal was opted out,
@@ -123,12 +186,25 @@ const MEMORY_RUNTIME_CONFIG = {
   harness: HARNESS,
   orgId: ORG_ID,
   agentId: AGENT_ID,
-  resolveWorkspaceScope: (agentId: string) =>
-    resolveRepositoryScope(
-      process.env.CLAUDE_PROJECT_DIR || process.cwd(),
-      client as unknown as ScopeClient,
-      agentId,
-    ),
+  // Workspace scope is a coding-setup feature, and comes from the pinned set
+  // only: no workspace file is discovered and no git runs. The general
+  // profile has none.
+  ...(GATED
+    ? {
+        resolveWorkspaceScope: async (agentId: string) => {
+          const decision = sessionDecision();
+          if (decision.state !== "on") {
+            return { uids: [], names: {}, failures: ["MindGraph is off here"] };
+          }
+          return resolveRepositoryScope(
+            decision.directory,
+            client as unknown as ScopeClient,
+            agentId,
+            { repositories: decision.repositories },
+          );
+        },
+      }
+    : {}),
 };
 
 // Tools, prompts and resources are wired in server.ts, shared with the hosted
@@ -145,6 +221,7 @@ const buildServer = () => buildMindGraphServer({
   governance: GOVERNANCE_CONFIG,
   memory: MEMORY_RUNTIME_CONFIG,
   resolveHookFields: (name, args) => resolvePendingCall(name, args),
+  ...(consentGate ? { consent: consentGate } : {}),
 });
 
 // ── Start ─────────────────────────────────────────────────────────────

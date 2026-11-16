@@ -2,15 +2,21 @@ import { MindGraph } from "mindgraph";
 import type { Tool } from "@modelcontextprotocol/server";
 import { errorDetail, toolError } from "./error-detail.js";
 import {
+  adapterFor,
   CodegraphAdapter,
+  NotOptedInRepositoryError,
   UnknownRepositoryError,
   codeRefIdentityKey,
-  invocationCwd,
   repositoryIdentityKey,
   type CodeRef,
   type RepositoryIdentity,
   type ResolvedCodeRef,
 } from "./codegraph.js";
+import type { OnDecision } from "./consent.js";
+import { refusalResult } from "./consent-refusal.js";
+
+/** What a code tool needs from the server's runtime to pick its adapter. */
+export type CodeRuntime = { consent?: OnDecision; profile?: string; hosted?: boolean };
 
 export type ToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -117,8 +123,16 @@ export const CODE_TOOL: Tool = {
 export async function handleCodeTool(
   client: MindGraph,
   args: Record<string, unknown>,
-  adapter = new CodegraphAdapter({ cwd: invocationCwd(args) }),
+  adapterOverride?: CodegraphAdapter,
+  runtime: CodeRuntime = {},
 ): Promise<ToolResult> {
+  let adapter: CodegraphAdapter;
+  try {
+    adapter = adapterOverride ?? adapterFor(args, runtime);
+  } catch (cause) {
+    if (cause instanceof NotOptedInRepositoryError) return refusalResult(cause.payload);
+    throw cause;
+  }
   const codeClient = client as unknown as CodeClient;
   const action = args.action as string;
   const refs = Array.isArray(args.code_refs)
@@ -346,6 +360,7 @@ export async function handleCodeTool(
         return err("unknown_action", `unknown mindgraph_code action: ${action}`);
     }
   } catch (cause) {
+    if (cause instanceof NotOptedInRepositoryError) return refusalResult(cause.payload);
     if (cause instanceof UnknownRepositoryError) {
       return err("unknown_repository", cause.message);
     }
@@ -361,6 +376,7 @@ export async function attachCodeRefsToToolResult(
   result: ToolResult,
   args: Record<string, unknown>,
   adapter?: CodegraphAdapter,
+  runtime: CodeRuntime = {},
 ): Promise<ToolResult> {
   if (result.isError || !Array.isArray(args.code_refs) || args.code_refs.length === 0) {
     return result;
@@ -389,6 +405,7 @@ export async function attachCodeRefsToToolResult(
       invocation_context: args.invocation_context,
     },
     adapter,
+    runtime,
   );
   const anchors = JSON.parse(anchorResult.content[0]?.text ?? "null") as {
     anchors?: EntityResponse[];

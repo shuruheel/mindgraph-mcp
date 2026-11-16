@@ -119,6 +119,33 @@ export function runnerPredatesGate(homeDir?: string): boolean {
   return !pinned || semverNewer(parseSemver(GATE_MIN_VERSION)!, pinned);
 }
 
+/** The line the server (on stderr) and `status` print while the installed
+ * runner predates consent; undefined otherwise. */
+export function gateFloorWarning(homeDir?: string): string | undefined {
+  if (!runnerPredatesGate(homeDir)) return undefined;
+  const version = installedHookRunnerVersion(homeDir);
+  return (
+    `the installed hook runner ${version ? `v${version}` : "(version unrecorded)"} predates consent and ignores it; ` +
+    `run npx -y mindgraph-mcp@latest install-hooks`
+  );
+}
+
+/** The hook entries the server may refresh at start, or undefined for no
+ * refresh at all. Inside consent: the user and project entries. Outside it
+ * (and in the general profile): only a runner that predates consent, and
+ * then only the user entries, never a project's. Never when $HOME is not
+ * the account's home: an environment variable must not pick where this
+ * writes. */
+export function runnerRefreshScopes(
+  insideConsent: boolean,
+  runnerBelowGate: boolean,
+  homeIsAccount: boolean,
+): HookScope[] | undefined {
+  if (!homeIsAccount) return undefined;
+  if (insideConsent) return ["user", "project"];
+  return runnerBelowGate ? ["user"] : undefined;
+}
+
 export interface RunnerRefresh {
   refreshed: boolean;
   reason:

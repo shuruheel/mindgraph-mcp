@@ -7,6 +7,8 @@
  * is capped below the tool-call timeouts hosts apply, so a long job comes back
  * as "still running" with its counts, never as a timeout.
  */
+import type { OnDecision } from "./consent.js";
+
 export const MAX_JOB_WAIT_SECONDS = 50;
 const POLL_INTERVAL_MS = 2_000;
 const TERMINAL = new Set(["completed", "completed_with_errors", "failed", "cancelled"]);
@@ -24,6 +26,14 @@ export interface ToolRuntime {
   signal?: AbortSignal;
   /** Upper bound on `wait_seconds` for this transport. */
   maxWaitSeconds?: number;
+  /** The server's profile, from its wiring. `mindgraph_code` and
+   * `mindgraph_sync` run only when this is "coding" and `hosted` is not set. */
+  profile?: string;
+  /** Set in hosted mode: no tool may touch the host's filesystem or run git. */
+  hosted?: boolean;
+  /** The coding server's consent decision for this call: every local
+   * repository path runs from its pinned set. */
+  consent?: OnDecision;
 }
 
 export interface JobWaitResult {

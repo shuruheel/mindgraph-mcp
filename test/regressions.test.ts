@@ -122,6 +122,14 @@ describe("R3 — composite actions forward execution_uid (field drift)", () => {
   );
 });
 
+/** The decision of a coding server whose session is in `root`, a repository
+ * the user turned on under the hook-reported id. */
+function r18Consent(root: string) {
+  return consentOn(root, [
+    { root, repo_id: "github.com/example/repository", space_uid: null },
+  ]);
+}
+
 describe("R18 — created Tasks carry the repository topology SessionStart filters on", () => {
   it("materializes the hook-owned repository and adds its UID to create_task scope_uids", async () => {
     // Failure pinned: create_task accepted repo/scope fields but persisted no
@@ -133,6 +141,8 @@ describe("R18 — created Tasks carry the repository topology SessionStart filte
     });
     const plan = vi.fn().mockResolvedValue({ uid: "task-1" });
     const client = { entity, plan } as unknown as MindGraph;
+    const r18Repo = fs.realpathSync.native(tempDir("mindgraph-r18-cwd-"));
+    fs.mkdirSync(path.join(r18Repo, ".git"));
 
     await handleTool(client, "mindgraph_plan", {
       action: "create_task",
@@ -145,13 +155,15 @@ describe("R18 — created Tasks carry the repository topology SessionStart filte
         // .mindgraph/workspace.json (space:project:* would then beat the
         // space:agent:* fallback asserted below) — exactly the layout the
         // product recommends for dev machines.
-        cwd: tempDir("mindgraph-r18-cwd-"),
+        cwd: r18Repo,
         repoId: "github.com/example/repository",
         harness: "codex",
         harnessSessionId: "session-1",
         injectedBy: "hook",
       },
-    });
+      // Repository scope resolves only in the local coding profile, and
+      // there from the repository the user turned on.
+    }, {}, { profile: "coding", consent: r18Consent(r18Repo) });
 
     expect(entity).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -183,16 +195,18 @@ describe("R18 — created Tasks carry the repository topology SessionStart filte
     });
     const plan = vi.fn();
     const client = { entity, plan } as unknown as MindGraph;
+    const r18Repo = fs.realpathSync.native(tempDir("mindgraph-r18-cwd-"));
+    fs.mkdirSync(path.join(r18Repo, ".git"));
 
     const result = await handleTool(client, "mindgraph_plan", {
       action: "create_task",
       label: "Must not become an invisible handoff",
       invocation_context: {
-        cwd: process.cwd(),
+        cwd: r18Repo,
         repoId: "github.com/example/repository",
         injectedBy: "hook",
       },
-    });
+    }, {}, { profile: "coding", consent: r18Consent(r18Repo) });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("exists_but_inaccessible");

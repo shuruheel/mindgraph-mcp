@@ -8,6 +8,11 @@ const RESULT_SCHEMA_VERSION = "mindgraph.memory.result.v1";
 const DEFAULT_OUTPUT_CHARS = 8_000;
 const MIN_OUTPUT_CHARS = 512;
 const MAX_OUTPUT_CHARS = 24_000;
+/** The server renderer estimates about four characters per token for prose;
+ * `mindgraph_retrieve` derives its `max_tokens` the same way. */
+const CHARS_PER_TOKEN = 4;
+/** The smallest `max_tokens` the server accepts for a text read. */
+const MIN_SERVER_TOKENS = 256;
 const HIDDEN_CONTEXT_NODE_TYPES = new Set(["Chunk", "Document", "Article"]);
 const HIDDEN_CONTEXT_EDGE_TYPES = new Set(["POSSIBLE_DUPLICATE", "PossibleDuplicate"]);
 
@@ -96,8 +101,8 @@ export const MEMORY_TOOL: Tool = {
       },
       include_chunks: {
         type: "boolean",
-        default: false,
-        description: "Include bounded source excerpts when topic summaries are insufficient",
+        description:
+          "Source excerpts in topic context. Omit to let the server decide (it may include some by default); true includes bounded excerpts when summaries are insufficient; false excludes them.",
       },
       include_documents: {
         type: "boolean",
@@ -532,6 +537,76 @@ async function conversationBrief(
   };
 }
 
+/** What a server that rendered the topic text (`format: "text"`) says it wrote
+ * (mindgraph-rs #178). Absent on servers before it, which get the local
+ * renderer exactly as before. */
+interface ServerRendering {
+  text: string;
+  nodes: string[];
+  briefNodes: Set<string>;
+  articles: string[];
+}
+
+function uidList(value: unknown): string[] | undefined {
+  return Array.isArray(value)
+    ? value.filter((uid): uid is string => typeof uid === "string")
+    : undefined;
+}
+
+function serverRendering(raw: unknown): ServerRendering | undefined {
+  const payload = obj(raw);
+  const contextText = text(payload?.context_text);
+  const listed = obj(payload?.rendered);
+  const nodes = uidList(listed?.nodes);
+  const articles = uidList(listed?.articles);
+  if (!contextText || !nodes || !articles) return undefined;
+  return {
+    text: contextText,
+    nodes,
+    briefNodes: new Set(uidList(listed?.brief_nodes) ?? []),
+    articles,
+  };
+}
+
+/** The JSON a pre-`rendered` server returned, as the local renderer saw it
+ * before topic mode asked for text: the server's text and its accounting are
+ * dropped, and source excerpts are kept only when they were asked for (a JSON
+ * read sent `chunk_limit: 0` unless include_chunks was true). */
+function localTopicPayload(raw: unknown, includeChunks: boolean): unknown {
+  const payload = obj(raw);
+  if (!payload) return raw;
+  const rest: Rec = { ...payload };
+  for (const key of ["context_text", "used_tokens", "truncated", "omitted"]) delete rest[key];
+  if (!includeChunks) delete rest.chunks;
+  return rest;
+}
+
+/** Topic items in the order the server text writes them: graph items, then
+ * articles. Relationships are not written by the server text. When the
+ * character budget cut the server text, an item stays only if its line is
+ * still in what was kept. */
+function serverItems(candidates: Rec[], served: ServerRendering, rendered: string, cut: boolean): Rec[] {
+  const byUid = new Map<string, Rec>();
+  for (const candidate of candidates) {
+    const uid = text(candidate.uid);
+    if (uid && !byUid.has(uid)) byUid.set(uid, candidate);
+  }
+  const seen = new Set<string>();
+  const items: Rec[] = [];
+  for (const uid of [...served.nodes, ...served.articles]) {
+    const item = byUid.get(uid);
+    if (!item || seen.has(uid)) continue;
+    seen.add(uid);
+    const label = text(item.label);
+    if (cut) {
+      const line = item.type === "Article" ? `[article] ${label}` : ` — ${label}`;
+      if (!label || !rendered.includes(line)) continue;
+    }
+    items.push(served.briefNodes.has(uid) ? { ...item, brief: true } : item);
+  }
+  return items;
+}
+
 function visibleItems(candidates: Rec[], rendered: string): Rec[] {
   const seen = new Set<string>();
   return candidates.filter((item) => {
@@ -580,7 +655,14 @@ function latestTimestamp(value: unknown): string | undefined {
   return latest;
 }
 
-function contextWarnings(raw: unknown, rendered: string, available: number, returned: number): Rec[] {
+function contextWarnings(
+  raw: unknown,
+  rendered: string,
+  available: number,
+  returned: number,
+  /** Set when the server rendered the text: whether its budget bounded it. */
+  serverBounded?: boolean,
+): Rec[] {
   const warnings: Rec[] = [
     {
       code: "delivery_unverified",
@@ -588,10 +670,15 @@ function contextWarnings(raw: unknown, rendered: string, available: number, retu
     },
   ];
   const serialized = JSON.stringify(raw);
-  if (available > returned || rendered.includes("item(s) omitted")) {
+  const server = serverBounded !== undefined;
+  if (server ? serverBounded : available > returned || rendered.includes("item(s) omitted")) {
+    const omitted = Math.max(0, available - returned);
     warnings.push({
       code: "context_bounded",
-      message: `${Math.max(0, available - returned)} structured item(s) were omitted from the rendered context.`,
+      message:
+        server && omitted === 0
+          ? "Some items were shortened to fit the rendered context's budget."
+          : `${omitted} structured item(s) were omitted from the rendered context.`,
     });
   }
   if (/"superseded":(?:true|\{)/.test(serialized)) {
@@ -604,9 +691,12 @@ function contextWarnings(raw: unknown, rendered: string, available: number, retu
     });
   }
   const payload = obj(raw);
-  if (payload?.truncated === true || obj(payload?.truncation)) {
+  // A server-rendered read's `truncated` is its text budget (context_bounded
+  // above), not truncated source fields.
+  const sourceTruncated = !server && payload?.truncated === true;
+  if (sourceTruncated || obj(payload?.truncation)) {
     const truncation = obj(payload?.truncation);
-    if (payload?.truncated === true || Object.values(truncation ?? {}).some(Boolean)) {
+    if (sourceTruncated || Object.values(truncation ?? {}).some(Boolean)) {
       warnings.push({ code: "source_truncated", message: "The authoritative source reported truncated fields." });
     }
   }
@@ -650,6 +740,7 @@ export async function handleMemoryTool(
   let rendered: string;
   let strategy: "retrieve_context" | "resume_work" | "brief";
   let candidates: Rec[];
+  let served: ServerRendering | undefined;
   let workspace: RepositoryScope | undefined;
   let briefUnavailable: string[] = [];
 
@@ -674,15 +765,25 @@ export async function handleMemoryTool(
         node_limit: limit,
         node_types: Array.isArray(args.node_types) ? args.node_types.map(String) : undefined,
         layer: text(args.layer),
-        chunk_limit: args.include_chunks === true ? limit : 0,
+        // RD2: without include_chunks the server's source-text default decides
+        // (an omitted chunk_limit is 0 on servers without one).
+        chunk_limit:
+          args.include_chunks === true ? limit : args.include_chunks === false ? 0 : undefined,
         article_limit: args.include_documents === true ? limit : 0,
         valid_at: text(args.valid_at),
         include_graph: true,
         graph_expansion_limit:
           typeof args.graph_expansion_limit === "number" ? args.graph_expansion_limit : 3,
         graph_max_depth: typeof args.graph_max_depth === "number" ? args.graph_max_depth : 2,
+        // The server renders under a token budget derived from the character budget.
+        format: "text",
+        max_tokens: Math.max(MIN_SERVER_TOKENS, Math.floor(budget / CHARS_PER_TOKEN)),
       }) as unknown as Parameters<MemoryClient["retrieveContext"]>[0];
-    raw = await client.retrieveContext(request);
+    const response = await client.retrieveContext(request);
+    served = serverRendering(response);
+    // A server that lists what its text shows is rendered from; any other
+    // response is rendered locally from its JSON, as before.
+    raw = served ? response : localTopicPayload(response, args.include_chunks === true);
     rendered = renderContext(raw, budget) ?? "No results found for this search.";
     strategy = "retrieve_context";
     candidates = topicCandidates(raw);
@@ -729,7 +830,19 @@ export async function handleMemoryTool(
     candidates = resumeCandidates(raw);
   }
 
-  const items = visibleItems(candidates, rendered);
+  // The server text can be longer than the character budget only if the
+  // token estimate undershot; renderContext then cuts it.
+  const cut = served !== undefined && served.text.length > budget;
+  const items = served
+    ? serverItems(candidates, served, rendered, cut)
+    : visibleItems(candidates, rendered);
+  // Relationships are listed only when the local renderer writes them.
+  const available = served
+    ? candidates.filter((item) => item.type !== "Relationship").length
+    : candidates.length;
+  const serverBounded = served
+    ? obj(raw)?.truncated === true || cut || available > items.length
+    : undefined;
   const renderedHash = sha256(rendered);
   const scope = defined({
     org_id: config.orgId,
@@ -744,7 +857,8 @@ export async function handleMemoryTool(
   const contextId = `ctx_${sha256(
     stableJson({ mode, scope, strategy, query: text(args.query), rendered_hash: renderedHash }),
   ).slice(0, 24)}`;
-  const bounded = candidates.length > items.length || rendered.includes("item(s) omitted");
+  const bounded =
+    serverBounded ?? (candidates.length > items.length || rendered.includes("item(s) omitted"));
   const result: Rec = {
     schema_version: RESULT_SCHEMA_VERSION,
     action: "context",
@@ -763,17 +877,21 @@ export async function handleMemoryTool(
       node_types: Array.isArray(args.node_types) ? args.node_types.map(String) : undefined,
       graph_expansion_limit: mode === "topic" ? (args.graph_expansion_limit ?? 3) : undefined,
       graph_max_depth: mode === "topic" ? (args.graph_max_depth ?? 2) : undefined,
-      available_items: candidates.length,
+      available_items: available,
       returned_items: items.length,
-      omitted_items: Math.max(0, candidates.length - items.length),
+      omitted_items: Math.max(0, available - items.length),
+      // Server-rendered topic text: who rendered it, and the server's own
+      // count of what its budget dropped or shortened.
+      rendering: served ? "server" : undefined,
+      server_omitted: served ? obj(obj(raw)?.omitted) : undefined,
     }),
     budget: {
       unit: "characters",
       requested_chars: budget,
       used_chars: rendered.length,
-      available_items: candidates.length,
+      available_items: available,
       returned_items: items.length,
-      omitted_items: Math.max(0, candidates.length - items.length),
+      omitted_items: Math.max(0, available - items.length),
       bounded,
     },
     freshness: defined({
@@ -781,7 +899,7 @@ export async function handleMemoryTool(
       latest_source_timestamp: latestTimestamp(raw),
     }),
     warnings: [
-      ...contextWarnings(raw, rendered, candidates.length, items.length),
+      ...contextWarnings(raw, rendered, available, items.length, serverBounded),
       ...(briefUnavailable.length > 0
         ? [
             {

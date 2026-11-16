@@ -37,6 +37,7 @@ import { codexHookOutput, runCodexHook } from "./codex-hooks.js";
 import { installCursor, uninstallCursor } from "./cursor-install.js";
 import { offOutput, previewCapture, readHookStats } from "./hook-core.js";
 import {
+  gateFloorWarning,
   installClaudeHooks,
   installCodexHooks,
   type InstallResult,
@@ -322,6 +323,14 @@ function printStatus(): void {
   // This directory's consent state comes first: it decides whether anything
   // below does work here.
   for (const line of consentStatusLines(process.cwd())) console.log(line);
+  const gateWarning = (() => {
+    try {
+      return gateFloorWarning();
+    } catch {
+      return undefined;
+    }
+  })();
+  if (gateWarning) console.log(`Hook runner: ${gateWarning}`);
   console.log("");
 
   // Check Claude Desktop

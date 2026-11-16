@@ -95,6 +95,18 @@ export function passwdHome(): string | undefined {
   }
 }
 
+/** `$HOME` (as `os.homedir()` reads it) is the account's home from the
+ * password database, by real path. False when either is missing. */
+export function homeIsAccountHome(home: string = os.homedir()): boolean {
+  const account = passwdHome();
+  if (!account || !home) return false;
+  try {
+    return fs.realpathSync.native(home) === fs.realpathSync.native(account);
+  } catch {
+    return false;
+  }
+}
+
 /** The nearest directory at or above `target` that contains `.git`. */
 export function gitWorkTreeAbove(target: string): string | undefined {
   let current = path.resolve(target);
