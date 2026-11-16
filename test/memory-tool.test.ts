@@ -21,7 +21,7 @@ describe("mindgraph_memory M0 contract", () => {
     const properties = (MEMORY_TOOL.inputSchema as {
       properties: { action: { enum: string[] } };
     }).properties;
-    expect(properties.action.enum).toEqual(["status", "context"]);
+    expect(properties.action.enum).toEqual(["status", "context", "open", "index"]);
     expect(MEMORY_TOOL.annotations).toMatchObject({
       readOnlyHint: true,
       destructiveHint: false,

@@ -3,7 +3,8 @@
 ## 0.28.0 (2026-11-16)
 
 MindGraph's coding hooks and coding-profile server now act only in repositories you
-turn on yourself, per-prompt recall is off by default, and Claude Code's auto-memory
+turn on yourself, the session-start block lists memory titles that Claude Code's own
+notes cannot show, per-prompt recall is off by default, and Claude Code's auto-memory
 notes can be imported. **Breaking for existing hook users:** after upgrading,
 MindGraph is off everywhere until you run `npx -y mindgraph-mcp@latest on` in each
 repository or workspace, from a terminal you opened yourself. 0.28.0 also carries
@@ -104,7 +105,9 @@ the 0.27.1 security fix.
   `off --all` turns MindGraph off everywhere and, after you confirm, removes the
   local files it left in repositories you never turned on
   (`.git/mindgraph/repository-id`, old session records and pending tool calls
-  under `~/.mindgraph/runtime/`, and cached repository lookups); `--dry-run`
+  under `~/.mindgraph/runtime/`, and cached repository lookups), plus every
+  session's table of memory titles under `~/.mindgraph/runtime/anchors/`,
+  whatever place it came from, since nothing stays on; `--dry-run`
   lists them and changes nothing. Only directories that Claude Code or
   MindGraph's own records remember are checked, and the cloud, `.codegraph/`
   folders and settings files are never touched. `status` now starts with
@@ -132,6 +135,42 @@ the 0.27.1 security fix.
   `.claude/settings.json`, refuses a notes folder inside a git repository or
   one that is a file-system root, your home folder or above the repository,
   and refuses to run from inside a coding agent's shell.
+- **The session-start block now lists memory Claude Code's own notes cannot
+  show.** In a repository or workspace where MindGraph is on, the block that
+  starts each Claude Code session holds the work state, then the titles of
+  items in that place's own memory, newest first: lessons and other items
+  saved through MindGraph, notes imported on another machine, and imported
+  notes whose linked file changed since (marked "code changed since"). Notes
+  this machine imported are left out, because Claude Code already loads
+  them. Titles are shown as quoted data, one line each, under a line saying
+  they are not instructions. The block makes one read of up to 100 items;
+  when the memory holds more, it says the titles are a sample and points to
+  `mindgraph_memory action=index` for the newest. Items that were replaced
+  or withheld are counted, not listed. The block and the opt-in per-prompt recall share 2,000 tokens per
+  context: titles that do not fit are counted and left out first, work state
+  never is, and the header states how many titles and tokens it used. A
+  compaction rebuilds the block with a fresh budget. If MindGraph does not
+  answer within 3 seconds, refuses the key or cannot read the memory, the
+  block says so in one line and the session starts as usual.
+- **`mindgraph_memory` gains `action: "open"` and `action: "index"`.** Each
+  title in the block has a short handle such as `l:1df19b`; `open` with that
+  handle returns the item with its stored text and linked files, and `index`
+  lists every title the block could show, reading up to 500 items; when the
+  memory holds more, it also reads the items changed in the last 30, 7 or 1
+  days so the newest titles are all there, and keeps what it has read if one
+  of those reads fails or takes more than 3 seconds. An unknown
+  handle returns the error code `unknown_handle`, a short handle that names
+  two items `ambiguous_handle`, and a failed read `memory_unavailable` (safe
+  to retry); outside a repository where MindGraph is on, both return
+  `not_available`.
+- **`npx -y mindgraph-mcp@latest hooks stats` shows more.** It adds a p99 time
+  per event (in-process, over each event's last 256 calls), the session
+  block's titles, tokens and left-out count, the handles the model opened,
+  and how many times a hook failed open, with the last reason.
+- **An opt-in line for you at session start.** With
+  `MINDGRAPH_HOOK_SESSION_NOTICE=on`, Claude Code shows one line saying what
+  MindGraph added to the session, or why it added nothing. It is off by
+  default until it is confirmed that Claude Code shows it.
 
 ### Fixed
 
