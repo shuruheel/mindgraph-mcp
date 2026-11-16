@@ -40,9 +40,18 @@
   with `MINDGRAPH_CONTEXT_SOURCE_DEFAULT=on` can add source windows to the rendered
   context. Servers without the setting (or with it off) treat the omission as 0, so
   nothing changes until it is turned on. `include_chunks: true` still asks for source
-  text and `include_chunks: false` now explicitly excludes it. `mindgraph_memory` topic
-  context and the prompt-recall hook read JSON and render locally, so they keep
-  `chunk_limit: 0`.
+  text and `include_chunks: false` now explicitly excludes it. The prompt-recall hook
+  reads JSON and renders locally, so it keeps `chunk_limit: 0`.
+- **`mindgraph_memory` topic context uses the server's rendering.** Topic mode now
+  asks for the server's text (`format: "text"`, `max_tokens` = the character budget
+  ÷ 4), and on a server that lists what its text shows (mindgraph-rs #178) returns
+  that text with `items` taken from the list, in the text's order; an item the
+  server wrote in its brief form carries `brief: true`. Relationships are no longer
+  listed as items on that path, because the server text does not write them, and
+  the budget and warnings follow the server's own `truncated` and `omitted`.
+  Without `include_chunks` the server's source-text default decides;
+  `include_chunks: true` or `false` still overrides it. Older servers get the local
+  rendering exactly as before. The prompt-recall hook is unchanged.
 
 ### Fixed
 
