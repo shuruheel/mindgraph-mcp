@@ -117,7 +117,17 @@ function machine() {
       "github.com/acme/never": { uid: "u2", at: 1 },
     },
   });
-  return { base, store, runtime, claudeConfig, repos, ids, ledgers, calls, scopeFile };
+  // A session's memory title table and a temporary left by a killed write;
+  // a file in the anchors folder that is not one is left alone.
+  const anchors = {
+    table: writeJson(path.join(runtime, "anchors", `${hex("h")}.json`), {
+      v: 1,
+      repositories: { [repos.consented]: { [path.join(repos.consented, "src", "a.ts")]: [{ handle: "l:abcdef", title: "A lesson" }] } },
+    }),
+    temporary: writeJson(path.join(runtime, "anchors", `${hex("i")}.json.123.${crypto.randomUUID()}.tmp`), {}),
+    other: writeJson(path.join(runtime, "anchors", "notes.json"), {}),
+  };
+  return { base, store, runtime, claudeConfig, repos, ids, ledgers, calls, scopeFile, anchors };
 }
 
 function person(
@@ -171,7 +181,14 @@ describe("off --all", () => {
     expect(await runOffAll(p.io, { claudeConfig: m.claudeConfig })).toBe(0);
     const text = p.out.join("\n");
     expect(text).toContain("Only directories Claude Code or MindGraph's own records remember were checked.");
-    expect(text).toContain("Removed: 3 repository identity files, 1 session record, 1 pending tool call, 1 cached repository lookup.");
+    expect(text).toContain("Memory title tables of sessions, from any place (2)");
+    expect(text).toContain(
+      "Removed: 3 repository identity files, 1 session record, 1 pending tool call, 1 cached repository lookup, 2 memory title tables.",
+    );
+    // Titles from a place that was on go too: off --all leaves nothing on.
+    expect(exists(m.anchors.table)).toBe(false);
+    expect(exists(m.anchors.temporary)).toBe(false);
+    expect(exists(m.anchors.other)).toBe(true);
 
     // Found through ~/.claude.json, a session record and a pending call.
     expect(exists(m.ids.never)).toBe(false);

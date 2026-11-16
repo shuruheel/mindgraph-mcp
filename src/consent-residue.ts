@@ -24,13 +24,18 @@ import { passwdHome } from "./hook-env.js";
  * left in places that were never turned on. Only files whose path and name
  * are exactly what MindGraph writes are removed: never a directory tree, never
  * a symbolic link's target, never a file outside the runtime directory or a
- * repository's `.git/mindgraph` folder. The cloud, `.codegraph/` folders and
- * settings files are not touched.
+ * repository's `.git/mindgraph` folder. The per-session memory title tables
+ * in the runtime's `anchors` folder are removed whatever place they came
+ * from, since nothing stays on. The cloud, `.codegraph/` folders and settings
+ * files are not touched.
  */
 
 const LEDGER_NAME = /^[0-9a-f]{64}\.json$/;
 const CALL_NAME = /^[0-9a-f]{64}\.[0-9a-f]{16}\.json$/;
 const SCOPE_CACHE_FILE = "repository-scopes.json";
+/** A session's memory title table, or its temporary (hook-core.ts). */
+const ANCHOR_TABLE_NAME = /^[0-9a-f]{64}\.json(?:\.\d+\.[0-9a-f-]+\.tmp)?$/;
+const ANCHORS_DIR = "anchors";
 /** ~/.claude.json can be large; nothing MindGraph reads here is bigger. */
 const MAX_JSON_BYTES = 64 * 1024 * 1024;
 
@@ -44,6 +49,9 @@ export interface Residue {
   /** Cached repository lookups for repositories pinned nowhere. */
   scopeEntries: string[];
   scopeFile: string;
+  /** Per-session memory title tables (titles keyed by file path), from any
+   * place: a session that was on when it started leaves one until SessionEnd. */
+  anchorTables: string[];
   runtimeDir: string;
 }
 
@@ -186,12 +194,20 @@ export function findResidue(
       ? Object.keys(cache.entries).filter((repoId) => !pinnedIds.has(repoId))
       : [];
 
+  const anchorsDir = path.join(runtimeDir, ANCHORS_DIR);
+  const anchorTables = listDir(anchorsDir)
+    .filter((name) => ANCHOR_TABLE_NAME.test(name))
+    .map((name) => path.join(anchorsDir, name))
+    .filter(isRegularFile)
+    .sort();
+
   return {
     identityFiles: [...identityFiles].sort(),
     ledgers,
     calls,
     scopeEntries,
     scopeFile,
+    anchorTables,
     runtimeDir,
   };
 }
@@ -357,6 +373,11 @@ function residueLines(residue: Residue, placesOn: number): string[] {
       `  Cached repository lookups in ${displayPath(residue.scopeFile)} (${residue.scopeEntries.length}): ${residue.scopeEntries.join(", ")}`,
     );
   }
+  if (residue.anchorTables.length) {
+    lines.push(
+      `Memory title tables of sessions, from any place (${residue.anchorTables.length}), in ${displayPath(path.join(residue.runtimeDir, ANCHORS_DIR))}; removed because nothing stays on.`,
+    );
+  }
   lines.push(
     "Only directories Claude Code or MindGraph's own records remember were checked.",
     "Not touched: memory stored in MindGraph, .codegraph folders and settings files.",
@@ -441,10 +462,14 @@ export async function runOffAll(io: ConsentIo, options: ResidueOptions = {}): Pr
     ? rewriteScopeCache(residue.scopeFile, new Set(residue.scopeEntries))
     : 0;
   failed += residue.scopeEntries.length - lookups;
+  const anchorsDir = path.join(residue.runtimeDir, ANCHORS_DIR);
+  const tables = residue.anchorTables.filter((file) =>
+    tally(removeExact(file, anchorsDir, (base) => ANCHOR_TABLE_NAME.test(base))),
+  ).length;
 
   out("MindGraph is off everywhere on this machine from the next hook event.");
   out(
-    `Removed: ${count(identities, "repository identity file", "repository identity files")}, ${count(ledgers, "session record", "session records")}, ${count(calls, "pending tool call", "pending tool calls")}, ${count(lookups, "cached repository lookup", "cached repository lookups")}.`,
+    `Removed: ${count(identities, "repository identity file", "repository identity files")}, ${count(ledgers, "session record", "session records")}, ${count(calls, "pending tool call", "pending tool calls")}, ${count(lookups, "cached repository lookup", "cached repository lookups")}, ${count(tables, "memory title table", "memory title tables")}.`,
   );
   if (failed > 0) {
     out(`${count(failed, "item was", "items were")} left in place (changed or not removable since the list was made).`);
