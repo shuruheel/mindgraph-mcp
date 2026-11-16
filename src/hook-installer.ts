@@ -10,7 +10,9 @@ export type HookHarness = "claude-code" | "codex";
 /** Optional Claude Code hook features (N17). Persisted in
  * ~/.mindgraph/hooks.json so self-healing refreshes keep the user's choice. */
 export interface ClaudeHookFeatures {
-  /** UserPromptSubmit bounded recall. Default ON. */
+  /** UserPromptSubmit bounded recall. Default OFF: registered only when
+   * true (`--prompt-recall`). In a 59-prompt replay, 0-4% of the items it
+   * injected were relevant to the prompt. */
   promptRecall?: boolean;
   /** PreCompact transcript capture (+ at SessionEnd). Default OFF. */
   capture?: boolean;
@@ -209,6 +211,15 @@ export function versionSkewNote(
 ): string | undefined {
   const runnerVersion = installedHookRunnerVersion(homeDir);
   if (!runnerVersion || runnerVersion === serverVersion) return undefined;
+  return formatVersionSkewNote(runnerVersion, serverVersion);
+}
+
+/** The skew note's text, separate from the disk read so the instruction
+ * length test can measure the longest string index.ts may append. */
+export function formatVersionSkewNote(
+  runnerVersion: string,
+  serverVersion: string,
+): string {
   return (
     `NOTE: the installed MindGraph hook runner is v${runnerVersion} but this ` +
     `MCP server is v${serverVersion} — hook behavior and tool contracts may ` +
@@ -229,6 +240,15 @@ export function uninstallHookRunner(homeDir?: string): void {
 }
 
 type JsonObject = Record<string, unknown>;
+
+export interface InstallResult {
+  path: string;
+  added: number;
+  updated: number;
+  /** Optional events whose MindGraph-owned entry this install removed
+   * (`UserPromptSubmit`, `PreCompact`); entries owned by others stay. */
+  removedEvents: string[];
+}
 
 function settingsPath(
   harness: HookHarness,
@@ -339,9 +359,9 @@ function desiredEntries(
     ...common,
     TaskCreated: [{ hooks: [ownedHook(harness, 3)] }],
     TaskCompleted: [{ hooks: [ownedHook(harness, 3)] }],
-    // Bounded recall per prompt: the core gives up at 4s and fails open, so
-    // a 5s budget never holds the prompt longer than that.
-    ...(features.promptRecall !== false
+    // Opt-in bounded recall per prompt: the core gives up at 4s and fails
+    // open, so a 5s budget never holds the prompt longer than that.
+    ...(features.promptRecall === true
       ? { UserPromptSubmit: [{ hooks: [ownedHook(harness, 5)] }] }
       : {}),
     // Opt-in transcript capture before compaction (cold-tenant ingest).
@@ -357,13 +377,35 @@ function hookCommand(value: unknown): string | undefined {
   return typeof command === "string" ? command : undefined;
 }
 
-function entryHasOwnedHook(value: unknown): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const hooks = (value as JsonObject).hooks;
-  return (
-    Array.isArray(hooks) &&
-    hooks.some((hook) => hookCommand(hook)?.includes(OWNER_MARKER))
-  );
+/** Remove MindGraph-owned hooks from an event's entries, hook by hook: an
+ * entry that also holds another tool's hook keeps that hook, and an entry
+ * left with no hooks is dropped. `removed` counts owned hooks taken out. */
+function stripOwnedHooks(entries: unknown[]): { kept: unknown[]; removed: number } {
+  const kept: unknown[] = [];
+  let removed = 0;
+  for (const rawEntry of entries) {
+    if (!rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) {
+      kept.push(rawEntry);
+      continue;
+    }
+    const entry = { ...(rawEntry as JsonObject) };
+    if (!Array.isArray(entry.hooks)) {
+      kept.push(entry);
+      continue;
+    }
+    const retainedHooks = entry.hooks.filter((hook) => {
+      const owned = hookCommand(hook)?.includes(OWNER_MARKER) || false;
+      if (owned) removed += 1;
+      return !owned;
+    });
+    if (retainedHooks.length === entry.hooks.length) {
+      kept.push(rawEntry);
+    } else if (retainedHooks.length > 0) {
+      entry.hooks = retainedHooks;
+      kept.push(entry);
+    }
+  }
+  return { kept, removed };
 }
 
 function writeSettings(file: string, settings: JsonObject): void {
@@ -382,7 +424,7 @@ function installHooks(
   codexHomeDir?: string,
   homeDir?: string,
   features: ClaudeHookFeatures = {},
-): { path: string; added: number; updated: number } {
+): InstallResult {
   const file = settingsPath(harness, scope, projectDir, codexHomeDir, homeDir);
   const settings = readSettings(file);
   const hooks =
@@ -393,13 +435,15 @@ function installHooks(
       : {};
   let added = 0;
   let updated = 0;
+  const removedEvents: string[] = [];
   const desired = desiredEntries(harness, features);
-  // A disabled optional event loses its owned entry (foreign entries stay).
+  // A disabled optional event loses its owned hooks; foreign hooks stay,
+  // including one that shares an entry with ours.
   for (const optional of ["UserPromptSubmit", "PreCompact"]) {
     if (optional in desired || !Array.isArray(hooks[optional])) continue;
-    const kept = (hooks[optional] as unknown[]).filter(
-      (entry) => !entryHasOwnedHook(entry),
-    );
+    const { kept, removed } = stripOwnedHooks(hooks[optional] as unknown[]);
+    if (removed === 0) continue;
+    removedEvents.push(optional);
     if (kept.length > 0) hooks[optional] = kept;
     else delete hooks[optional];
   }
@@ -411,8 +455,10 @@ function installHooks(
     // current definition. Skip-if-present left every 0.14.0 install running
     // the old npx command against the old 8s timeout after upgrading —
     // "Installed 0 hook entries" while nothing changed (2026-07-29).
-    const kept = current.filter((entry) => !entryHasOwnedHook(entry));
-    const hadOwned = kept.length !== current.length;
+    // Owned hooks come out hook by hook, so a foreign hook sharing an entry
+    // with ours survives the refresh.
+    const { kept, removed } = stripOwnedHooks(current);
+    const hadOwned = removed > 0;
     for (const entry of wanted) {
       kept.push(entry);
       if (hadOwned) updated += 1;
@@ -422,7 +468,7 @@ function installHooks(
   }
   settings.hooks = hooks;
   writeSettings(file, settings);
-  return { path: file, added, updated };
+  return { path: file, added, updated, removedEvents };
 }
 
 function uninstallHooks(
@@ -443,27 +489,9 @@ function uninstallHooks(
   let removed = 0;
   for (const [event, value] of Object.entries(hooks)) {
     if (!Array.isArray(value)) continue;
-    const retainedEntries: unknown[] = [];
-    for (const rawEntry of value) {
-      if (!rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) {
-        retainedEntries.push(rawEntry);
-        continue;
-      }
-      const entry = { ...(rawEntry as JsonObject) };
-      if (!Array.isArray(entry.hooks)) {
-        retainedEntries.push(entry);
-        continue;
-      }
-      const retainedHooks = entry.hooks.filter((hook) => {
-        const owned = hookCommand(hook)?.includes(OWNER_MARKER) || false;
-        if (owned) removed += 1;
-        return !owned;
-      });
-      if (retainedHooks.length > 0) {
-        entry.hooks = retainedHooks;
-        retainedEntries.push(entry);
-      }
-    }
+    const stripped = stripOwnedHooks(value);
+    removed += stripped.removed;
+    const retainedEntries = stripped.kept;
     if (retainedEntries.length > 0) hooks[event] = retainedEntries;
     else delete hooks[event];
   }
@@ -476,7 +504,7 @@ export function installClaudeHooks(
   scope: HookScope,
   projectDir = process.cwd(),
   features: ClaudeHookFeatures = {},
-): { path: string; added: number; updated: number } {
+): InstallResult {
   return installHooks("claude-code", scope, projectDir, undefined, undefined, features);
 }
 
@@ -491,7 +519,7 @@ export function installCodexHooks(
   scope: HookScope,
   projectDir = process.cwd(),
   codexHomeDir?: string,
-): { path: string; added: number; updated: number } {
+): InstallResult {
   return installHooks("codex", scope, projectDir, codexHomeDir);
 }
 

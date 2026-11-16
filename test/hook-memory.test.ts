@@ -16,6 +16,7 @@ import {
   refreshOwnedClaudeHooks,
   uninstallClaudeHooks,
 } from "../src/hook-installer.js";
+import { loadHookEnv, saveHookEnv } from "../src/hook-env.js";
 
 const FIXTURE = path.join(__dirname, "fixtures", "claude-transcript.jsonl");
 const cleanup: string[] = [];
@@ -318,18 +319,27 @@ describe("installer: prompt recall and capture flags", () => {
   type Settings = { hooks: Record<string, Array<{ hooks: Array<Record<string, unknown>> }>> };
   const read = (file: string) => JSON.parse(fs.readFileSync(file, "utf8")) as Settings;
 
-  it("installs UserPromptSubmit by default and PreCompact only with capture", () => {
+  it("a fresh install registers no UserPromptSubmit entry; --prompt-recall adds one", () => {
     const root = tempDir();
-    const file = installClaudeHooks("project", root).path;
+    const fresh = installClaudeHooks("project", root);
+    const file = fresh.path;
     let settings = read(file);
-    expect(settings.hooks.UserPromptSubmit[0].hooks[0].timeout).toBe(5);
+    expect(settings.hooks.UserPromptSubmit).toBeUndefined();
     expect(settings.hooks.PreCompact).toBeUndefined();
+    expect(fresh.removedEvents).toEqual([]);
     expect(settings.hooks.SessionStart[0].hooks[0].timeout).toBe(30);
     expect(settings.hooks.SessionEnd[0].hooks[0].timeout).toBe(30);
     expect(JSON.stringify(settings)).not.toContain("mg_");
 
-    installClaudeHooks("project", root, { promptRecall: false, capture: true });
+    installClaudeHooks("project", root, { promptRecall: true });
     settings = read(file);
+    expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
+    expect(settings.hooks.UserPromptSubmit[0].hooks[0].timeout).toBe(5);
+
+    // Re-running without the opt-in removes MindGraph's own entry and says so.
+    const rerun = installClaudeHooks("project", root, { capture: true });
+    settings = read(file);
+    expect(rerun.removedEvents).toEqual(["UserPromptSubmit"]);
     expect(settings.hooks.UserPromptSubmit).toBeUndefined();
     expect(settings.hooks.PreCompact[0].hooks[0].timeout).toBe(30);
 
@@ -338,16 +348,40 @@ describe("installer: prompt recall and capture flags", () => {
     expect(settings.hooks).toEqual({});
   });
 
-  it("disabling recall keeps a foreign UserPromptSubmit hook", () => {
+  it("removing recall keeps a foreign UserPromptSubmit hook", () => {
     const root = tempDir();
     const file = path.join(root, ".claude", "settings.json");
     const foreign = { hooks: [{ type: "command", command: "echo mine" }] };
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({ hooks: { UserPromptSubmit: [foreign] } }));
-    installClaudeHooks("project", root);
+    expect(installClaudeHooks("project", root).removedEvents).toEqual([]);
+    expect(read(file).hooks.UserPromptSubmit).toEqual([foreign]);
+    installClaudeHooks("project", root, { promptRecall: true });
     expect(read(file).hooks.UserPromptSubmit).toHaveLength(2);
     installClaudeHooks("project", root, { promptRecall: false });
     expect(read(file).hooks.UserPromptSubmit).toEqual([foreign]);
+  });
+
+  it("an older install's stored promptRecall: true is not an opt-in", () => {
+    // Every install before the default flipped saved promptRecall: true
+    // whether or not the user asked for it.
+    const home = tempDir();
+    const project = tempDir();
+    installClaudeHooks("project", project, { promptRecall: true });
+    const dir = path.join(home, ".mindgraph");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "hooks.json"), JSON.stringify({ promptRecall: true }));
+    expect(loadHookEnv(dir).promptRecall).toBeUndefined();
+    refreshOwnedClaudeHooks(project, home);
+    expect(read(path.join(project, ".claude", "settings.json")).hooks.UserPromptSubmit).toBeUndefined();
+
+    // An explicit opt-in is saved under its own key and survives the refresh.
+    saveHookEnv({ promptRecall: true }, dir);
+    const stored = JSON.parse(fs.readFileSync(path.join(dir, "hooks.json"), "utf8"));
+    expect(stored).toEqual({ promptRecallOptIn: true });
+    expect(loadHookEnv(dir).promptRecall).toBe(true);
+    refreshOwnedClaudeHooks(project, home);
+    expect(read(path.join(project, ".claude", "settings.json")).hooks.UserPromptSubmit).toHaveLength(1);
   });
 
   it("self-healing refresh honors the stored choices in hooks.json", () => {

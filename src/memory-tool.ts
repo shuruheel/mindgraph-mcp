@@ -33,10 +33,17 @@ export interface MemoryToolResult {
   isError?: boolean;
 }
 
+/** Claude Code defers every MCP tool behind tool search unless its
+ * tools/list entry carries this hint. The memory read is the one tool a
+ * coding session needs before it knows what to search for, so it alone stays
+ * loaded; the other tools remain deferred. Other hosts ignore the key. */
+export const ALWAYS_LOAD_META_KEY = "anthropic/alwaysLoad";
+
 export const MEMORY_TOOL: Tool = {
   name: "mindgraph_memory",
+  _meta: { [ALWAYS_LOAD_META_KEY]: true },
   description:
-    "Read the portable MindGraph memory surface. Use action='context' with mode='brief' once at the start of a conversation for work in progress, active goals, open decisions and preferences; mode='resume' or 'continuity' for authoritative task-first work state, and mode='topic' with a short keyword query for prior knowledge relevant to the user's request. Use action='status' to inspect integration capabilities and limitations. This tool never writes; durable capture and correction use the existing typed MindGraph write tools.",
+    "Read the portable MindGraph memory surface. Use action='context' with mode='resume' or 'continuity' for authoritative task-first work state when resuming work, and mode='topic' with a short keyword query for prior knowledge relevant to the user's request. mode='brief' (work in progress, active goals, open decisions and preferences in one bounded call) orients a chat client that has no session-start brief; a coding session uses mode='resume' instead, and none is needed when a MindGraph work brief is already in context. Use action='status' to inspect integration capabilities and limitations. This tool never writes; durable capture and correction use the existing typed MindGraph write tools.",
   inputSchema: {
     type: "object",
     properties: {
@@ -49,7 +56,7 @@ export const MEMORY_TOOL: Tool = {
         type: "string",
         enum: ["topic", "continuity", "resume", "brief"],
         description:
-          "Context strategy. brief is the conversation-start orientation: work in progress, active goals, open decisions and stored preferences in one bounded call. topic uses query-shaped retrieval; continuity/resume use authoritative task-first resume_work.",
+          "Context strategy. brief orients a chat client with no session-start brief: work in progress, active goals, open decisions and stored preferences in one bounded call. topic uses query-shaped retrieval; continuity/resume use authoritative task-first resume_work.",
       },
       query: {
         type: "string",
