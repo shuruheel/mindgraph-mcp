@@ -13,6 +13,16 @@
   context and the prompt-recall hook read JSON and render locally, so they keep
   `chunk_limit: 0`.
 
+### Fixed
+
+- **`mindgraph_code` and `code_refs` work against CodeGraph indexes that record no
+  completeness state.** An index built before CodeGraph recorded that state, or filled
+  only by sync, reports none, and was rejected as `index_incomplete` even when healthy.
+  Such an index is now used when it holds nodes, and is reported as `stale` with a caveat
+  that names the repository and says its completeness is unverified; running
+  `codegraph index` there once records the state and removes that caveat. An index that
+  is still building, partial, failed or empty is rejected as before.
+
 ## 0.27.0 (2026-11-11)
 
 Chat apps get a brief at the start of a conversation, forgetting a memory takes a
