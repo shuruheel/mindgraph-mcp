@@ -33,11 +33,10 @@
   notes whose linked file changed since (marked "code changed since"). Notes
   this machine imported are left out, because Claude Code already loads
   them. Titles are shown as quoted data, one line each, under a line saying
-  they are not instructions. The block reads up to 100 items per request;
-  when the memory holds more, it reads the items changed in the last 30, 7
-  or 1 days so the newest titles are all there, and says which older titles
-  are only a sample. Items that were replaced or withheld are counted, not
-  listed. The block and the opt-in per-prompt recall share 2,000 tokens per
+  they are not instructions. The block makes one read of up to 100 items;
+  when the memory holds more, it says the titles are a sample and points to
+  `mindgraph_memory action=index` for the newest. Items that were replaced
+  or withheld are counted, not listed. The block and the opt-in per-prompt recall share 2,000 tokens per
   context: titles that do not fit are counted and left out first, work state
   never is, and the header states how many titles and tokens it used. A
   compaction rebuilds the block with a fresh budget. If MindGraph does not
@@ -46,7 +45,10 @@
 - **`mindgraph_memory` gains `action: "open"` and `action: "index"`.** Each
   title in the block has a short handle such as `l:1df19b`; `open` with that
   handle returns the item with its stored text and linked files, and `index`
-  lists every title the block could show, reading up to 500 items. An unknown
+  lists every title the block could show, reading up to 500 items; when the
+  memory holds more, it also reads the items changed in the last 30, 7 or 1
+  days so the newest titles are all there, and keeps what it has read if one
+  of those reads fails or takes more than 3 seconds. An unknown
   handle returns the error code `unknown_handle`, a short handle that names
   two items `ambiguous_handle`, and a failed read `memory_unavailable` (safe
   to retry); outside a repository where MindGraph is on, both return
@@ -102,7 +104,9 @@
   `off --all` turns MindGraph off everywhere and, after you confirm, removes the
   local files it left in repositories you never turned on
   (`.git/mindgraph/repository-id`, old session records and pending tool calls
-  under `~/.mindgraph/runtime/`, and cached repository lookups); `--dry-run`
+  under `~/.mindgraph/runtime/`, and cached repository lookups), plus every
+  session's table of memory titles under `~/.mindgraph/runtime/anchors/`,
+  whatever place it came from, since nothing stays on; `--dry-run`
   lists them and changes nothing. Only directories that Claude Code or
   MindGraph's own records remember are checked, and the cloud, `.codegraph/`
   folders and settings files are never touched. `status` now starts with

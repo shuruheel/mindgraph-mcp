@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathContains, type OnDecision } from "./consent.js";
 import type { GitRunner } from "./consent-plan.js";
-import { ID_PREFIX, manifestPath, sourceTag } from "./import-notes.js";
+import { manifestPath } from "./import-notes.js";
 
 /**
  * The session block's title index: items in a consented root's own memory
@@ -36,9 +36,12 @@ const rec = (v: unknown): Rec | undefined =>
   v && typeof v === "object" && !Array.isArray(v) ? (v as Rec) : undefined;
 const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
 
-/** How the block names a consented place: the repository, or the workspace. */
+/** How the block names a consented place: the repository, or the workspace.
+ * A directory name may hold newlines and format characters, so it is cleaned
+ * to one line like a title before it reaches model context. */
 export function placeName(decision: Pick<OnDecision, "repo" | "root">): string {
-  return decision.repo ? path.basename(decision.repo.root) : `workspace ${path.basename(decision.root)}`;
+  const name = cleanTitle(path.basename(decision.repo ? decision.repo.root : decision.root)) || "(unnamed)";
+  return decision.repo ? name : `workspace ${name}`;
 }
 
 export type MemoryList = (body: Rec) => Promise<unknown>;
@@ -64,7 +67,6 @@ export interface IndexItem {
   title: string;
   text: string;
   updatedAt: number;
-  customId?: string;
   anchors: Anchor[];
   handle: string;
 }
@@ -167,7 +169,6 @@ export function parseItems(raw: unknown[]): Pick<SpaceRead, "items" | "read" | "
       title: title || "(untitled)",
       text,
       updatedAt: typeof item.updated_at === "number" ? item.updated_at : 0,
-      customId: str(item.custom_id) ?? str(rec(item.props)?.custom_id),
       anchors: anchorsOf(item),
     });
   }
@@ -202,46 +203,82 @@ async function readPages(
 /** Narrower windows tried, in days, when the space holds more than one read:
  * the list pages by uid, not by time, so a plain read is a random sample. */
 const RECENT_WINDOWS_DAYS = [30, 7, 1];
+/** Time the recency windows of an on-demand read may take in all. */
+export const WINDOWS_BUDGET_MS = 3_000;
+
+export interface ReadSpaceOptions {
+  /** Reads of LIST_CAP each per pass (default 1). */
+  pages?: number;
+  /** After a first read that does not hold the whole space, try the recency
+   * windows (default true). The session block turns them off: it makes one
+   * `list` request. */
+  windows?: boolean;
+  /** Time the windows may take in all (default WINDOWS_BUDGET_MS). */
+  windowsBudgetMs?: number;
+  nowSeconds?: number;
+}
+
+/** Resolves undefined when `promise` fails or outlasts `ms`. */
+function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), Math.max(0, ms));
+    timer.unref?.();
+  });
+  return Promise.race([promise.catch(() => undefined), late]).finally(() => clearTimeout(timer));
+}
 
 /**
- * Read the space (`pages` reads of LIST_CAP each). When it holds more, read
- * the items changed in the last 30, 7 or 1 days until one window fits, so
- * the newest items are all present and only older ones are sampled.
+ * Read the space (`pages` reads of LIST_CAP each). A failure of this first
+ * read is thrown. When the space holds more, read the items changed in the
+ * last 30, 7 or 1 days until one window fits, so the newest items are all
+ * present and only older ones are sampled. The windows are best effort: one
+ * that fails or runs out of time ends them, and what was read so far stands.
  */
 export async function readSpace(
   list: MemoryList,
   spaceUid: string,
-  pages = 1,
-  nowSeconds = Date.now() / 1000,
+  options: ReadSpaceOptions = {},
 ): Promise<SpaceRead> {
+  const pages = options.pages ?? 1;
+  const nowSeconds = options.nowSeconds ?? Date.now() / 1000;
   const first = await readPages(list, spaceUid, pages);
+  // The first read's items stay in what is returned, so a handle listed from
+  // a plain read still opens; parseItems drops the repeats.
   let raw = first.raw;
   let completeSince: number | undefined;
   let sampleSince: number | undefined;
-  if (first.more) {
+  if (first.more && options.windows !== false) {
+    const until = Date.now() + (options.windowsBudgetMs ?? WINDOWS_BUDGET_MS);
     for (const days of RECENT_WINDOWS_DAYS) {
       const since = nowSeconds - days * 86_400;
-      const recent = await readPages(list, spaceUid, pages, since);
+      if (Date.now() >= until) break;
+      // A sparse window can make the server scan the whole space and refuse
+      // at its scan budget; that leaves the best read so far.
+      const recent = await settleWithin(readPages(list, spaceUid, pages, since), until - Date.now());
+      if (!recent) break;
       if (!recent.more) {
-        raw = [...recent.raw, ...raw];
+        raw = [...recent.raw, ...first.raw];
         completeSince = since;
         sampleSince = undefined;
         break;
       }
-      raw = recent.raw;
+      raw = [...recent.raw, ...first.raw];
       sampleSince = since;
     }
   }
   return { ...parseItems(raw), more: first.more, completeSince, sampleSince };
 }
 
-/** What this machine imported with `import notes` for this place: its
- * source tags, the content hashes of the notes it sent, and their anchors.
- * Claude Code already loads those notes here, so the index leaves them out. */
+/** What this machine imported with `import notes` for this place: the
+ * content hashes of the notes it sent, with each note's name and anchors.
+ * Claude Code already loads those notes here, so the index leaves them out.
+ * `memory/v1` `list` items carry no `custom_id`, so the stored text's hash is
+ * what ties an item to a note. */
 export interface LocalNotes {
-  tags: Set<string>;
-  hashes: Set<string>;
-  /** Anchors by custom_id and by `sha256:<content hash>`. */
+  /** Note name (its path in the notes folder) by content hash. */
+  names: Map<string, string>;
+  /** Anchors by content hash. */
   anchors: Map<string, Anchor[]>;
 }
 
@@ -249,24 +286,19 @@ export function localNotes(
   place: { root: string; space_uid?: string | null },
   env: NodeJS.ProcessEnv = process.env,
 ): LocalNotes {
-  const local: LocalNotes = { tags: new Set(), hashes: new Set(), anchors: new Map() };
+  const local: LocalNotes = { names: new Map(), anchors: new Map() };
   try {
     const manifest = rec(JSON.parse(fs.readFileSync(manifestPath(env), "utf8")));
-    const sourceId = str(manifest?.source_id);
     for (const value of Object.values(rec(manifest?.imports) ?? {})) {
       const entry = rec(value);
       // Another project's notes folder is not loaded in this one.
       if (str(entry?.root) !== place.root && (!place.space_uid || str(entry?.space_uid) !== place.space_uid)) continue;
-      const memoryDir = str(entry?.memory_dir);
-      if (sourceId && memoryDir) local.tags.add(sourceTag(sourceId, memoryDir));
-      for (const note of Object.values(rec(entry?.notes) ?? {})) {
+      for (const [name, note] of Object.entries(rec(entry?.notes) ?? {})) {
         const hash = str(rec(note)?.sha256);
+        if (!hash) continue;
+        local.names.set(hash, name);
         const anchors = anchorsOf(rec(note) ?? {});
-        if (hash) local.hashes.add(hash);
-        if (!anchors.length) continue;
-        if (hash) local.anchors.set(`sha256:${hash}`, anchors);
-        const id = str(rec(note)?.custom_id);
-        if (id) local.anchors.set(id, anchors);
+        if (anchors.length) local.anchors.set(hash, anchors);
       }
     }
   } catch {
@@ -277,19 +309,10 @@ export function localNotes(
 
 const textHash = (text: string) => crypto.createHash("sha256").update(text).digest("hex");
 
-function importedHere(item: IndexItem, local: LocalNotes): boolean {
-  if (item.customId?.startsWith(ID_PREFIX)) {
-    const tag = item.customId.slice(ID_PREFIX.length).split(":")[0];
-    if (local.tags.has(tag)) return true;
-  }
-  return local.hashes.has(textHash(item.text));
-}
-
-/** Whether an imported item came from this machine's notes; undefined for
- * an item that was not imported. */
-export function importedFromHere(item: IndexItem, local: LocalNotes): boolean | undefined {
-  if (!item.customId?.startsWith(ID_PREFIX)) return undefined;
-  return local.tags.has(item.customId.slice(ID_PREFIX.length).split(":")[0]);
+/** The name of this machine's note an item was imported from; undefined for
+ * an item this machine did not import. */
+export function localNoteName(item: IndexItem, local: LocalNotes): string | undefined {
+  return local.names.get(textHash(item.text));
 }
 
 /** Items whose linked code differs from the hash stored with them: a file
@@ -348,7 +371,7 @@ export function selectIndex(
 ): Selection {
   for (const item of read.items) {
     if (item.anchors.length) continue;
-    item.anchors = (item.customId && local.anchors.get(item.customId)) || local.anchors.get(`sha256:${textHash(item.text)}`) || [];
+    item.anchors = local.anchors.get(textHash(item.text)) ?? [];
   }
   let changed: Set<string> | undefined;
   if (git && read.items.some((item) => item.anchors.length > 0)) {
@@ -361,7 +384,7 @@ export function selectIndex(
   const marks = changed ?? new Set<string>();
   let localSkipped = 0;
   const eligible = read.items.filter((item) => {
-    if (marks.has(item.uid) || !importedHere(item, local)) return true;
+    if (marks.has(item.uid) || localNoteName(item, local) === undefined) return true;
     localSkipped++;
     return false;
   });
@@ -383,16 +406,19 @@ export function localLine(n: number): string {
 
 const dayOf = (seconds: number) => new Date(seconds * 1000).toISOString().slice(0, 10);
 
-export function capLine(read: SpaceRead): string {
+export function capLine(read: SpaceRead, hint = ""): string {
   const head = `This memory holds more than the ${read.read} items read`;
   if (read.completeSince !== undefined) {
     return `${head}: every item changed since ${dayOf(read.completeSince)} is listed; older titles are a sample.`;
   }
   if (read.sampleSince !== undefined) {
-    return `${head}; the titles are a sample of items changed since ${dayOf(read.sampleSince)}.`;
+    return `${head}; the titles are a sample, weighted to items changed since ${dayOf(read.sampleSince)}.`;
   }
-  return `${head}; the titles are a sample of them.`;
+  return `${head}; the titles are a sample of them${hint}.`;
 }
+
+/** What the session block adds to a plain sample: where the newest are. */
+export const SAMPLE_HINT = ", not the newest; mindgraph_memory action=index lists the newest first";
 
 export function withheldLine(n: number): string {
   return `${n} item${n === 1 ? "" : "s"} read ${n === 1 ? "is" : "are"} not listed: replaced, out of date, or withheld by the server.`;
@@ -407,12 +433,13 @@ export function titleList(
   room: number,
   head: string[],
   more: (n: number) => string,
+  capHint = "",
 ): { lines: string[]; handles: string[]; leftOut: number } {
   const { eligible, changed, localSkipped, read } = selection;
   const tail = (shown: number) =>
     [
       shown < eligible.length ? more(eligible.length - shown) : "",
-      read.more ? capLine(read) : "",
+      read.more ? capLine(read, capHint) : "",
       localSkipped ? localLine(localSkipped) : "",
       read.withheld ? withheldLine(read.withheld) : "",
     ].filter(Boolean);
@@ -497,6 +524,7 @@ export function renderSessionBlock(input: {
       maxChars - HEADER_RESERVE - work.length - 2,
       ["Memory this machine's notes do not show, newest first:", TITLES_LINE, OPEN_LINE],
       moreLine,
+      SAMPLE_HINT,
     );
     section.push(...list.lines);
     handles = list.handles;

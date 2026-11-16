@@ -107,7 +107,9 @@ interface RuntimeLedger {
    * budget. */
   contextEpoch?: number;
   /** Tokens injected per `<agent>#<epoch>` against the session budget. */
-  budgets?: Record<string, { limit: number; used: number }>;
+  /** Per-context token budgets. `spentNoted`: prompt recall has already said
+   * once in this context that the budget is spent. */
+  budgets?: Record<string, { limit: number; used: number; spentNoted?: boolean }>;
   /** The last session block injected. */
   block?: { titles: number; leftOut: number; tokens: number; budget: number; handles: string[] };
   /** Handles the model opened with mindgraph_memory action=open. */
@@ -1105,7 +1107,9 @@ async function readIndex(
   try {
     const list = memoryListOf(client);
     if (!list) throw new Error("this connection cannot read memory");
-    read = await withDeadline(readSpace(list, space), deadline);
+    // One `list` request (invariant 4): no recency windows at SessionStart.
+    // A larger space is reported as a sample, with action=index for the newest.
+    read = await withDeadline(readSpace(list, space, { windows: false }), deadline);
   } catch (error) {
     const status = (error as { status?: unknown })?.status;
     const reason =
@@ -1621,6 +1625,12 @@ async function promptRecall(
       for (const line of lines.slice(1)) {
         if (cut || [...kept, line].join("\n").length + 120 > room) cut++;
         else kept.push(line);
+      }
+      // When no recalled line fits, the omission is stated once per context;
+      // after that the prompt gets nothing and the budget is not charged.
+      if (kept.length === 1) {
+        if (entry.spentNoted) return undefined;
+        entry.spentNoted = true;
       }
       if (cut) kept.push(`${cut} recalled line${cut === 1 ? "" : "s"} left out: this context's ${limit.toLocaleString("en-US")}-token memory budget is spent.`);
       const text = kept.join("\n");
