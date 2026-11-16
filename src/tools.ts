@@ -1375,13 +1375,67 @@ for (const tool of TOOLS) {
   }
 }
 
+/** Tools that read the local checkout and run git: listed, and runnable, only
+ * in the local coding profile. */
+const LOCAL_CODING_TOOLS = new Set(["mindgraph_code", "mindgraph_sync"]);
+
 export function toolsForProfile(
   profile = process.env.MINDGRAPH_PROFILE || "general",
 ): Tool[] {
   if (profile === "coding") return TOOLS;
-  return TOOLS.filter(
-    (tool) => tool.name !== "mindgraph_code" && tool.name !== "mindgraph_sync",
-  );
+  return TOOLS.filter((tool) => !LOCAL_CODING_TOOLS.has(tool.name));
+}
+
+/** True only for the local coding profile: the one setup in which a tool may
+ * read the checkout, run git or codegraph, or treat a caller path as local. */
+function runsLocalCode(context: { profile?: string; hosted?: boolean }): boolean {
+  return context.profile === "coding" && !context.hosted;
+}
+
+/**
+ * The refusal for `mindgraph_code` / `mindgraph_sync` called by name outside
+ * the local coding profile (hiding them from `tools/list` alone does not stop
+ * a client calling them). `undefined` means the call may proceed. The profile
+ * and hosted flag come from the server wiring, never from `process.env`.
+ */
+export function localCodingToolRefusal(
+  name: string,
+  context: { profile?: string; hosted?: boolean },
+): ToolResult | undefined {
+  if (!LOCAL_CODING_TOOLS.has(name)) return undefined;
+  if (runsLocalCode(context)) return undefined;
+  const payload = {
+    error:
+      "mindgraph_code and mindgraph_sync run only in the local coding setup (npx -y mindgraph-mcp@latest install-code).",
+    code: "not_available",
+    retriable: false,
+  };
+  return {
+    content: [{ type: "text", text: JSON.stringify(payload) }],
+    structuredContent: payload,
+    isError: true,
+  };
+}
+
+/** Outside the local coding profile no code refs resolve: resolving them
+ * reads the filesystem and runs git and codegraph. The write itself stands;
+ * the caveat says why no anchor was attached (same shape as
+ * `attachCodeRefsToToolResult`). */
+function unresolvedCodeRefsCaveat(
+  result: ToolResult,
+  args: Record<string, unknown>,
+  caveat: string,
+): ToolResult {
+  if (result.isError || !Array.isArray(args.code_refs) || args.code_refs.length === 0) {
+    return result;
+  }
+  return ok({
+    result: JSON.parse(result.content[0]?.text ?? "null") as unknown,
+    code_anchors: {
+      wrote: false,
+      caveat,
+    },
+  });
 }
 
 // ── Tool Handlers ─────────────────────────────────────────────────────
@@ -1426,6 +1480,10 @@ export async function handleTool(
   memoryConfig: MemoryRuntimeConfig = {},
   runtime: ToolRuntime = {},
 ): Promise<ToolResult> {
+  // Defence in depth: server.ts refuses these first, but any other caller of
+  // handleTool must say it is the local coding profile to run them.
+  const refusal = localCodingToolRefusal(name, runtime);
+  if (refusal) return refusal;
   try {
     if (
       ["mindgraph_capture", "mindgraph_reason", "mindgraph_commit"].includes(name) &&
@@ -1456,7 +1514,7 @@ export async function handleTool(
         result = await handleCommit(client, args);
         break;
       case "mindgraph_plan":
-        result = await handlePlan(client, args);
+        result = await handlePlan(client, args, !runsLocalCode(runtime));
         break;
       case "mindgraph_retrieve":
         result = await handleRetrieve(client, args, memoryConfig.profile);
@@ -1501,9 +1559,18 @@ export async function handleTool(
           "resume_work",
           "heartbeat",
         ].includes(action));
-    return attach
-      ? await attachCodeRefsToToolResult(client, result, args)
-      : result;
+    if (!attach) return result;
+    if (runtime.hosted) {
+      return unresolvedCodeRefsCaveat(result, args, "code refs resolve only in the local server");
+    }
+    if (!runsLocalCode(runtime)) {
+      return unresolvedCodeRefsCaveat(
+        result,
+        args,
+        "code refs resolve only in the local coding setup (npx -y mindgraph-mcp@latest install-code)",
+      );
+    }
+    return await attachCodeRefsToToolResult(client, result, args);
   } catch (e: unknown) {
     return toolError(e);
   }
@@ -2097,8 +2164,14 @@ async function repositoryScopeUidsForTask(
     repoSpaceUid?: string;
     invocationContext?: { cwd?: string; repoId?: string };
     agentId?: string;
+    /** Set in hosted mode and in every profile but the local coding one:
+     * `repo` and `invocation_context` are caller-chosen paths, and resolving
+     * them would probe the filesystem, run git and may write a repository id.
+     * Only `scope_uids` count. */
+    noLocalRepo?: boolean;
   },
 ): Promise<string[] | undefined> {
+  if (options.noLocalRepo) return options.scopeUids;
   const scopeUids = [...new Set(options.scopeUids ?? [])];
   const cwd = options.invocationContext?.cwd;
   const repoId = options.invocationContext?.repoId;
@@ -2134,7 +2207,8 @@ async function repositoryScopeUidsForTask(
 
 async function handlePlan(
   client: MindGraph,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  noLocalRepo = false,
 ): Promise<ToolResult> {
   const {
     action,
@@ -2255,6 +2329,7 @@ async function handlePlan(
               repo,
               repoSpaceUid: repo_space_uid,
               invocationContext: invocation_context,
+              noLocalRepo,
               agentId: agent_id,
             })
           : scope_uids;

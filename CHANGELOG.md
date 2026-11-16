@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+## 0.27.1 (2026-11-16)
+
+A security patch on 0.27.0. The only behaviour change is the one described here: code
+features now work only in the local coding setup.
+
+### Security
+
+- **`mindgraph_code` and `mindgraph_sync` now run only in the local coding
+  profile.** Before this release they were hidden from the tool list outside the
+  coding profile but still ran when a client called them by name: on a stdio
+  server started with the default profile, and on the hosted server
+  (`mindgraph-mcp/server`). On the hosted server, `mindgraph_sync` with
+  `action: "begin"` and a `repo` path such as `/` read a file from the host
+  machine and stored its content in the caller's own graph. Both tools now
+  return a `not_available` error everywhere except a local server set up with
+  `npx -y mindgraph-mcp@latest install-code`. The hosted server also no longer
+  reads the host's files or runs git for the other tools: a write that carries
+  `code_refs` is saved with `code_anchors.wrote: false` and a caveat that code
+  refs resolve only in the local server, and `mindgraph_plan create_task` uses
+  `scope_uids` only, ignoring `repo` and `invocation_context`.
+- **Code refs and repository scope resolve only in the local coding profile.**
+  On a stdio server started with the default profile, `code_refs` on
+  `mindgraph_capture`, `mindgraph_commit` and `mindgraph_plan` still reached the
+  code-anchoring path: a ref pointing at any local repository ran git and
+  codegraph there, returned that repository's symbol index, wrote it into the
+  graph, and could create `.git/mindgraph/repository-id` in it. `mindgraph_plan
+  create_task` likewise treated `repo` and `invocation_context` as local paths:
+  it ran git there, recorded that repository's remote as the task's scope, and
+  answered differently for a path that exists and one that does not. Outside
+  the coding profile the write now succeeds with `code_anchors.wrote: false`
+  and a caveat, and `create_task` uses `scope_uids` only.
+
 ## 0.27.0 (2026-11-11)
 
 Chat apps get a brief at the start of a conversation, forgetting a memory takes a
