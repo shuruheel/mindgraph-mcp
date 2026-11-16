@@ -315,7 +315,9 @@ describe("H2 — mindgraph_memory resume accepts scope: workspace", () => {
   it("refuses where there is no checkout, and when nothing resolves", async () => {
     const hosted = await handleMemoryTool(memoryClient(), { action: "context", mode: "resume", scope: "workspace" }, {});
     expect(hosted.isError).toBe(true);
-    expect(hosted.content[0].text).toContain("local MindGraph MCP server");
+    // The default profile has no resolver either, so the message must not
+    // blame a missing working directory.
+    expect(hosted.content[0].text).toContain("works only in the local coding setup (mindgraph-mcp install-code)");
 
     // Failure prevented: an empty scope sent as "no scope" would select from
     // every task in the org and present it as the workspace.

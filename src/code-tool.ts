@@ -103,7 +103,7 @@ export const CODE_TOOL: Tool = {
       repo_space_uid: {
         type: "string",
         description:
-          "Writable shared Project/repository Space for new anchors (anchor requires this, a workspace space_uid, or MINDGRAPH_CODE_SPACE_UID)",
+          "Writable shared Project/repository Space for new anchors (anchor requires this or the repository's space_uid in .mindgraph/workspace.json)",
       },
       task_uid: { type: "string" },
       execution_uid: { type: "string" },
@@ -173,7 +173,7 @@ export async function handleCodeTool(
         if (missingSpace) {
           return err(
             "missing_repository_space",
-            `repo_space_uid, a workspace space_uid, or MINDGRAPH_CODE_SPACE_UID is required for ${missingSpace.repository.repoId}`,
+            `repo_space_uid or the repository's space_uid in .mindgraph/workspace.json is required for ${missingSpace.repository.repoId}`,
           );
         }
         const repositoryAnchors = new Map<

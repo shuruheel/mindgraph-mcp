@@ -74,7 +74,8 @@ npx -y mindgraph-mcp install-cursor --api-key mg_your_key_here
 Writes the local server with the coding profile into `~/.cursor/mcp.json` (owner-only,
 other servers untouched), which gives Cursor the code tools and the workspace-scoped
 `mindgraph_memory` resume that the hosted connector cannot offer. `uninstall-cursor`
-removes it. No hooks are installed: Cursor loads Claude Code hooks from
+removes it. Like every coding setup, it answers only in repositories where you
+[turned MindGraph on](#turning-mindgraph-on-in-a-repository). No hooks are installed: Cursor loads Claude Code hooks from
 `~/.claude/settings.json` by default, so if you installed those they may already run in
 Cursor; that combination has not been tested in a live Cursor session yet.
 
@@ -99,6 +100,15 @@ settings. Prefer separate steps? `install-code` alone registers just the
 server, and `install-hooks --harness claude-code --scope user --api-key …`
 adds the hooks later.
 
+Then, in each repository where you want MindGraph, run this from your own
+terminal (see [Turning MindGraph on in a repository](#turning-mindgraph-on-in-a-repository)):
+
+```bash
+npx -y mindgraph-mcp@latest on
+```
+
+Until you do, the hooks and the coding-profile server do nothing there.
+
 **Optional — enable code intelligence**: install
 [codegraph](https://github.com/colbymchenry/codegraph) and run `codegraph init`
 in your repositories. This powers `mindgraph_code`'s anchors and live
@@ -106,7 +116,7 @@ callers/impact federation. Without it, memory and work tools function fully;
 code anchoring degrades to typed unavailable results (the installer tells you
 which state you're in).
 
-The hooks open/rebind a Session at start and inject the current work brief,
+In a repository where MindGraph is on, the hooks open/rebind a Session at start and inject the current work brief,
 stamp every MindGraph tool call with verified session/repo/commit provenance,
 and prompt one reflection checkpoint before a substantial session ends. A
 session automatically re-claims only *this* agent's own prior work; other
@@ -115,9 +125,10 @@ when it starts that work. They
 **fail open** — if MindGraph is unreachable, your coding session is never
 blocked. `--scope project` (with `--project-dir`) installs into a single
 repository's `.claude/settings.json` instead; `uninstall-hooks` reverses either
-cleanly. Connection settings persist to `~/.mindgraph/hooks.json` (mode 600) so
-hooks work regardless of shell environment; the API key is never written into
-project settings.
+cleanly. Connection settings persist to `~/.mindgraph/hooks.json` (mode 600),
+and the hooks take their API key, base URL and organization from that file
+only, never from the environment, so a project's settings cannot redirect them;
+the API key is never written into project settings.
 
 **Per-prompt recall (off by default; `--prompt-recall` turns it on).** When
 enabled, a `UserPromptSubmit` hook runs a
@@ -163,12 +174,81 @@ new events) in settings files that already carry them — your scope choice is
 respected, never expanded. So after a release, the next session start picks
 up the new server and refreshes the hooks; the session after that runs them.
 Opt out with `MINDGRAPH_HOOK_AUTOUPDATE=off` (the server then just prints a
-version-skew note and leaves updating to `install-hooks`).
+version-skew note and leaves updating to `install-hooks`). In a directory where
+MindGraph is off, the server touches only a runner too old to know about
+turning on, and then only your user-level hook entries, never a project's.
+
+### Turning MindGraph on in a repository
+
+MindGraph's coding hooks and the coding-profile server do nothing in a
+repository until you turn MindGraph on there. Run this in the repository (or
+pass its path), in a terminal you opened yourself:
+
+```bash
+npx -y mindgraph-mcp@latest on
+```
+
+`on` shows what will happen before it changes anything: what the hooks do at
+session start (and with prompt recall or capture, if you turned those on),
+what leaves your machine and where it goes (the base URL and organization
+saved in `~/.mindgraph/hooks.json`), who can read it, and how to undo it. It
+records your answer in `~/.mindgraph/hooks.json`: the folder, the
+repositories you chose, and when. Nothing is sent while you decide. `on`
+refuses to run from inside Claude Code, Codex or Cursor (including Claude
+Code's `!` prefix and Cursor's built-in terminal), so a model cannot turn it on
+for you. The answer takes effect from the next session.
+
+- **Workspaces.** At the root of a [multi-repository
+  workspace](#multi-repository-workspaces), `on` lists the repositories
+  `.mindgraph/workspace.json` declares and lets you choose them and the root
+  itself. The workspace file only routes; it never turns anything on, so
+  cloning a repository that carries one turns nothing on. Editing it pauses
+  MindGraph under that root until you run `on` there again. Repositories in
+  the folder that the file does not list stay off. Worktrees of a repository
+  you turned on count as that repository.
+- **`npx -y mindgraph-mcp@latest off [path]`** turns it off for one repository
+  or workspace (inside a workspace, for that repository only) from the next
+  hook event. It runs anywhere, since it can only turn things off. Memory
+  already stored stays in MindGraph.
+- **`npx -y mindgraph-mcp@latest off --all`** turns it off everywhere. It also
+  lists, and after you confirm removes, the local files MindGraph left in
+  repositories you never turned on: `.git/mindgraph/repository-id`, old
+  session records and pending tool calls under `~/.mindgraph/runtime/`, and
+  cached repository lookups. Only directories that Claude Code (its
+  `.claude.json`, in `CLAUDE_CONFIG_DIR` when set) or MindGraph's own records
+  remember are checked. It never touches the cloud, `.codegraph/`
+  folders or settings files. Add `--dry-run` to see the list without changing
+  anything.
+- **`npx -y mindgraph-mcp@latest status`** starts with whether MindGraph is on
+  in the current directory, and why not if it is off, then lists every place
+  you turned it on.
+
+**Upgrading from a version without `on`.** MindGraph is off everywhere until
+you run `on`; nothing turns it on for you. Each Claude Code session started in
+a repository shows a one-line notice, *MindGraph hooks now run only where you
+turn them on*, until you run `on`, `off` or `off --all` once (Codex shows no
+notice). The first session
+after upgrading may still run the old hook runner for its SessionStart, which
+can open a session and show the work brief; every later event is off. The
+hooks also no longer read `MINDGRAPH_API_KEY`, `MINDGRAPH_BASE_URL` or
+`MINDGRAPH_ORG_ID`: they use what `install-hooks` or `install-code --hooks`
+saved in `~/.mindgraph/hooks.json`. If your key was only in the environment,
+run `npx -y mindgraph-mcp@latest install-hooks --harness claude-code --api-key
+mg_…` once. Environment variables can only turn hook features off
+(`MINDGRAPH_HOOKS=off`, `MINDGRAPH_HOOK_CAPTURE=off`,
+`MINDGRAPH_HOOK_PROMPT_RECALL=off`), never on.
+
+`hooks.json` is found through your account's home directory, not `$HOME`. Set
+`MINDGRAPH_HOME` to keep it somewhere else. When that folder is not an
+absolute path or is inside a git work tree, MindGraph refuses it and stays off
+everywhere until you unset or move it: `status` says why, and `on` and `off`
+refuse.
 
 ### Multi-repository workspaces
 
 Working across sibling repositories (a parent directory holding several
-checkouts)? Declare them once in `.mindgraph/workspace.json` at the parent:
+checkouts)? Declare them once in `.mindgraph/workspace.json` at the parent,
+then run `npx -y mindgraph-mcp@latest on` there:
 
 ```json
 {
@@ -181,35 +261,34 @@ checkouts)? Declare them once in `.mindgraph/workspace.json` at the parent:
 }
 ```
 
-- **Discovery** walks up from the invocation directory to the nearest
-  `.mindgraph/workspace.json` (override with `MINDGRAPH_WORKSPACE_FILE`).
-  `root` paths are relative to the directory containing `.mindgraph`. Only
-  declared repositories participate — siblings are never scanned implicitly.
-- **Routing**: a code ref with a `path` routes to the repository defining that
-  file (nearest declared root, else its git root). A `repo` argument matches by
-  declared `repo_id`, root path, or directory basename. Bare symbol refs
-  resolve against the current repository only — pass `path` or `repo` to
-  target a sibling. An id that matches nothing errors (`unknown_repository`)
-  rather than guessing.
+- **Turning it on**: the file declares; `on` decides. `root` paths are
+  relative to the directory containing `.mindgraph`; `..` and absolute roots
+  are refused. Only the repositories you chose at `on` participate, as they
+  were when you chose them. Siblings are never scanned implicitly, and
+  `MINDGRAPH_WORKSPACE_FILE`, `MINDGRAPH_CODE_REPOS`, `MINDGRAPH_REPO_ROOT`,
+  `MINDGRAPH_REPO_ID` and `MINDGRAPH_CODE_SPACE_UID` are ignored.
+- **Routing**: a code ref with a `path` routes to the turned-on repository
+  holding that file. A `repo` argument matches by declared `repo_id`, root
+  path, or directory basename. Bare symbol refs resolve against the current
+  repository only — pass `path` or `repo` to target a sibling. A path or id
+  outside the turned-on repositories is refused (`not_opted_in`) rather than
+  guessed. At the workspace root itself, name the repository: `create_task`
+  and the code tools there need a `repo`.
 - **Identity**: `repo_id` defaults to the normalized origin remote
   (`github.com/acme/engine`), so teammates' clones converge on the same graph
   entities; clones without a remote get a durable generated id.
 - **Spaces**: each repository's anchors are written into its `space_uid`.
-  Anchoring requires an explicit space — per-repo `space_uid`, a
-  `repo_space_uid` argument, or `MINDGRAPH_CODE_SPACE_UID` — so shared code
+  Anchoring requires an explicit space — per-repo `space_uid` or a
+  `repo_space_uid` argument — so shared code
   identity never lands silently in a private per-agent space.
-- **Work brief**: a session started at the workspace root, or one folder
-  above it, selects durable work across every declared repository and lists
-  the other eligible tasks by repository. `mindgraph_memory` with
-  `mode: "resume"` and `scope: "workspace"` returns the same view on demand.
-  Only the brief and that tool look one folder down for a workspace file;
-  routing and sync use the upward search described above.
+- **Work brief**: a session started at the workspace root (when you turned
+  the root on) selects durable work across the turned-on repositories and
+  lists the other eligible tasks by repository. In a coding setup,
+  `mindgraph_memory` with `mode: "resume"` and `scope: "workspace"` returns the
+  same view on demand; in the default profile that call returns an error.
 - **Memory-file sync**: `mindgraph_sync action=scan workspace=true` fans out
-  across the declared repositories (and errors with a diagnostic when nothing
-  is declared); all other sync actions stay single-repository.
-- **Precedence**: the legacy `MINDGRAPH_CODE_REPOS` env map (`{"repo-id":
-  {"root": "...", "space_uid": "..."}}`) merges over workspace-file entries
-  for the same root.
+  across the turned-on repositories; all other sync actions stay
+  single-repository.
 
 ### Coding agents (Codex)
 
@@ -240,7 +319,9 @@ bounded work brief, re-claiming only this agent's own prior work.
 PreToolUse replaces forged/absent invocation provenance
 while preserving model-selected work targets, PostToolUse updates only the
 disposable runtime ledger, Stop runs the once-per-session reflection
-checkpoint, and SessionEnd performs best-effort cleanup. All paths fail open:
+checkpoint, and SessionEnd performs best-effort cleanup. Codex hooks follow
+the same rule as Claude Code's: they do nothing in a repository until you run
+`npx -y mindgraph-mcp@latest on` there. All paths fail open:
 missing credentials or an unreachable MindGraph return Codex's no-op response
 and never block the coding session.
 
@@ -300,8 +381,15 @@ mindgraph-mcp hooks preview    Print what transcript capture would send (sends n
 mindgraph-mcp hooks stats      Per-event hook calls, time and injected characters for a session
 mindgraph-mcp skills pull      Render published and granted skills into local SKILL.md directories
 mindgraph-mcp skills push      Import or update one local SKILL.md as a governed candidate
-mindgraph-mcp status           Show installation status
+mindgraph-mcp on [path]        Turn MindGraph on for a repository or workspace (asks first)
+mindgraph-mcp off [path]       Turn MindGraph off for a repository or workspace
+mindgraph-mcp off --all        Turn it off everywhere and remove its local files from
+                               repositories you never turned on (--dry-run: list only)
+mindgraph-mcp status           Show whether MindGraph is on here, and installation status
 ```
+
+Run every command as `npx -y mindgraph-mcp@latest <command>`, so an older copy
+in a project's `node_modules` or the npx cache never answers it.
 
 Options: `--api-key <key>`, `--base-url <url>`, `--agent-id <id>`,
 `--scope user|project`, `--project-dir <dir>`, `--harness <name>`,
@@ -319,12 +407,14 @@ teammates one logical agent, which claims each other's work).
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `MINDGRAPH_API_KEY` | *(required)* | Your MindGraph API key (`mg_…`) |
-| `MINDGRAPH_BASE_URL` | `https://api.mindgraph.cloud` | Override for self-hosted deployments |
-| `MINDGRAPH_PROFILE` | `general` | `coding` exposes `mindgraph_code`/`mindgraph_sync` and the work composites |
+| `MINDGRAPH_API_KEY` | *(required)* | Your MindGraph API key (`mg_…`) for the MCP server. `install-hooks` saves it for the hooks when `--api-key` is not given; the hooks themselves read only `~/.mindgraph/hooks.json` |
+| `MINDGRAPH_BASE_URL` | `https://api.mindgraph.cloud` | Override for self-hosted deployments (the MCP server; the hooks use the URL saved in `hooks.json`) |
+| `MINDGRAPH_PROFILE` | `general` | `coding` exposes `mindgraph_code`/`mindgraph_sync` and the work composites, and answers only in repositories where you ran `on` |
 | `MINDGRAPH_HARNESS` | `generic` | `claude-code` / `codex` — adapter selection and provenance |
 | `MINDGRAPH_AGENT_ID` | *(stable per-user id)* | Agent identity stamped on every write and used for durable-work leases. Defaults to a stable `u-<hash>` derived from user@host, shared by the hooks, the registration, and the serve path — set explicitly for cross-device continuity or per-teammate identities |
-| `MINDGRAPH_ORG_ID` | *(unset)* | Pin operations to a specific organization when a key has access to more than one |
+| `MINDGRAPH_ORG_ID` | *(unset)* | Pin the MCP server's operations to a specific organization when a key has access to more than one. `install-hooks` saves it for the hooks, which do not read it at runtime |
+| `MINDGRAPH_HOME` | *(your account's `~/.mindgraph`)* | Absolute path of the folder holding `hooks.json` (hook connection settings and where MindGraph is on). Inside a git work tree, or when not absolute, it is refused and MindGraph stays off everywhere |
+| `MINDGRAPH_HOOKS` | *(unset)* | `off` pauses the hooks and the coding-profile server, even where MindGraph is on. No variable can turn MindGraph on |
 | `MINDGRAPH_CODEGRAPH_BIN` | *(auto)* | Explicit path to the codegraph binary (PATH and `~/.local/bin` are probed) |
 | `MINDGRAPH_HOOK_AUTOUPDATE` | *(on)* | `off` disables the server's startup self-heal of the pinned hook runner; the version-skew note then signals drift instead |
 | `MINDGRAPH_HOOK_PROMPT_RECALL` | *(on when opted in)* | `off` disables the Claude `UserPromptSubmit` recall at runtime; the hook is installed only with `--prompt-recall` |

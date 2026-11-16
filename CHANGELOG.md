@@ -29,8 +29,60 @@
   the coding profile the write now succeeds with `code_anchors.wrote: false`
   and a caveat, and `create_task` uses `scope_uids` only.
 
+### Added
+
+- **`on`, `off`, `off --all` and a status line: you choose where MindGraph
+  runs.** `npx -y mindgraph-mcp@latest on` turns MindGraph on for the
+  repository or workspace you run it in (or the path you pass). Before changing
+  anything it shows what the hooks will do, what leaves your machine and where
+  it goes, who can read it, and how to undo it, and it records only what you
+  approve. It must be run in a terminal you opened yourself: it refuses inside
+  Claude Code, Codex and Cursor sessions, so a model cannot turn it on for you.
+  At a workspace root it lists the repositories `.mindgraph/workspace.json`
+  declares and lets you pick them; worktrees of a repository you turned on
+  count as that repository. `off [path]` turns one place off and runs anywhere.
+  `off --all` turns MindGraph off everywhere and, after you confirm, removes the
+  local files it left in repositories you never turned on
+  (`.git/mindgraph/repository-id`, old session records and pending tool calls
+  under `~/.mindgraph/runtime/`, and cached repository lookups); `--dry-run`
+  lists them and changes nothing. Only directories that Claude Code or
+  MindGraph's own records remember are checked, and the cloud, `.codegraph/`
+  folders and settings files are never touched. `status` now starts with
+  whether MindGraph is on in the current directory, and why not if it is off.
+  `install-code`, `install-hooks` and `install-cursor` print the `on` command
+  when they finish.
+
 ### Changed
 
+- **Breaking for existing hook users: MindGraph's coding hooks and the
+  coding-profile server now do nothing in a repository until you turn
+  MindGraph on there.** After upgrading, MindGraph is off everywhere: the hooks
+  send nothing and the coding-profile server's tools refuse with a
+  `not_opted_in` error that names the command. To turn it back on, run
+  `npx -y mindgraph-mcp@latest on` in each repository or workspace, from your
+  own terminal. Until you run `on`, `off` or `off --all` once, each Claude Code
+  session started in a repository shows one line: *MindGraph hooks now run only
+  where you turn them on; nothing was sent from this session. Turn on here:
+  npx -y mindgraph-mcp@latest on* (Codex shows no notice). The first session
+  after upgrading may still run the old hook runner for its SessionStart, which
+  can open a session and show the work brief; that session is then never
+  closed, and a task it claimed is released when its lease expires. A
+  `.mindgraph/workspace.json` now only routes: it never turns anything on, and
+  editing it pauses MindGraph under that workspace until you run `on` there
+  again. The hooks also take their API key, base URL and organization only
+  from `~/.mindgraph/hooks.json`, no longer from `MINDGRAPH_API_KEY`,
+  `MINDGRAPH_BASE_URL` or `MINDGRAPH_ORG_ID`; if your key was only in the
+  environment, run `install-hooks` once. Environment variables can only turn
+  things off (`MINDGRAPH_HOOKS=off` pauses everything). `hooks.json` is found
+  through your account's home directory rather than `$HOME`, and
+  `MINDGRAPH_HOME` can move it (inside a git work tree, or when not absolute,
+  it is refused and MindGraph stays off everywhere until you unset or move
+  it). In the default profile, `mindgraph_memory` `scope='workspace'` now
+  returns an error; it works only in the coding setup. In the coding setup, `mindgraph_plan create_task` and the
+  code tools at a workspace root need a `repo`, because the root itself is not
+  a repository. A registration pinned to an older `mindgraph-mcp@x.y.z` keeps
+  the old behaviour; the default `npx -y mindgraph-mcp@latest` registration
+  picks this up on its own.
 - **Per-prompt recall is now off by default.** The Claude Code `UserPromptSubmit`
   hook that searched memory on every prompt is installed only with
   `--prompt-recall` (on `install-hooks` or `install-code --hooks`). When we
