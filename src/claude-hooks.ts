@@ -35,6 +35,7 @@ export function claudeHookOutput(output: HookCoreOutput): Record<string, unknown
           hookEventName: output.event ?? "SessionStart",
           additionalContext: output.context,
         },
+        ...(output.notice ? { systemMessage: output.notice } : {}),
       };
     case "rewrite":
       // H1: never return updatedInput. Auto mode reviews the input the model

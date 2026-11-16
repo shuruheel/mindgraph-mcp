@@ -37,7 +37,7 @@ import {
 } from "./claude-hooks.js";
 import { codexHookOutput, runCodexHook } from "./codex-hooks.js";
 import { installCursor, uninstallCursor } from "./cursor-install.js";
-import { offOutput, previewCapture, readHookStats } from "./hook-core.js";
+import { formatHookStats, offOutput, previewCapture, readHookStats, recordFailOpen } from "./hook-core.js";
 import {
   gateFloorWarning,
   installClaudeHooks,
@@ -1057,7 +1057,10 @@ async function main(): Promise<void> {
           // A recall that hit its deadline can leave a socket open that keeps
           // the process alive past the 5s hook budget; the answer is already
           // written, so exit instead of waiting for it.
-          if (input.hook_event_name === "UserPromptSubmit") process.exit(0);
+          // The same holds for the session block's bounded memory read.
+          if (input.hook_event_name === "UserPromptSubmit" || input.hook_event_name === "SessionStart") {
+            process.exit(0);
+          }
         });
       } catch (error) {
         // Still fail open — but not silently. The marker file plus one
@@ -1068,10 +1071,16 @@ async function main(): Promise<void> {
           hookHarness,
           (error as Error)?.message || "hook failed",
         );
+        recordFailOpen(input.session_id, input.hook_event_name, (error as Error)?.message || "hook failed", {
+          harness: hookHarness,
+        });
         console.error(
           `mindgraph-hook: failing open (${(error as Error)?.message || "unknown error"})`,
         );
-        process.stdout.write("{}\n");
+        process.stdout.write("{}\n", () => {
+          // A request still in flight must not hold the session open.
+          if (input.hook_event_name === "SessionStart") process.exit(0);
+        });
       }
       break;
     }
@@ -1085,18 +1094,7 @@ async function main(): Promise<void> {
           );
           process.exit(1);
         }
-        const rows = Object.entries(stats.events).sort(([a], [b]) => a.localeCompare(b));
-        const injected = rows.reduce((sum, [, row]) => sum + row.injectedChars, 0);
-        console.log(`Session ${stats.sessionId} (${stats.harness}), last active ${new Date(stats.updatedAt).toISOString()}`);
-        console.log("event               calls   avg ms   max ms   injected chars");
-        for (const [event, row] of rows) {
-          console.log(
-            `${event.padEnd(18)} ${String(row.count).padStart(6)} ${String(Math.round(row.totalMs / Math.max(row.count, 1))).padStart(8)} ${String(row.maxMs).padStart(8)} ${String(row.injectedChars).padStart(16)}`
-          );
-        }
-        console.log(
-          `Injected into context: ${injected} characters (about ${Math.round(injected / 4)} tokens). Times are measured inside the hook and exclude process start.`
-        );
+        console.log(formatHookStats(stats));
         break;
       }
       if (positionals[0] !== "preview") {

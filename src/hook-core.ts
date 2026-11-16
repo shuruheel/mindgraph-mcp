@@ -24,6 +24,21 @@ import {
   promptRecallRequest,
   renderPromptRecall,
 } from "./hook-memory.js";
+import { nodeGit } from "./consent-plan.js";
+import {
+  anchorTable,
+  CHARS_PER_TOKEN,
+  DEFAULT_BUDGET_TOKENS,
+  localNotes,
+  memoryListOf,
+  placeName,
+  readSpace,
+  renderSessionBlock,
+  selectIndex,
+  workChars,
+  writePrivateJson,
+  type IndexState,
+} from "./session-block.js";
 
 export interface HookInput {
   session_id: string;
@@ -42,6 +57,8 @@ export interface HookInput {
   /** PreCompact: "manual" | "auto". */
   trigger?: string;
   transcript_path?: string;
+  /** Set on events from inside a subagent. */
+  agent_id?: string;
 }
 
 export interface HookClient {
@@ -50,6 +67,9 @@ export interface HookClient {
   entity?(request: Record<string, unknown>): Promise<unknown>;
   retrieveContext?(request: Record<string, unknown>): Promise<unknown>;
   ingestSession?(request: Record<string, unknown>): Promise<unknown>;
+  /** `POST /memory/v1/list`; the SDK client is read through its request
+   * helper when this is absent. */
+  memoryList?(request: Record<string, unknown>): Promise<unknown>;
 }
 
 export type HookHarness = "claude-code" | "codex";
@@ -83,6 +103,17 @@ interface RuntimeLedger {
   /** Per-event cost of the hooks in this session (roadmap H8): how often each
    * fired, time spent inside the hook, and characters injected into context. */
   hookStats?: Record<string, HookEventStats>;
+  /** Context boundaries seen (compaction, clear); each context has its own
+   * budget. */
+  contextEpoch?: number;
+  /** Tokens injected per `<agent>#<epoch>` against the session budget. */
+  budgets?: Record<string, { limit: number; used: number }>;
+  /** The last session block injected. */
+  block?: { titles: number; leftOut: number; tokens: number; budget: number; handles: string[] };
+  /** Handles the model opened with mindgraph_memory action=open. */
+  handlesOpened?: string[];
+  /** Times a hook failed open (injected nothing extra), and the last one. */
+  failOpen?: { count: number; last?: { event: string; reason: string; at: number } };
   updatedAt: number;
 }
 
@@ -109,6 +140,13 @@ export interface HookRuntimeOptions {
   capture?: boolean;
   /** UserPromptSubmit recall deadline (default 4s; fail open). */
   promptRecallTimeoutMs?: number;
+  /** Tokens per context for injected memory (default 2,000). */
+  budgetTokens?: number;
+  /** Deadline for the session block's memory read (default 3s; fail open). */
+  memoryListTimeoutMs?: number;
+  /** One line for the developer at session start (`systemMessage`). Off
+   * unless set, or MINDGRAPH_HOOK_SESSION_NOTICE=on. */
+  sessionNotice?: boolean;
 }
 
 interface CoreHookRuntimeOptions extends HookRuntimeOptions {
@@ -126,11 +164,16 @@ export interface HookEventStats {
   totalMs: number;
   maxMs: number;
   injectedChars: number;
+  /** The most recent in-process times (ms), for percentiles. */
+  samplesMs?: number[];
 }
+
+const SAMPLES_KEPT = 256;
 
 export type HookCoreOutput =
   | { kind: "noop" }
-  | { kind: "context"; context: string; event?: string }
+  /** `notice` is shown to the developer beside the context, never the model. */
+  | { kind: "context"; context: string; event?: string; notice?: string }
   | { kind: "rewrite"; updatedInput: Record<string, unknown> }
   | { kind: "block"; reason: string }
   /** Fixed local text for the user; never model context. */
@@ -165,39 +208,79 @@ function runtimeDir(options: HookRuntimeOptions): string {
   );
 }
 
-function ledgerPath(sessionId: string, options: HookRuntimeOptions): string {
+function ledgerKey(sessionId: string, options: HookRuntimeOptions): string {
   const harness =
     "harness" in options ? (options as CoreHookRuntimeOptions).harness : "claude-code";
-  const key = crypto
-    .createHash("sha256")
-    .update(`${harness}\0${sessionId}`)
-    .digest("hex");
-  return path.join(runtimeDir(options), `${key}.json`);
+  return crypto.createHash("sha256").update(`${harness}\0${sessionId}`).digest("hex");
+}
+
+function ledgerPath(sessionId: string, options: HookRuntimeOptions): string {
+  return path.join(runtimeDir(options), `${ledgerKey(sessionId, options)}.json`);
+}
+
+/** The session's anchor table (repository → real file path → handles and
+ * titles), written at SessionStart and removed at SessionEnd. */
+export function anchorTablePath(sessionId: string, options: HookRuntimeOptions): string {
+  return path.join(runtimeDir(options), "anchors", `${ledgerKey(sessionId, options)}.json`);
+}
+
+/** Counts a fail-open path in the session ledger (`hooks stats` shows it).
+ * Never throws. */
+export function recordFailOpen(
+  sessionId: string,
+  event: string,
+  reason: string,
+  options: HookRuntimeOptions & { harness?: HookHarness } = {},
+): void {
+  if (!sessionId) return;
+  try {
+    withLedger(
+      sessionId,
+      { reinjectUnchangedCompact: false, ...options, harness: options.harness ?? "claude-code" },
+      (ledger) => {
+        const failOpen = (ledger.failOpen ??= { count: 0 });
+        failOpen.count += 1;
+        failOpen.last = { event, reason: reason.slice(0, 200), at: Date.now() };
+        return undefined;
+      },
+    );
+  } catch {
+    // Counting is bookkeeping; it never changes what a hook returns.
+  }
 }
 
 const STALE_TEMPORARY_MS = 60 * 60_000;
+/** Anchor tables of sessions that never reached SessionEnd (a killed harness). */
+const STALE_ANCHOR_TABLE_MS = 7 * 24 * 60 * 60_000;
 
 /** Removes ledger temporaries left by a hook that was killed between its
  * write and its rename (the harness enforces hook timeouts). Only files
  * older than an hour are touched, so a write in flight is never removed. */
 export function sweepStaleTemporaries(dir: string, now = Date.now()): number {
   let removed = 0;
-  let names: string[];
-  try {
-    names = fs.readdirSync(dir);
-  } catch {
-    return 0;
-  }
-  for (const name of names) {
-    if (!/\.json\.\d+\.[0-9a-f-]+\.tmp$/.test(name)) continue;
-    const file = path.join(dir, name);
+  // Ledger temporaries in the runtime folder, then old anchor tables (and
+  // their temporaries) in its anchors folder.
+  for (const [where, maxAge, pattern] of [
+    [dir, STALE_TEMPORARY_MS, /\.json\.\d+\.[0-9a-f-]+\.tmp$/],
+    [path.join(dir, "anchors"), STALE_ANCHOR_TABLE_MS, /\.json(?:\.\d+\.[0-9a-f-]+\.tmp)?$/],
+  ] as const) {
+    let names: string[];
     try {
-      if (now - fs.statSync(file).mtimeMs > STALE_TEMPORARY_MS) {
-        fs.unlinkSync(file);
-        removed += 1;
-      }
+      names = fs.readdirSync(where);
     } catch {
-      // Another hook removed it first.
+      continue;
+    }
+    for (const name of names) {
+      if (!pattern.test(name)) continue;
+      const file = path.join(where, name);
+      try {
+        if (now - fs.statSync(file).mtimeMs > maxAge) {
+          fs.unlinkSync(file);
+          removed += 1;
+        }
+      } catch {
+        // Another hook removed it first.
+      }
     }
   }
   return removed;
@@ -347,6 +430,14 @@ function responsePayload(value: unknown): Record<string, unknown> | undefined {
   return direct;
 }
 
+/** The first text of a tool result, in any of the shapes hooks receive. */
+function firstText(value: unknown): string {
+  if (typeof value === "string") return value;
+  const blocks = Array.isArray(value) ? value : object(value)?.content;
+  const first = Array.isArray(blocks) ? object(blocks[0]) : undefined;
+  return typeof first?.text === "string" ? first.text : "";
+}
+
 function number(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
@@ -395,6 +486,7 @@ interface BriefRenderMeta {
 function renderBrief(
   brief: Record<string, unknown> | undefined,
   meta: BriefRenderMeta,
+  maxChars = BRIEF_CHAR_BUDGET,
 ): string {
   // Truthful bounding: whenever any item is clipped or any section dropped,
   // the brief says so — the model can then fetch full content by uid instead
@@ -532,7 +624,7 @@ function renderBrief(
     : undefined;
   let used = lines.join("\n").length + (footer ? footer.length + 1 : 0);
   for (const section of optional) {
-    if (used + section.length + 1 > BRIEF_CHAR_BUDGET) {
+    if (used + section.length + 1 > maxChars) {
       bounded = true;
       break;
     }
@@ -546,9 +638,9 @@ function renderBrief(
   }
   if (footer) lines.push(footer);
   const rendered = lines.join("\n");
-  return rendered.length <= BRIEF_CHAR_BUDGET
+  return rendered.length <= maxChars
     ? rendered
-    : `${rendered.slice(0, BRIEF_CHAR_BUDGET - 40)}\n…[bounded work brief truncated]`;
+    : `${rendered.slice(0, maxChars - 40)}\n…[bounded work brief truncated]`;
 }
 
 // SessionStart may only RE-claim this agent's own durable work. The lease
@@ -684,6 +776,8 @@ async function sessionStart(
   const agentId = resolveAgentId(options);
   const harnessLabel = options.harness === "claude-code" ? "Claude Code" : "Codex";
   const nowSeconds = (options.now || (() => Date.now() / 1000))();
+  // The one bounded memory read runs beside the session and work requests.
+  const indexRead = readIndex(input, client, options);
   const opened = object(
     await client.session({
       action: "open",
@@ -811,34 +905,84 @@ async function sessionStart(
   // A transiently-failed re-claim of a lease this session already tracks is
   // NOT a lost claim — the session still holds it server-side.
   const stillHeld = !claimed && claimFailed && heldByThisSession;
-  const briefText = unloaded
-    ? renderBrief(
-        { status: "scope_unresolved" },
-        {
-          claimed: false,
-          claimFailed: false,
-          scopeNote: `Durable work was not loaded: ${unloaded}. Nothing outside the repositories turned on here was searched.`,
-        },
-      )
-    : renderBrief(brief || { status: "no_eligible_work" }, {
-        claimed: Boolean(claimed) || stillHeld,
-        claimFailed: claimFailed && !stillHeld,
-        repositoryNames: scope.names,
-      });
+  const briefText = (maxChars: number) =>
+    unloaded
+      ? renderBrief(
+          { status: "scope_unresolved" },
+          {
+            claimed: false,
+            claimFailed: false,
+            scopeNote: `Durable work was not loaded: ${unloaded}. Nothing outside the repositories turned on here was searched.`,
+          },
+          maxChars,
+        )
+      : renderBrief(
+          brief || { status: "no_eligible_work" },
+          {
+            claimed: Boolean(claimed) || stillHeld,
+            claimFailed: claimFailed && !stillHeld,
+            repositoryNames: scope.names,
+          },
+          maxChars,
+        );
   const registrationNote = claudeMcpRegistrationNote(input, options);
   if (registrationNote) {
     console.error(`mindgraph-hook: ${registrationNote}`);
   }
-  // The note leads: a model that reads the task first will try to act on it
-  // with tools it does not have.
-  const contextText = registrationNote
-    ? `${registrationNote}\n\n${briefText}`
-    : briefText;
-  const briefHash = crypto.createHash("sha256").update(contextText).digest("hex");
+  // The note leads the work state: a model that reads the task first will
+  // try to act on it with tools it does not have.
+  const workText = (maxChars: number) =>
+    registrationNote
+      ? `${registrationNote}\n\n${briefText(maxChars - registrationNote.length - 2)}`
+      : briefText(maxChars);
+  // A compaction or clear starts a new context with its own budget; so does
+  // each subagent.
+  const newContext = input.source === "compact" || input.source === "clear";
+  const epoch = (prior.contextEpoch ?? 0) + (newContext && prior.lastBriefHash !== undefined ? 1 : 0);
+  const budgetKey = `${input.agent_id || "main"}#${epoch}`;
+  const budgetTokens = options.budgetTokens ?? DEFAULT_BUDGET_TOKENS;
+  const usedTokens = prior.budgets?.[budgetKey]?.used ?? 0;
+  const index = await indexRead;
+  let block: ReturnType<typeof renderSessionBlock>;
+  try {
+    block = renderSessionBlock({
+      place: placeName(options.decision),
+      afterCompaction: input.source === "compact",
+      work: workText,
+      index: index.state,
+      budgetTokens,
+      usedTokens,
+    });
+  } catch (error) {
+    // Fail open to the work state alone.
+    recordFailOpen(input.session_id, "SessionStart", `session block: ${(error as Error)?.message}`, options);
+    const text = workText(workChars(budgetTokens, usedTokens));
+    block = { text, titles: 0, leftOut: 0, tokens: Math.ceil(text.length / CHARS_PER_TOKEN), handles: [] };
+  }
+  const contextText = block.text;
+  // The header counts tokens spent so far, so it is left out of the
+  // unchanged-block check.
+  const briefHash = crypto.createHash("sha256").update(contextText.slice(contextText.indexOf("\n") + 1)).digest("hex");
   const shouldInject = withLedger(input.session_id, options, (ledger) => {
     const changed = ledger.lastBriefHash !== briefHash;
     const reinjectCompact =
       options.reinjectUnchangedCompact && input.source === "compact";
+    const inject = changed || reinjectCompact;
+    ledger.contextEpoch = epoch;
+    if (inject) {
+      const budgets = (ledger.budgets ??= {});
+      const entry = (budgets[budgetKey] ??= { limit: budgetTokens, used: 0 });
+      entry.used += block.tokens;
+      // Older contexts no longer matter.
+      for (const key of Object.keys(budgets).slice(0, -8)) delete budgets[key];
+      ledger.block = {
+        titles: block.titles,
+        leftOut: block.leftOut,
+        tokens: block.tokens,
+        budget: budgetTokens,
+        handles: block.handles,
+      };
+    }
     ledger.sessionUid = sessionUid;
     ledger.baselineWorktree = baselineWorktree;
     // The ledger adopts work-targeting state ONLY when this session actually
@@ -895,9 +1039,91 @@ async function sessionStart(
       ledger.lastLeaseRenewalAt = undefined;
     }
     ledger.lastBriefHash = briefHash;
-    return changed || reinjectCompact;
+    return inject;
   });
-  return shouldInject ? { kind: "context", context: contextText } : NOOP;
+  if (index.state.state === "ok") {
+    // A failed read keeps the table from the last successful start.
+    try {
+      const file = anchorTablePath(input.session_id, options);
+      const table = anchorTable(index.root, index.state.selection.read.items);
+      if (table) writePrivateJson(file, table);
+      else fs.rmSync(file, { force: true });
+    } catch (error) {
+      recordFailOpen(input.session_id, "SessionStart", `anchor table: ${(error as Error)?.message}`, options);
+    }
+  }
+  const notice =
+    options.sessionNotice ?? process.env.MINDGRAPH_HOOK_SESSION_NOTICE === "on"
+      ? sessionNotice(placeName(options.decision), index.state, block)
+      : undefined;
+  if (shouldInject) {
+    return { kind: "context", context: contextText, ...(notice ? { notice } : {}) };
+  }
+  return notice ? { kind: "notice", message: notice } : NOOP;
+}
+
+/** The developer's one line at session start (shown only behind a switch:
+ * whether Claude Code shows it is not yet confirmed). */
+function sessionNotice(
+  place: string,
+  index: IndexState,
+  block: { titles: number; tokens: number },
+): string {
+  if (index.state === "unavailable") {
+    const why = {
+      refused: "MindGraph refused the API key",
+      timeout: "MindGraph did not respond",
+      error: "MindGraph could not read this memory",
+    }[index.reason];
+    return `${why}; this session has no MindGraph memory titles. ${
+      index.reason === "refused" ? "Fix: npx mindgraph-mcp install-code" : "Details: npx mindgraph-mcp hooks stats"
+    }`;
+  }
+  if (index.state === "ok" && index.selection.read.read === 0) {
+    return "MindGraph is on here; nothing stored yet.";
+  }
+  return `MindGraph: work state and ${block.titles} memory title${block.titles === 1 ? "" : "s"} for ${place} (${block.tokens} tokens). Details: npx mindgraph-mcp hooks stats`;
+}
+
+/**
+ * The session block's one bounded `memory/v1` `list` read, in the consented
+ * root's own space only. Never throws: a failure is counted and becomes the
+ * block's one-line unavailable form.
+ */
+async function readIndex(
+  input: HookInput,
+  client: HookClient,
+  options: GatedHookRuntimeOptions,
+): Promise<{ state: IndexState; root: string }> {
+  const decision = options.decision;
+  const root = decision.repo?.root ?? decision.root;
+  const space = decision.space_uid;
+  if (!space) return { state: { state: "no_space" }, root };
+  let read: Awaited<ReturnType<typeof readSpace>>;
+  const deadline = options.memoryListTimeoutMs ?? 3_000;
+  const started = Date.now();
+  try {
+    const list = memoryListOf(client);
+    if (!list) throw new Error("this connection cannot read memory");
+    read = await withDeadline(readSpace(list, space), deadline);
+  } catch (error) {
+    const status = (error as { status?: unknown })?.status;
+    const reason =
+      (error as Error)?.message === "deadline"
+        ? "timeout"
+        : status === 401 || status === 403
+          ? "refused"
+          : "error";
+    recordFailOpen(input.session_id, "SessionStart", `memory read: ${reason}`, options);
+    return { state: { state: "unavailable", reason }, root };
+  }
+  // The change check spends what is left of the read's deadline, at most 1 s;
+  // a failure marks nothing and keeps the titles.
+  const gitMs = Math.max(250, Math.min(1_000, deadline - (Date.now() - started)));
+  const selection = selectIndex(root, read, localNotes({ root, space_uid: space }), nodeGit(process.env, gitMs), (message) =>
+    recordFailOpen(input.session_id, "SessionStart", `code change check: ${message}`, options),
+  );
+  return { state: { state: "ok", selection }, root };
 }
 
 async function preTool(
@@ -1047,6 +1273,12 @@ async function postTool(
       ) {
         ledger.memoryWritten = true;
       }
+    }
+    // An opened item's text starts with its handle; an error is JSON.
+    const handle = string(args.handle);
+    if (name.includes("mindgraph_memory") && action === "open" && handle && firstText(input.tool_response).startsWith("[")) {
+      const opened = (ledger.handlesOpened ??= []);
+      if (!opened.includes(handle) && opened.length < 200) opened.push(handle);
     }
     if (name.includes("mindgraph_plan")) {
       const targetTask = string(args.task_uid) || ledger.taskUid;
@@ -1279,6 +1511,12 @@ async function sessionEnd(
   options: CoreHookRuntimeOptions,
 ): Promise<HookCoreOutput> {
   const harnessLabel = options.harness === "claude-code" ? "Claude Code" : "Codex";
+  // The anchor table lives only as long as the session.
+  try {
+    fs.rmSync(anchorTablePath(input.session_id, options), { force: true });
+  } catch {
+    // Swept at a later SessionStart.
+  }
   // Capture first, while the Session is still open (Claude only: Codex caps
   // SessionEnd at 3s, which the abandon/close calls already need).
   if (options.harness === "claude-code") {
@@ -1366,18 +1604,32 @@ async function promptRecall(
       client.retrieveContext(promptRecallRequest(query)),
       options.promptRecallTimeoutMs ?? 4_000,
     );
-    const block = renderPromptRecall(response, query);
-    if (!block) return NOOP;
-    const hash = crypto.createHash("sha256").update(block).digest("hex");
-    const fresh = withLedger(input.session_id, options, (ledger) => {
-      if (ledger.lastRecallHash === hash) return false;
+    const recalled = renderPromptRecall(response, query);
+    if (!recalled) return NOOP;
+    const hash = crypto.createHash("sha256").update(recalled).digest("hex");
+    // Recall spends the same per-context budget as the session block: lines
+    // that do not fit are cut, and the block says so.
+    const block = withLedger(input.session_id, options, (ledger) => {
+      if (ledger.lastRecallHash === hash) return undefined;
       ledger.lastRecallHash = hash;
-      return true;
+      const limit = options.budgetTokens ?? DEFAULT_BUDGET_TOKENS;
+      const entry = ((ledger.budgets ??= {})[`${input.agent_id || "main"}#${ledger.contextEpoch ?? 0}`] ??= { limit, used: 0 });
+      const room = Math.max(0, entry.limit - entry.used) * CHARS_PER_TOKEN;
+      const lines = recalled.split("\n");
+      const kept = [lines[0]];
+      let cut = 0;
+      for (const line of lines.slice(1)) {
+        if (cut || [...kept, line].join("\n").length + 120 > room) cut++;
+        else kept.push(line);
+      }
+      if (cut) kept.push(`${cut} recalled line${cut === 1 ? "" : "s"} left out: this context's ${limit.toLocaleString("en-US")}-token memory budget is spent.`);
+      const text = kept.join("\n");
+      entry.used += Math.ceil(text.length / CHARS_PER_TOKEN);
+      return text;
     });
-    return fresh
-      ? { kind: "context", context: block, event: "UserPromptSubmit" }
-      : NOOP;
-  } catch {
+    return block ? { kind: "context", context: block, event: "UserPromptSubmit" } : NOOP;
+  } catch (error) {
+    recordFailOpen(input.session_id, "UserPromptSubmit", `prompt recall: ${(error as Error)?.message}`, options);
     return NOOP;
   }
 }
@@ -1429,6 +1681,7 @@ async function captureTranscript(
     });
   } catch (error) {
     // Offset unchanged, so the same turns are retried at the next boundary.
+    recordFailOpen(input.session_id, input.hook_event_name, "transcript capture", options);
     console.error(
       `mindgraph-hook: transcript capture failed (${(error as Error)?.message || "unknown error"})`,
     );
@@ -1522,6 +1775,10 @@ export async function runHookCore(
         entry.totalMs += elapsed;
         entry.maxMs = Math.max(entry.maxMs, elapsed);
         entry.injectedChars += injected;
+        // In-process time on the injection path, kept for its percentiles.
+        const samples = (entry.samplesMs ??= []);
+        samples.push(elapsed);
+        if (samples.length > SAMPLES_KEPT) samples.splice(0, samples.length - SAMPLES_KEPT);
         return undefined;
       });
     } catch {
@@ -1618,6 +1875,44 @@ export interface HookSessionStats {
   sessionId: string;
   updatedAt: number;
   events: Record<string, HookEventStats>;
+  block?: RuntimeLedger["block"];
+  handlesOpened: string[];
+  failOpen: number;
+  lastFailOpen?: { event: string; reason: string; at: number };
+}
+
+/** `hooks stats`: per-event calls and in-process times (with p99), what
+ * was injected, the last session block, handles opened and fail-opens. */
+export function formatHookStats(stats: HookSessionStats): string {
+  const rows = Object.entries(stats.events).sort(([a], [b]) => a.localeCompare(b));
+  const injected = rows.reduce((sum, [, row]) => sum + row.injectedChars, 0);
+  const pad = (value: unknown, n: number) => String(value).padStart(n);
+  const out = [
+    `Session ${stats.sessionId} (${stats.harness}), last active ${new Date(stats.updatedAt).toISOString()}`,
+    "event               calls   avg ms   p99 ms   max ms   injected chars",
+  ];
+  for (const [event, row] of rows) {
+    const samples = [...(row.samplesMs ?? [])].sort((a, b) => a - b);
+    const p99 = samples.length ? samples[Math.min(samples.length - 1, Math.ceil(samples.length * 0.99) - 1)] : "-";
+    out.push(
+      `${event.padEnd(18)} ${pad(row.count, 6)} ${pad(Math.round(row.totalMs / Math.max(row.count, 1)), 8)} ${pad(p99, 8)} ${pad(row.maxMs, 8)} ${pad(row.injectedChars, 16)}`,
+    );
+  }
+  out.push(
+    `Injected into context: ${injected} characters (about ${Math.round(injected / 4)} tokens). Times are measured inside the hook and exclude process start; p99 is over the last ${SAMPLES_KEPT} calls of each event.`,
+  );
+  if (stats.block) {
+    out.push(
+      `Session block: ${stats.block.titles} memory titles shown, ${stats.block.leftOut} left out; ${stats.block.tokens} of ${stats.block.budget} tokens.`,
+    );
+  }
+  const opened = stats.handlesOpened;
+  const shown = stats.block?.handles.length ?? 0;
+  out.push(
+    `Handles opened: ${opened.length}${shown ? ` (${shown} shown at the last session start)` : ""}${opened.length ? `: ${opened.join(", ")}` : ""}`,
+    `Failed open: ${stats.failOpen}${stats.lastFailOpen ? ` (last: ${stats.lastFailOpen.event}, ${stats.lastFailOpen.reason}, ${new Date(stats.lastFailOpen.at).toISOString()})` : ""}. A hook that fails open injects nothing extra and never blocks the session.`,
+  );
+  return out.join("\n");
 }
 
 /** Hook cost for one session, or for the most recently active session when
@@ -1646,6 +1941,10 @@ export function readHookStats(
           sessionId: ledger.harnessSessionId,
           updatedAt,
           events: ledger.hookStats,
+          block: ledger.block,
+          handlesOpened: ledger.handlesOpened ?? [],
+          failOpen: ledger.failOpen?.count ?? 0,
+          lastFailOpen: ledger.failOpen?.last,
         };
       }
     } catch {

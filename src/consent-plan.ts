@@ -24,7 +24,7 @@ const GIT_ENV_DROP = [
   "GIT_NAMESPACE",
 ];
 
-export function nodeGit(env: NodeJS.ProcessEnv = process.env): GitRunner {
+export function nodeGit(env: NodeJS.ProcessEnv = process.env, timeoutMs = 5_000): GitRunner {
   const clean: NodeJS.ProcessEnv = { ...env };
   // A variable such as GIT_DIR would make every repository look like one.
   for (const key of GIT_ENV_DROP) delete clean[key];
@@ -32,7 +32,7 @@ export function nodeGit(env: NodeJS.ProcessEnv = process.env): GitRunner {
     execFileSync("git", args, {
       env: clean,
       stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5_000,
+      timeout: timeoutMs,
     }).toString("utf8");
 }
 

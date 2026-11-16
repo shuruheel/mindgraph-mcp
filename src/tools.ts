@@ -1521,7 +1521,7 @@ export async function handleTool(
         result = await handleRetrieve(client, args, memoryConfig.profile);
         break;
       case "mindgraph_memory":
-        result = await handleMemoryTool(client, args, memoryConfig);
+        result = await handleMemoryTool(client, args, runtime.consent && !runtime.hosted ? { ...memoryConfig, consent: runtime.consent } : memoryConfig);
         break;
       case "mindgraph_remember":
         result = await handleRemember(client, args);
