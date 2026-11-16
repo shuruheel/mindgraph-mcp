@@ -24,6 +24,11 @@ export interface ToolRuntime {
   signal?: AbortSignal;
   /** Upper bound on `wait_seconds` for this transport. */
   maxWaitSeconds?: number;
+  /** The server's profile, from its wiring. `mindgraph_code` and
+   * `mindgraph_sync` run only when this is "coding" and `hosted` is not set. */
+  profile?: string;
+  /** Set in hosted mode: no tool may touch the host's filesystem or run git. */
+  hosted?: boolean;
 }
 
 export interface JobWaitResult {
