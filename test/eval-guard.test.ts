@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import {
@@ -17,7 +17,9 @@ import {
   EVAL_REQUIRES_HOME,
   EVAL_REQUIRES_LOOPBACK,
   EvalLoopbackError,
+  evalAppConfigRefusal,
   evalBaseUrlRefusal,
+  evalClaudeReadRefusal,
   evalHomeRefusal,
   evalUserScopeRefusal,
   isLoopbackUrl,
@@ -25,11 +27,16 @@ import {
 import { refreshRunnerForConsent } from "../src/consent-cli.js";
 import { mindgraphDataDir, mindgraphRuntimeDir } from "../src/hook-env.js";
 import {
+  gateFloorWarning,
   installClaudeHooks,
   installedHookRunnerVersion,
   installHookRunner,
   refreshHookRunner,
   refreshOwnedClaudeHooks,
+  refreshPortableRunnerBelowGate,
+  runnerPredatesGate,
+  uninstallClaudeHooks,
+  uninstallCodexHooks,
   uninstallHookRunner,
 } from "../src/hook-installer.js";
 import { built, makeRepo, repoEntry, snapshotTree, tempDir, writeStore } from "./fixtures/consent.js";
@@ -51,6 +58,33 @@ function scratch(prefix = "mindgraph-eval-"): string {
 function requests(log: string): unknown[] {
   if (!fs.existsSync(log)) return [];
   return fs.readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+}
+
+/** Like `run`, but writes one answer each time the process prints a prompt
+ * (output ending in ": "), and closes stdin when the answers run out. */
+function runAnswering(
+  args: string[],
+  env: Record<string, string>,
+  cwd: string,
+  answers: string[],
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, { cwd, env });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (c: Buffer) => {
+      const text = c.toString("utf8");
+      stdout += text;
+      // A prompt is written on its own and waits for the answer.
+      if (!text.endsWith(": ")) return;
+      const answer = answers.shift();
+      if (answer === undefined) child.stdin.end();
+      else child.stdin.write(`${answer}\n`);
+    });
+    child.stderr.on("data", (c: Buffer) => (stderr += c.toString("utf8")));
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
 }
 
 function run(
@@ -399,6 +433,105 @@ describe("MINDGRAPH_HOME moves the runner and the runtime directory with hooks.j
   });
 });
 
+// A 0.27.x install put an ungated runner at $HOME/.mindgraph/bin and wrote
+// portable "$HOME/..." entries. Setting MINDGRAPH_HOME afterwards moves this
+// process's runner, but those entries still run the old one: the consent
+// floor must keep seeing it and bring it up to date.
+describe("the consent floor sees the portable runner under MINDGRAPH_HOME", () => {
+  const PORTABLE = 'node "$HOME/.mindgraph/bin/mindgraph-hook.cjs" hook --harness claude-code --owner mindgraph';
+  const settingsWith = (command: string) =>
+    `${JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command, timeout: 1 }] }] } }, null, 2)}\n`;
+
+  function upgradedMachine() {
+    const home = scratch("mindgraph-floor-home-");
+    const bin = path.join(home, ".mindgraph", "bin");
+    fs.mkdirSync(bin, { recursive: true });
+    const legacy = path.join(bin, "mindgraph-hook.cjs");
+    fs.writeFileSync(legacy, "// runner 0.27.1\n");
+    fs.writeFileSync(`${legacy}.version`, "0.27.1\n");
+    const userSettings = path.join(process.env.CLAUDE_CONFIG_DIR!, "settings.json");
+    fs.mkdirSync(path.dirname(userSettings), { recursive: true });
+    fs.writeFileSync(userSettings, settingsWith(PORTABLE));
+    const project = makeRepo(path.join(scratch(), "project"));
+    fs.mkdirSync(path.join(project, ".claude"));
+    const projectSettings = path.join(project, ".claude", "settings.json");
+    fs.writeFileSync(projectSettings, settingsWith(PORTABLE));
+    const bundle = path.join(scratch(), "cli.js");
+    fs.writeFileSync(bundle, "// bundle 0.28.0\n");
+    vi.stubEnv("HOME", home);
+    return { home, legacy, userSettings, project, projectSettings, bundle };
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(path.join(process.env.CLAUDE_CONFIG_DIR!, "settings.json"), { force: true });
+  });
+
+  const commandsIn = (file: string) =>
+    Object.values(
+      JSON.parse(fs.readFileSync(file, "utf8")).hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>,
+    ).flatMap((entries) => entries.flatMap((e) => e.hooks.map((h) => h.command)));
+
+  it("predates the gate, warns with the portable runner's path, and a forced refresh updates it in place", () => {
+    const m = upgradedMachine();
+    // This process's own runner (under MINDGRAPH_HOME) does not exist.
+    expect(fs.existsSync(path.join(process.env.MINDGRAPH_HOME!, "bin", "mindgraph-hook.cjs"))).toBe(false);
+    expect(runnerPredatesGate()).toBe(true);
+    expect(gateFloorWarning()).toBe(
+      `the installed hook runner at ${m.legacy} v0.27.1 predates consent and ignores it; ` +
+        "run npx -y mindgraph-mcp@latest install-hooks --scope user",
+    );
+    vi.stubEnv("MINDGRAPH_HOOK_AUTOUPDATE", "off");
+    expect(refreshHookRunner("0.28.0", m.bundle, undefined, { force: true })).toEqual({
+      refreshed: true,
+      reason: "updated",
+      runnerVersion: "0.27.1",
+    });
+    expect(fs.readFileSync(m.legacy, "utf8")).toBe("// bundle 0.28.0\n");
+    expect(fs.readFileSync(`${m.legacy}.version`, "utf8")).toBe("0.28.0\n");
+    expect(runnerPredatesGate()).toBe(false);
+    expect(gateFloorWarning()).toBeUndefined();
+    // The owned entries keep naming the runner they named, now gated.
+    expect(refreshOwnedClaudeHooks(m.project, undefined, ["user", "project"])).toEqual([
+      m.userSettings,
+      m.projectSettings,
+    ]);
+    for (const file of [m.userSettings, m.projectSettings]) {
+      for (const command of commandsIn(file)) expect(command).toBe(PORTABLE);
+    }
+  });
+
+  it("on/off's refresh brings the portable runner up to the floor", () => {
+    const m = upgradedMachine();
+    expect(refreshRunnerForConsent("0.28.0", m.bundle)).toBe(
+      "Updated the hook runner to v0.28.0 so it checks where MindGraph is on.",
+    );
+    expect(fs.readFileSync(`${m.legacy}.version`, "utf8")).toBe("0.28.0\n");
+    for (const command of commandsIn(m.userSettings)) expect(command).toBe(PORTABLE);
+  });
+
+  it("install-hooks' portable refresh touches only a runner below the floor, and never in an evaluation run", () => {
+    const m = upgradedMachine();
+    vi.stubEnv("MINDGRAPH_EVAL", "1");
+    expect(refreshPortableRunnerBelowGate(m.bundle, "0.28.0")).toBeUndefined();
+    expect(fs.readFileSync(`${m.legacy}.version`, "utf8")).toBe("0.27.1\n");
+    vi.stubEnv("MINDGRAPH_EVAL", "");
+    expect(refreshPortableRunnerBelowGate(m.bundle, "0.28.0")).toBe(m.legacy);
+    expect(fs.readFileSync(`${m.legacy}.version`, "utf8")).toBe("0.28.0\n");
+    // Now at the floor: left alone.
+    expect(refreshPortableRunnerBelowGate(m.bundle, "0.29.0")).toBeUndefined();
+    expect(fs.readFileSync(`${m.legacy}.version`, "utf8")).toBe("0.28.0\n");
+  });
+
+  it("a portable runner already at the floor is not refreshed by the floor rule", () => {
+    const m = upgradedMachine();
+    fs.writeFileSync(`${m.legacy}.version`, "0.28.0\n");
+    expect(runnerPredatesGate()).toBe(false);
+    expect(refreshHookRunner("0.29.0", m.bundle)).toEqual({ refreshed: false, reason: "no_runner" });
+    expect(fs.readFileSync(`${m.legacy}.version`, "utf8")).toBe("0.28.0\n");
+  });
+});
+
 describe("eval refusal helpers", () => {
   it("evalHomeRefusal requires an accepted MINDGRAPH_HOME, only in eval mode", () => {
     const repo = makeRepo(path.join(scratch(), "repo"));
@@ -420,6 +553,42 @@ describe("eval refusal helpers", () => {
     expect(evalUserScopeRefusal("codex", "user", { ...on, CODEX_HOME: "/trial/codex" })).toBeUndefined();
     expect(evalUserScopeRefusal("claude-code", "project", on)).toBeUndefined();
     expect(evalUserScopeRefusal("claude-code", "user", {})).toBeUndefined();
+  });
+
+  it("evalClaudeReadRefusal needs an absolute CLAUDE_CONFIG_DIR; evalAppConfigRefusal always refuses in eval mode", () => {
+    const on = { MINDGRAPH_EVAL: "1" };
+    expect(evalClaudeReadRefusal(on)).toMatch(new RegExp(`^${EVAL_REQUIRES_CONFIG_DIR}: `));
+    expect(evalClaudeReadRefusal({ ...on, CLAUDE_CONFIG_DIR: "rel" })).toContain("CLAUDE_CONFIG_DIR");
+    expect(evalClaudeReadRefusal({ ...on, CLAUDE_CONFIG_DIR: "/trial/claude" })).toBeUndefined();
+    expect(evalClaudeReadRefusal({})).toBeUndefined();
+    expect(evalAppConfigRefusal("Cursor", on)).toMatch(new RegExp(`^${EVAL_REQUIRES_CONFIG_DIR}: .*Cursor`));
+    expect(evalAppConfigRefusal("Cursor", {})).toBeUndefined();
+  });
+
+  it("uninstall-hooks refuses user scope outside the trial's own config directory, and leaves the file alone", () => {
+    const home = scratch("mindgraph-uninstall-home-");
+    const claude = path.join(home, ".claude");
+    const codex = path.join(home, ".codex");
+    fs.mkdirSync(claude);
+    fs.mkdirSync(codex);
+    const owned = `${JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: 'node "$HOME/.mindgraph/bin/mindgraph-hook.cjs" hook --harness claude-code --owner mindgraph' }] }] } }, null, 2)}\n`;
+    fs.writeFileSync(path.join(claude, "settings.json"), owned);
+    fs.writeFileSync(path.join(codex, "hooks.json"), owned);
+    const before = snapshotTree(home);
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("MINDGRAPH_EVAL", "1");
+    vi.stubEnv("CLAUDE_CONFIG_DIR", "");
+    vi.stubEnv("CODEX_HOME", "");
+    try {
+      expect(() => uninstallClaudeHooks("user")).toThrow(EVAL_REQUIRES_CONFIG_DIR);
+      expect(() => uninstallCodexHooks("user")).toThrow(EVAL_REQUIRES_CONFIG_DIR);
+      expect(snapshotTree(home)).toEqual(before);
+      // The trial's own directory is fine.
+      vi.stubEnv("CLAUDE_CONFIG_DIR", claude);
+      expect(uninstallClaudeHooks("user")).toEqual({ path: path.join(claude, "settings.json"), removed: 1 });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
@@ -565,6 +734,62 @@ describe.runIf(built(CLI))("installs and other commands under MINDGRAPH_EVAL=1",
       `node '${path.join(m.store, "bin", "mindgraph-hook.cjs")}' hook --harness claude-code --owner mindgraph`,
     );
     expect(requests(m.log)).toEqual([]);
+  }, 30_000);
+
+  it("uninstall-hooks, uninstall-code and the Claude Desktop and Cursor commands never change HOME's configuration", async () => {
+    const m = machine();
+    fs.mkdirSync(path.join(m.home, ".cursor"));
+    fs.writeFileSync(path.join(m.home, ".cursor", "mcp.json"), `${JSON.stringify({ mcpServers: { mindgraph: {} } })}\n`);
+    const before = m.snapshot();
+    for (const args of [
+      ["uninstall-hooks", "--harness", "claude-code", "--scope", "user"],
+      ["uninstall-hooks", "--harness", "codex", "--scope", "user"],
+      ["uninstall-code"],
+      ["install", "--api-key", "mg_test_not_real", "--base-url", "http://127.0.0.1:9"],
+      ["uninstall"],
+      ["install-cursor", "--api-key", "mg_test_not_real", "--base-url", "http://127.0.0.1:9"],
+      ["uninstall-cursor"],
+    ]) {
+      const result = await run([CLI, ...args], m.env, { cwd: m.base });
+      expect(result.code, args.join(" ")).toBe(1);
+      expect(result.stderr, args.join(" ")).toContain(EVAL_REQUIRES_CONFIG_DIR);
+    }
+    expect(m.snapshot()).toEqual(before);
+    expect(fs.existsSync(m.store)).toBe(false);
+    expect(fs.existsSync(m.marker)).toBe(false);
+    expect(requests(m.log)).toEqual([]);
+  }, 30_000);
+
+  it("on, off and off --all stop without an accepted MINDGRAPH_HOME; off --all also needs CLAUDE_CONFIG_DIR", async () => {
+    const m = machine();
+    const repo = makeRepo(path.join(m.base, "repo"));
+    const before = m.snapshot();
+    const refused = { ...m.env, MINDGRAPH_HOME: path.join(repo, "store") };
+    for (const args of [["off"], ["off", "--all", "--dry-run"]]) {
+      const result = await run([CLI, ...args], refused, { cwd: repo });
+      expect(result.code, args.join(" ")).toBe(1);
+      expect(result.stderr, args.join(" ")).toContain(EVAL_REQUIRES_HOME);
+    }
+    const dryRun = await run([CLI, "off", "--all", "--dry-run"], m.env, { cwd: repo });
+    expect(dryRun.code).toBe(1);
+    expect(dryRun.stderr).toContain(EVAL_REQUIRES_CONFIG_DIR);
+    expect(m.snapshot()).toEqual(before);
+    expect(fs.existsSync(path.join(repo, "store"))).toBe(false);
+    expect(fs.existsSync(m.store)).toBe(false);
+  }, 30_000);
+
+  it("init's install step needs the trial's directories, and never writes Claude Desktop's configuration", async () => {
+    const m = machine();
+    const before = m.snapshot();
+    for (const choice of ["1", "2", "3"]) {
+      // One answer per prompt: readline drops lines that arrive before it asks.
+      const result = await runAnswering([CLI, "init"], m.env, m.base, ["2", "mg_test_not_real", choice]);
+      expect(result.code, choice).toBe(1);
+      expect(result.stderr, choice).toContain(EVAL_REQUIRES_CONFIG_DIR);
+    }
+    expect(m.snapshot()).toEqual(before);
+    expect(fs.existsSync(m.store)).toBe(false);
+    expect(fs.existsSync(m.marker)).toBe(false);
   }, 30_000);
 
   it("install-hooks and install-code stop without an accepted MINDGRAPH_HOME", async () => {

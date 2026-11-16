@@ -11,9 +11,14 @@
  * An evaluation run also needs its own accepted `MINDGRAPH_HOME`
  * (`evalHomeRefusal`, code `eval_requires_home`): without one, the trial
  * would read the real `~/.mindgraph` (agent id, consent, runner, runtime
- * files). And a user-scope hook install writes only into a configuration
+ * files); `on`, `off`, `off --all`, `import notes` and the installs check
+ * it. A user-scope hook install or removal writes only into a configuration
  * directory the trial named (`evalUserScopeRefusal`, code
- * `eval_requires_config_dir`), never into the person's real settings.
+ * `eval_requires_config_dir`), never into the person's real settings;
+ * `import notes` and `off --all` read Claude Code's files only from the
+ * trial's `CLAUDE_CONFIG_DIR` (`evalClaudeReadRefusal`); and Claude Desktop's
+ * and Cursor's configurations, which have no trial directory, are never
+ * changed (`evalAppConfigRefusal`).
  */
 
 import path from "node:path";
@@ -119,8 +124,37 @@ export function evalUserScopeRefusal(
   const dir = env[variable];
   if (dir && path.isAbsolute(dir)) return undefined;
   return (
-    `${EVAL_REQUIRES_CONFIG_DIR}: MINDGRAPH_EVAL=1 is set, so user-scope hooks are installed only into ` +
+    `${EVAL_REQUIRES_CONFIG_DIR}: MINDGRAPH_EVAL=1 is set, so user-scope hooks are installed and removed only in ` +
     `the trial's own configuration directory; set ${variable} to an absolute path, or use --scope project. ` +
     `Nothing was written.`
+  );
+}
+
+/** The refusal message when eval mode is on and `CLAUDE_CONFIG_DIR` is not an
+ * absolute path, for a command that reads Claude Code's user files (settings,
+ * notes, `.claude.json`): without it they would be the person's real ones,
+ * read into the trial. */
+export function evalClaudeReadRefusal(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (!evalMode(env)) return undefined;
+  const dir = env.CLAUDE_CONFIG_DIR;
+  if (dir && path.isAbsolute(dir)) return undefined;
+  return (
+    `${EVAL_REQUIRES_CONFIG_DIR}: MINDGRAPH_EVAL=1 is set, so Claude Code's settings, notes and project list are ` +
+    `read only from the trial's own configuration directory; set CLAUDE_CONFIG_DIR to an absolute path. ` +
+    `Nothing was read or changed.`
+  );
+}
+
+/** The refusal message when eval mode is on, for a command that writes an
+ * application's configuration that cannot be moved to a trial directory
+ * (Claude Desktop, Cursor). */
+export function evalAppConfigRefusal(
+  app: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  if (!evalMode(env)) return undefined;
+  return (
+    `${EVAL_REQUIRES_CONFIG_DIR}: MINDGRAPH_EVAL=1 is set, and ${app}'s configuration has no trial directory, ` +
+    `so an evaluation run never changes it. Nothing was written.`
   );
 }

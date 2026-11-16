@@ -26,6 +26,7 @@ import { runImportNotes } from "./import-notes.js";
 import {
   EVAL_REQUIRES_HOME,
   EVAL_REQUIRES_LOOPBACK,
+  evalAppConfigRefusal,
   evalBaseUrlRefusal,
   evalHomeRefusal,
   evalMode,
@@ -55,6 +56,7 @@ import {
   type InstallResult,
   installHookRunner,
   overrideRunner,
+  refreshPortableRunnerBelowGate,
   type HookScope,
   uninstallClaudeHooks,
   uninstallCodexHooks,
@@ -665,6 +667,20 @@ async function pollForKey(code: string): Promise<string> {
   throw new Error("Timed out waiting for authorization.");
 }
 
+/** Print an evaluation-run refusal and exit 1; nothing when undefined. */
+function exitOnEvalRefusal(refusal: string | undefined): void {
+  if (!refusal) return;
+  console.error(`Error: ${refusal}`);
+  process.exit(1);
+}
+
+/** What registering MindGraph in Claude Code (and installing its user-scope
+ * hooks) needs in an evaluation run: the trial's own MINDGRAPH_HOME and
+ * CLAUDE_CONFIG_DIR. */
+function evalClaudeCodeInstallRefusal(): string | undefined {
+  return evalHomeRefusal() ?? evalUserScopeRefusal("claude-code", "user");
+}
+
 async function interactiveInit(baseUrl?: string): Promise<void> {
   const readline = await import("readline");
   const rl = readline.createInterface({
@@ -731,7 +747,17 @@ async function interactiveInit(baseUrl?: string): Promise<void> {
   const choice = await ask("Choice (1/2/3): ");
   rl.close();
 
-  switch (choice.trim()) {
+  // An evaluation run never writes Claude Desktop's configuration, and writes
+  // Claude Code's only in the trial's own directories.
+  const target = choice.trim();
+  if (target === "1" || target === "3") {
+    exitOnEvalRefusal(evalAppConfigRefusal("Claude Desktop"));
+  }
+  if (target === "2" || target === "3") {
+    exitOnEvalRefusal(evalClaudeCodeInstallRefusal());
+  }
+
+  switch (target) {
     case "1":
       installClaudeDesktop(apiKey, baseUrl);
       break;
@@ -867,6 +893,7 @@ async function main(): Promise<void> {
         );
         process.exit(1);
       }
+      exitOnEvalRefusal(evalAppConfigRefusal("Claude Desktop"));
       installClaudeDesktop(apiKey, baseUrl);
       break;
 
@@ -877,15 +904,9 @@ async function main(): Promise<void> {
         );
         process.exit(1);
       }
-      {
-        // An evaluation run registers the server and installs hooks only into
-        // its own MINDGRAPH_HOME and CLAUDE_CONFIG_DIR, never the real ones.
-        const refusal = evalHomeRefusal() ?? evalUserScopeRefusal("claude-code", "user");
-        if (refusal) {
-          console.error(`Error: ${refusal}`);
-          process.exit(1);
-        }
-      }
+      // An evaluation run registers the server and installs hooks only into
+      // its own MINDGRAPH_HOME and CLAUDE_CONFIG_DIR, never the real ones.
+      exitOnEvalRefusal(evalClaudeCodeInstallRefusal());
       if (withHooksFlag()) {
         try {
           assertHookConfigReadable();
@@ -904,6 +925,7 @@ async function main(): Promise<void> {
         );
         process.exit(1);
       }
+      exitOnEvalRefusal(evalAppConfigRefusal("Cursor"));
       // Same identity the hooks and the Claude Code registration resolve, so
       // work claimed in one harness is recognised in the other.
       const result = installCursor({
@@ -926,6 +948,7 @@ async function main(): Promise<void> {
     }
 
     case "uninstall-cursor":
+      exitOnEvalRefusal(evalAppConfigRefusal("Cursor"));
       console.log(
         uninstallCursor()
           ? "Removed MindGraph from ~/.cursor/mcp.json."
@@ -934,10 +957,13 @@ async function main(): Promise<void> {
       break;
 
     case "uninstall":
+      exitOnEvalRefusal(evalAppConfigRefusal("Claude Desktop"));
       uninstallClaudeDesktop();
       break;
 
     case "uninstall-code":
+      // `claude mcp remove` rewrites Claude Code's user configuration.
+      exitOnEvalRefusal(evalUserScopeRefusal("claude-code", "user"));
       uninstallClaudeCode();
       break;
 
@@ -975,6 +1001,11 @@ async function main(): Promise<void> {
       }
       const runner = installHookRunner(__filename, undefined, __PACKAGE_VERSION__);
       console.log(`Installed pinned hook runner at ${runner}`);
+      // Entries written before MINDGRAPH_HOME moved the runner (and committed
+      // project settings) still run the one under $HOME: one that ignores
+      // consent is brought up to this version too.
+      const portable = refreshPortableRunnerBelowGate(__filename, __PACKAGE_VERSION__);
+      if (portable) console.log(`Updated the older hook runner at ${portable} so it checks where MindGraph is on`);
       const features =
         hookHarness === "claude-code" ? claudeHookFeatures() : undefined;
       const result =
@@ -1028,6 +1059,9 @@ async function main(): Promise<void> {
       if (hookHarness !== "claude-code" && hookHarness !== "codex") {
         throw new Error("--harness must be claude-code or codex");
       }
+      // An evaluation run removes user-scope entries only from the trial's own
+      // configuration directory, never the person's real settings.
+      exitOnEvalRefusal(evalUserScopeRefusal(hookHarness, scope));
       // The pinned runner is shared by all harness adapters. Leave it in place
       // when removing one hook configuration; deleting it would break hooks
       // installed for the other harness (or a project outside this cwd).

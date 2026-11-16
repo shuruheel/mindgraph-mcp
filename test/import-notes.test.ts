@@ -688,6 +688,20 @@ describe("import notes under MINDGRAPH_EVAL=1", () => {
     }
   });
 
+  it("refuses without the trial's own CLAUDE_CONFIG_DIR, before any note or setting is read", async () => {
+    const ctx = setup();
+    note(ctx.memory, "a.md", "Note a.\n");
+    for (const configDir of ["", "relative-claude"]) {
+      const server = fakeServer();
+      const run = person(ctx, ["1"], { MINDGRAPH_EVAL: "1", CLAUDE_CONFIG_DIR: configDir });
+      expect(await runImportNotes(undefined, run.io, { client: server.factory, dryRun: true })).toBe(1);
+      expect(server.calls).toEqual([]);
+      expect(run.out).toEqual([]);
+      expect(run.err.join("\n")).toContain("eval_requires_config_dir");
+      expect(fs.existsSync(manifestPath(run.env))).toBe(false);
+    }
+  });
+
   it("imports into a loopback server as usual", async () => {
     const ctx = setup();
     note(ctx.memory, "a.md", "Note a.\n");

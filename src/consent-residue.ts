@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { requireHumanTerminal } from "./agent-shell.js";
 import {
@@ -16,14 +17,15 @@ import {
   type ConsentIo,
 } from "./consent-cli.js";
 import { nodeGit, printable, type GitRunner } from "./consent-plan.js";
+import { evalClaudeReadRefusal, evalHomeRefusal, evalMode } from "./eval-guard.js";
 import { mindgraphRuntimeDir, passwdHome } from "./hook-env.js";
 
 /**
  * `off --all`: turn MindGraph off everywhere, and remove the local files it
  * left in places that were never turned on. Only files whose path and name
  * are exactly what MindGraph writes are removed: never a directory tree, never
- * a symbolic link's target, never a file outside the runtime directory or a
- * repository's `.git/mindgraph` folder. The per-session memory title tables
+ * a symbolic link's target, never a file outside a runtime directory
+ * (`runtimeDirsFor`) or a repository's `.git/mindgraph` folder. The per-session memory title tables
  * in the runtime's `anchors` folder are removed whatever place they came
  * from, since nothing stays on. The cloud, `.codegraph/` folders and settings
  * files are not touched.
@@ -45,13 +47,14 @@ export interface Residue {
   ledgers: Array<{ file: string; directory: string }>;
   /** Pending tool calls whose project directory was never turned on. */
   calls: Array<{ file: string; directory: string }>;
-  /** Cached repository lookups for repositories pinned nowhere. */
-  scopeEntries: string[];
-  scopeFile: string;
+  /** Cached repository lookups for repositories pinned nowhere, per cache
+   * file (one per runtime directory that has one). */
+  scopeCaches: Array<{ file: string; entries: string[] }>;
   /** Per-session memory title tables (titles keyed by file path), from any
    * place: a session that was on when it started leaves one until SessionEnd. */
   anchorTables: string[];
-  runtimeDir: string;
+  /** Every runtime directory searched (see `runtimeDirsFor`). */
+  runtimeDirs: string[];
 }
 
 export interface ResidueOptions {
@@ -63,6 +66,18 @@ export interface ResidueOptions {
 /** The runtime directory hooks and the call ledger use today. */
 export function runtimeDirFor(env: NodeJS.ProcessEnv): string {
   return mindgraphRuntimeDir(env);
+}
+
+/** The runtime directories `off --all` searches: today's, and, when an
+ * accepted `MINDGRAPH_HOME` moved it, the one under `$HOME/.mindgraph` that
+ * every earlier install (and every hook still running the portable runner)
+ * wrote to. An explicit `MINDGRAPH_RUNTIME_DIR` names the only one, and an
+ * evaluation run never looks at `$HOME`'s. */
+export function runtimeDirsFor(env: NodeJS.ProcessEnv): string[] {
+  const current = runtimeDirFor(env);
+  if (env.MINDGRAPH_RUNTIME_DIR || evalMode(env)) return [current];
+  const portable = path.join(os.homedir(), ".mindgraph", "runtime");
+  return path.resolve(portable) === path.resolve(current) ? [current] : [current, portable];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -149,31 +164,51 @@ export function findResidue(
     }
   }
 
-  const runtimeDir = runtimeDirFor(options.env);
+  const runtimeDirs = runtimeDirsFor(options.env);
   const candidates = new Set<string>();
   const ledgers: Residue["ledgers"] = [];
-  for (const name of listDir(runtimeDir)) {
-    if (!LEDGER_NAME.test(name)) continue;
-    const file = path.join(runtimeDir, name);
-    const record = readJsonFile(file);
-    // Records written before consent existed carry the directory a tool
-    // call ran in; current ones do not.
-    const directory = isRecord(record) ? record.repoContextCwd : undefined;
-    if (typeof directory !== "string" || !path.isAbsolute(directory)) continue;
-    candidates.add(directory);
-    if (!consented(directory)) ledgers.push({ file, directory });
-  }
-
-  const callsDir = path.join(runtimeDir, "calls");
   const calls: Residue["calls"] = [];
-  for (const name of listDir(callsDir)) {
-    if (!CALL_NAME.test(name)) continue;
-    const file = path.join(callsDir, name);
-    const record = readJsonFile(file);
-    const directory = isRecord(record) ? record.projectDir : undefined;
-    if (typeof directory !== "string" || !path.isAbsolute(directory)) continue;
-    candidates.add(directory);
-    if (!consented(directory)) calls.push({ file, directory });
+  const scopeCaches: Residue["scopeCaches"] = [];
+  const anchorTables: string[] = [];
+  for (const runtimeDir of runtimeDirs) {
+    for (const name of listDir(runtimeDir)) {
+      if (!LEDGER_NAME.test(name)) continue;
+      const file = path.join(runtimeDir, name);
+      const record = readJsonFile(file);
+      // Records written before consent existed carry the directory a tool
+      // call ran in; current ones do not.
+      const directory = isRecord(record) ? record.repoContextCwd : undefined;
+      if (typeof directory !== "string" || !path.isAbsolute(directory)) continue;
+      candidates.add(directory);
+      if (!consented(directory)) ledgers.push({ file, directory });
+    }
+
+    const callsDir = path.join(runtimeDir, "calls");
+    for (const name of listDir(callsDir)) {
+      if (!CALL_NAME.test(name)) continue;
+      const file = path.join(callsDir, name);
+      const record = readJsonFile(file);
+      const directory = isRecord(record) ? record.projectDir : undefined;
+      if (typeof directory !== "string" || !path.isAbsolute(directory)) continue;
+      candidates.add(directory);
+      if (!consented(directory)) calls.push({ file, directory });
+    }
+
+    const scopeFile = path.join(runtimeDir, SCOPE_CACHE_FILE);
+    const cache = readJsonFile(scopeFile);
+    const entries =
+      isRecord(cache) && cache.v === 1 && isRecord(cache.entries)
+        ? Object.keys(cache.entries).filter((repoId) => !pinnedIds.has(repoId))
+        : [];
+    if (entries.length) scopeCaches.push({ file: scopeFile, entries });
+
+    const anchorsDir = path.join(runtimeDir, ANCHORS_DIR);
+    anchorTables.push(
+      ...listDir(anchorsDir)
+        .filter((name) => ANCHOR_TABLE_NAME.test(name))
+        .map((name) => path.join(anchorsDir, name))
+        .filter(isRegularFile),
+    );
   }
 
   for (const directory of claudeProjectDirectories(options.claudeConfig)) {
@@ -186,28 +221,13 @@ export function findResidue(
     if (file) identityFiles.add(file);
   }
 
-  const scopeFile = path.join(runtimeDir, SCOPE_CACHE_FILE);
-  const cache = readJsonFile(scopeFile);
-  const scopeEntries =
-    isRecord(cache) && cache.v === 1 && isRecord(cache.entries)
-      ? Object.keys(cache.entries).filter((repoId) => !pinnedIds.has(repoId))
-      : [];
-
-  const anchorsDir = path.join(runtimeDir, ANCHORS_DIR);
-  const anchorTables = listDir(anchorsDir)
-    .filter((name) => ANCHOR_TABLE_NAME.test(name))
-    .map((name) => path.join(anchorsDir, name))
-    .filter(isRegularFile)
-    .sort();
-
   return {
     identityFiles: [...identityFiles].sort(),
     ledgers,
     calls,
-    scopeEntries,
-    scopeFile,
-    anchorTables,
-    runtimeDir,
+    scopeCaches,
+    anchorTables: anchorTables.sort(),
+    runtimeDirs,
   };
 }
 
@@ -345,11 +365,12 @@ function residueLines(residue: Residue, placesOn: number): string[] {
       : "MindGraph is not turned on anywhere.",
     "Local files MindGraph left in places you never turned on:",
   ];
+  const lookups = residue.scopeCaches.reduce((n, cache) => n + cache.entries.length, 0);
   const total =
     residue.identityFiles.length +
     residue.ledgers.length +
     residue.calls.length +
-    residue.scopeEntries.length;
+    lookups;
   if (total === 0) lines.push("  None found.");
   if (residue.identityFiles.length) {
     lines.push(`  Repository identity files (${residue.identityFiles.length}):`);
@@ -367,14 +388,15 @@ function residueLines(residue: Residue, placesOn: number): string[] {
       lines.push(`    ${displayPath(file)}  (from ${displayPath(directory)})`);
     }
   }
-  if (residue.scopeEntries.length) {
+  for (const cache of residue.scopeCaches) {
     lines.push(
-      `  Cached repository lookups in ${displayPath(residue.scopeFile)} (${residue.scopeEntries.length}): ${residue.scopeEntries.join(", ")}`,
+      `  Cached repository lookups in ${displayPath(cache.file)} (${cache.entries.length}): ${cache.entries.join(", ")}`,
     );
   }
   if (residue.anchorTables.length) {
+    const folders = [...new Set(residue.anchorTables.map((file) => displayPath(path.dirname(file))))];
     lines.push(
-      `Memory title tables of sessions, from any place (${residue.anchorTables.length}), in ${displayPath(path.join(residue.runtimeDir, ANCHORS_DIR))}; removed because nothing stays on.`,
+      `Memory title tables of sessions, from any place (${residue.anchorTables.length}), in ${folders.join(" and ")}; removed because nothing stays on.`,
     );
   }
   lines.push(
@@ -393,6 +415,16 @@ export async function runOffAll(io: ConsentIo, options: ResidueOptions = {}): Pr
       io.err(terminal.message);
       return 2;
     }
+  }
+  // An evaluation run clears only its own MINDGRAPH_HOME's store and runtime
+  // files, and reads only its own Claude Code project list: with the real one
+  // and the trial's empty store, every real repository would look never
+  // turned on and lose its identity file.
+  const evalRefusal =
+    evalHomeRefusal(io.env) ?? (options.claudeConfig ? undefined : evalClaudeReadRefusal(io.env));
+  if (evalRefusal) {
+    io.err(evalRefusal);
+    return 1;
   }
   const loaded = loadConsentStore(io.env);
   const problem = storeProblem(loaded);
@@ -450,20 +482,28 @@ export async function runOffAll(io: ConsentIo, options: ResidueOptions = {}): Pr
     return removed;
   };
   const identities = residue.identityFiles.filter((file) => tally(removeIdentityFile(file))).length;
-  const callsDir = path.join(residue.runtimeDir, "calls");
+  // Each file is removed only from directly inside the runtime directory (or
+  // its calls/ or anchors/ folder) it was found in.
+  const within = (file: string, sub?: string) => {
+    const dir = path.dirname(file);
+    return residue.runtimeDirs.some((runtimeDir) => (sub ? path.join(runtimeDir, sub) : runtimeDir) === dir)
+      ? dir
+      : "";
+  };
   const ledgers = residue.ledgers.filter(({ file }) =>
-    tally(removeExact(file, residue.runtimeDir, (base) => LEDGER_NAME.test(base))),
+    tally(removeExact(file, within(file), (base) => LEDGER_NAME.test(base))),
   ).length;
   const calls = residue.calls.filter(({ file }) =>
-    tally(removeExact(file, callsDir, (base) => CALL_NAME.test(base))),
+    tally(removeExact(file, within(file, "calls"), (base) => CALL_NAME.test(base))),
   ).length;
-  const lookups = residue.scopeEntries.length
-    ? rewriteScopeCache(residue.scopeFile, new Set(residue.scopeEntries))
-    : 0;
-  failed += residue.scopeEntries.length - lookups;
-  const anchorsDir = path.join(residue.runtimeDir, ANCHORS_DIR);
+  let lookups = 0;
+  for (const cache of residue.scopeCaches) {
+    const dropped = rewriteScopeCache(cache.file, new Set(cache.entries));
+    lookups += dropped;
+    failed += cache.entries.length - dropped;
+  }
   const tables = residue.anchorTables.filter((file) =>
-    tally(removeExact(file, anchorsDir, (base) => ANCHOR_TABLE_NAME.test(base))),
+    tally(removeExact(file, within(file, ANCHORS_DIR), (base) => ANCHOR_TABLE_NAME.test(base))),
   ).length;
 
   out("MindGraph is off everywhere on this machine from the next hook event.");

@@ -6,7 +6,13 @@ import { requireHumanTerminal } from "./agent-shell.js";
 import { loadConsentStore, pathContains, resolveConsent, type OnDecision } from "./consent.js";
 import { COMMAND, displayPath, storeProblem, type ConsentIo } from "./consent-cli.js";
 import { nodeGit, printable, type GitRunner } from "./consent-plan.js";
-import { assertEvalBaseUrl, evalBaseUrlRefusal, evalHomeRefusal, isLoopbackUrl } from "./eval-guard.js";
+import {
+  assertEvalBaseUrl,
+  evalBaseUrlRefusal,
+  evalClaudeReadRefusal,
+  evalHomeRefusal,
+  isLoopbackUrl,
+} from "./eval-guard.js";
 import { loadHookEnv, mindgraphConfigDir, passwdHome, type HookEnv } from "./hook-env.js";
 import { containsSecret } from "./hook-memory.js";
 
@@ -900,9 +906,11 @@ export async function runImportNotes(
       return 2;
     }
   }
-  // An evaluation run imports only from its own MINDGRAPH_HOME: without one
-  // it would read the person's real consent store and connection settings.
-  const homeRefusal = evalHomeRefusal(io.env);
+  // An evaluation run imports only from its own MINDGRAPH_HOME (without one
+  // it would read the person's real consent store and connection settings)
+  // and its own CLAUDE_CONFIG_DIR (without one it would read the person's
+  // real Claude Code settings and notes into the trial's graph).
+  const homeRefusal = evalHomeRefusal(io.env) ?? evalClaudeReadRefusal(io.env);
   if (homeRefusal) {
     io.err(homeRefusal);
     return 1;

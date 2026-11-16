@@ -102,8 +102,14 @@
   `import notes`, `install-hooks` and `install-code` stop with
   `eval_requires_home` instead of using your real `~/.mindgraph`. In an
   evaluation run, user-scope hooks and the `install-code` registration are
-  written only into the directory `CLAUDE_CONFIG_DIR` (or `CODEX_HOME`) names
-  (`eval_requires_config_dir` otherwise), the server and `on`/`off` never refresh the hook runner or hook
+  written (and, by `uninstall-hooks` and `uninstall-code`, removed) only in
+  the directory `CLAUDE_CONFIG_DIR` (or `CODEX_HOME`) names, `import notes`
+  and `off --all` read Claude Code's settings, notes and project list only
+  from `CLAUDE_CONFIG_DIR` (`eval_requires_config_dir` otherwise), `on`,
+  `off` and `off --all` need the trial's `MINDGRAPH_HOME`, the commands that
+  change Claude Desktop's or Cursor's configuration (`install`, `uninstall`,
+  `install-cursor`, `uninstall-cursor` and `init`'s Claude Desktop choice)
+  refuse, the server and `on`/`off` never refresh the hook runner or hook
   settings, and the SessionStart check for a registered MCP server is
   skipped. It is meant for evaluation and benchmark runs, which must never
   write to a hosted organization or to your own settings.
@@ -196,7 +202,11 @@
   installed while `MINDGRAPH_HOME` is set name that runner by its full path;
   project settings, which are shared through git, never do, so
   `install-hooks --scope project` refuses while `MINDGRAPH_HOME` is set
-  (outside an evaluation run). In the default profile, `mindgraph_memory` `scope='workspace'` now
+  (outside an evaluation run). Hooks installed before `MINDGRAPH_HOME` was set
+  still run the runner under `$HOME/.mindgraph`, so while that runner predates
+  consent the server, `status`, `on`, `off` and `install-hooks` keep treating
+  it as below the floor (warning, and updating it in place), and `off --all`
+  also clears the per-session files left under `$HOME/.mindgraph/runtime`. In the default profile, `mindgraph_memory` `scope='workspace'` now
   returns an error; it works only in the coding setup. In the coding setup, `mindgraph_plan create_task` and the
   code tools at a workspace root need a `repo`, because the root itself is not
   a repository. A registration pinned to an older `mindgraph-mcp@x.y.z` keeps

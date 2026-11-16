@@ -47,6 +47,60 @@ function runnerVersionPath(homeDir?: string): string {
   return `${runnerPath(homeDir)}.version`;
 }
 
+/** The runner every portable `"$HOME/.mindgraph/bin/mindgraph-hook.cjs"`
+ * entry runs, whatever `MINDGRAPH_HOME` this process has. Every install
+ * before `MINDGRAPH_HOME` existed (0.27.x and older) put its runner here, and
+ * committed project settings always name it. */
+function portableRunnerPath(homeDir?: string): string {
+  return path.join(homeDir || os.homedir(), RUNNER_RELATIVE);
+}
+
+/** The runners installed hooks may run: this process's runner and, when an
+ * accepted `MINDGRAPH_HOME` moved it, the portable one under `$HOME` too.
+ * Which one an entry runs is decided by the entry, not by this process's
+ * environment, so the consent floor checks both. An evaluation run looks
+ * only at its own: its install names that runner by absolute path, and
+ * `$HOME`'s is the person's. */
+function candidateRunners(homeDir?: string): string[] {
+  const own = runnerPath(homeDir);
+  const portable = portableRunnerPath(homeDir);
+  return own === portable || evalMode() ? [own] : [own, portable];
+}
+
+function versionOfRunner(runner: string): string | undefined {
+  try {
+    const raw = fs.readFileSync(`${runner}.version`, "utf8").trim();
+    return raw || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** `runner` exists and its version is unrecorded or below the gate floor. */
+function runnerFilePredatesGate(runner: string): boolean {
+  if (!fs.existsSync(runner)) return false;
+  const pinned = parseSemver(versionOfRunner(runner));
+  return !pinned || semverNewer(parseSemver(GATE_MIN_VERSION)!, pinned);
+}
+
+/** Copy `sourceFile` over `target` atomically and record `version` beside it. */
+function writeRunner(sourceFile: string, target: string, version?: string): void {
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  // Atomic swap: a hook can spawn `node runner.cjs` at any moment — including
+  // mid-refresh from a concurrently starting MCP server — and must never read
+  // a torn bundle.
+  const temporary = `${target}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  fs.copyFileSync(sourceFile, temporary);
+  fs.renameSync(temporary, target);
+  const versionPath = `${target}.version`;
+  if (version) {
+    fs.writeFileSync(versionPath, `${version}\n`);
+  } else {
+    // A copy of unknown provenance must not inherit the previous sidecar.
+    fs.rmSync(versionPath, { force: true });
+  }
+}
+
 /** The runner under an accepted `MINDGRAPH_HOME`, or undefined when there is
  * no override (or an explicit `homeDir`). */
 export function overrideRunner(homeDir?: string): string | undefined {
@@ -133,34 +187,14 @@ export function installHookRunner(
   version?: string,
 ): string {
   const target = runnerPath(homeDir);
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  // Atomic swap: a hook can spawn `node runner.cjs` at any moment — including
-  // mid-refresh from a concurrently starting MCP server — and must never read
-  // a torn bundle.
-  const temporary = `${target}.${process.pid}.${crypto.randomUUID()}.tmp`;
-  fs.copyFileSync(sourceFile, temporary);
-  fs.renameSync(temporary, target);
-  const versionPath = runnerVersionPath(homeDir);
-  if (version) {
-    fs.writeFileSync(versionPath, `${version}\n`);
-  } else {
-    // A copy of unknown provenance must not inherit the previous sidecar.
-    fs.rmSync(versionPath, { force: true });
-  }
+  writeRunner(sourceFile, target, version);
   return target;
 }
 
 export function installedHookRunnerVersion(homeDir?: string): string | undefined {
-  try {
-    const raw = fs
-      .readFileSync(runnerVersionPath(homeDir), "utf8")
-      .trim();
-    return raw || undefined;
-  } catch {
-    // Pre-sidecar installs (≤0.17.0) have a runner but no version record —
-    // indistinguishable from no install, so no skew claim is made.
-    return undefined;
-  }
+  // Pre-sidecar installs (≤0.17.0) have a runner but no version record —
+  // indistinguishable from no install, so no skew claim is made.
+  return versionOfRunner(runnerPath(homeDir));
 }
 
 function parseSemver(value: string | undefined): [number, number, number] | undefined {
@@ -183,23 +217,53 @@ function semverNewer(
 /** The first version whose hook runner checks consent. */
 export const GATE_MIN_VERSION = "0.28.0";
 
-/** A runner is installed and its version is unrecorded or below the gate
- * floor, so it runs hooks without checking consent. */
-export function runnerPredatesGate(homeDir?: string): boolean {
-  if (!fs.existsSync(runnerPath(homeDir))) return false;
-  const pinned = parseSemver(installedHookRunnerVersion(homeDir));
-  return !pinned || semverNewer(parseSemver(GATE_MIN_VERSION)!, pinned);
+/** The first installed runner hooks may run (see `candidateRunners`) whose
+ * version is unrecorded or below the gate floor; undefined when none is. */
+function runnerBelowGate(homeDir?: string): string | undefined {
+  return candidateRunners(homeDir).find(runnerFilePredatesGate);
 }
 
-/** The line the server (on stderr) and `status` print while the installed
+/** A runner is installed and its version is unrecorded or below the gate
+ * floor, so it runs hooks without checking consent. Under an accepted
+ * `MINDGRAPH_HOME` the portable runner under `$HOME` counts too: entries
+ * written before the move (and every committed project entry) still run it. */
+export function runnerPredatesGate(homeDir?: string): boolean {
+  return runnerBelowGate(homeDir) !== undefined;
+}
+
+/** The line the server (on stderr) and `status` print while an installed
  * runner predates consent; undefined otherwise. */
 export function gateFloorWarning(homeDir?: string): string | undefined {
-  if (!runnerPredatesGate(homeDir)) return undefined;
-  const version = installedHookRunnerVersion(homeDir);
+  const runner = runnerBelowGate(homeDir);
+  if (!runner) return undefined;
+  const version = versionOfRunner(runner);
+  // Under MINDGRAPH_HOME, install-hooks refuses project scope (its default),
+  // so the remedy names user scope; that install also updates this runner.
+  const moved = overrideRunner(homeDir) !== undefined;
+  const where = runner === runnerPath(homeDir) ? "" : ` at ${runner}`;
   return (
-    `the installed hook runner ${version ? `v${version}` : "(version unrecorded)"} predates consent and ignores it; ` +
-    `run npx -y mindgraph-mcp@latest install-hooks`
+    `the installed hook runner${where} ${version ? `v${version}` : "(version unrecorded)"} predates consent and ignores it; ` +
+    `run npx -y mindgraph-mcp@latest install-hooks${moved ? " --scope user" : ""}`
   );
+}
+
+/** Bring the portable runner under `$HOME` up to `version` when an accepted
+ * `MINDGRAPH_HOME` moved this process's runner elsewhere and the portable one
+ * predates consent: entries that name it (older user installs, committed
+ * project settings) would otherwise keep running a runner that ignores
+ * consent. Returns the path updated, or undefined. Never in an evaluation
+ * run. Throws on a failed copy. */
+export function refreshPortableRunnerBelowGate(
+  sourceBundle: string,
+  version: string,
+  homeDir?: string,
+): string | undefined {
+  if (evalMode()) return undefined;
+  const portable = portableRunnerPath(homeDir);
+  if (portable === runnerPath(homeDir)) return undefined;
+  if (!runnerFilePredatesGate(portable)) return undefined;
+  writeRunner(sourceBundle, portable, version);
+  return portable;
 }
 
 /** The hook entries the server may refresh at start, or undefined for no
@@ -244,19 +308,46 @@ export interface RunnerRefresh {
  * Claude Desktop serving this MCP) and is left untouched. Never throws.
  * Opt out with MINDGRAPH_HOOK_AUTOUPDATE=off; `force` refreshes anyway.
  * An evaluation run (MINDGRAPH_EVAL=1) never refreshes, forced or not: a
- * trial's runner is the one its harness installed. */
+ * trial's runner is the one its harness installed.
+ *
+ * Under an accepted `MINDGRAPH_HOME` the portable runner under `$HOME` is
+ * refreshed as well, but only while it predates consent: older entries and
+ * committed project settings still run it (see `candidateRunners`). The
+ * result describes this process's own runner, or the portable one when only
+ * that was refreshed. */
 export function refreshHookRunner(
   serverVersion: string,
   sourceBundle: string,
   homeDir?: string,
   options: { force?: boolean } = {},
 ): RunnerRefresh {
+  if (evalMode()) return { refreshed: false, reason: "disabled" };
+  if (process.env.MINDGRAPH_HOOK_AUTOUPDATE === "off" && !options.force) {
+    return { refreshed: false, reason: "disabled" };
+  }
+  const own = refreshRunnerFile(runnerPath(homeDir), serverVersion, sourceBundle);
+  const portable = portableRunnerPath(homeDir);
+  let portableBelowGate = false;
   try {
-    if (evalMode()) return { refreshed: false, reason: "disabled" };
-    if (process.env.MINDGRAPH_HOOK_AUTOUPDATE === "off" && !options.force) {
-      return { refreshed: false, reason: "disabled" };
-    }
-    if (!fs.existsSync(runnerPath(homeDir))) {
+    portableBelowGate = portable !== runnerPath(homeDir) && runnerFilePredatesGate(portable);
+  } catch {
+    portableBelowGate = false;
+  }
+  if (portableBelowGate) {
+    const moved = refreshRunnerFile(portable, serverVersion, sourceBundle);
+    if (!own.refreshed && moved.refreshed) return moved;
+  }
+  return own;
+}
+
+/** The upgrade-only refresh of one runner file. Never throws. */
+function refreshRunnerFile(
+  runner: string,
+  serverVersion: string,
+  sourceBundle: string,
+): RunnerRefresh {
+  try {
+    if (!fs.existsSync(runner)) {
       return { refreshed: false, reason: "no_runner" };
     }
     if (!fs.existsSync(sourceBundle)) {
@@ -264,7 +355,7 @@ export function refreshHookRunner(
     }
     const server = parseSemver(serverVersion);
     if (!server) return { refreshed: false, reason: "unparseable" };
-    const runnerVersion = installedHookRunnerVersion(homeDir);
+    const runnerVersion = versionOfRunner(runner);
     if (runnerVersion !== undefined) {
       const pinned = parseSemver(runnerVersion);
       if (!pinned) {
@@ -278,7 +369,7 @@ export function refreshHookRunner(
         };
       }
     }
-    installHookRunner(sourceBundle, homeDir, serverVersion);
+    writeRunner(sourceBundle, runner, serverVersion);
     return { refreshed: true, reason: "updated", runnerVersion };
   } catch {
     return { refreshed: false, reason: "error" };
@@ -613,6 +704,10 @@ function uninstallHooks(
   projectDir = process.cwd(),
   codexHomeDir?: string,
 ): { path: string; removed: number } {
+  // An evaluation run never rewrites the person's real user settings, to
+  // remove entries any more than to add them.
+  const refusal = codexHomeDir && harness === "codex" ? undefined : evalUserScopeRefusal(harness, scope);
+  if (refusal) throw new Error(refusal);
   const file = settingsPath(harness, scope, projectDir, codexHomeDir);
   if (!fs.existsSync(file)) return { path: file, removed: 0 };
   const settings = readSettings(file);

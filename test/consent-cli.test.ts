@@ -136,6 +136,22 @@ describe("on: refusals", () => {
     expect(p.err.join("\n")).toContain("No git repository or MindGraph workspace");
   });
 
+  it("in an evaluation run, on and off refuse without an accepted MINDGRAPH_HOME and change nothing", async () => {
+    const repo = makeRepo(path.join(scratch(), "app"));
+    for (const home of ["", "relative-store", path.join(repo, "store")]) {
+      for (const command of [runOn, runOff]) {
+        const p = person(["1"], { cwd: repo, env: { MINDGRAPH_EVAL: "1", MINDGRAPH_HOME: home } });
+        p.io.refreshRunner = () => {
+          throw new Error("must not refresh");
+        };
+        expect(await command(undefined, p.io), `${command.name} ${home}`).toBe(1);
+        expect(p.err.join("\n")).toContain("eval_requires_home");
+        expect(p.asked).toEqual([]);
+      }
+    }
+    expect(fs.existsSync(path.join(repo, "store"))).toBe(false);
+  });
+
   it("a hooks.json that is not valid JSON exits 1 with its message and is left as it was", async () => {
     const repo = makeRepo(path.join(scratch(), "app"));
     const p = person(["1"], { cwd: repo });

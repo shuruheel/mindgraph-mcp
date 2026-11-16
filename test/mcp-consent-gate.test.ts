@@ -547,7 +547,9 @@ describe.runIf(ready)("runner refresh at server start, outside consent", () => {
     expect(snapshotTree(m.home)).toEqual(before);
     expect(snapshotTree(m.store)).toEqual(storeBefore);
     expect(stderr()).toContain(
-      "[mindgraph-mcp] the installed hook runner v0.20.0 predates consent and ignores it; run npx -y mindgraph-mcp@latest install-hooks",
+      // Under MINDGRAPH_HOME install-hooks refuses project scope (its
+      // default), so the remedy names user scope.
+      "[mindgraph-mcp] the installed hook runner v0.20.0 predates consent and ignores it; run npx -y mindgraph-mcp@latest install-hooks --scope user",
     );
   }, 30_000);
 });
