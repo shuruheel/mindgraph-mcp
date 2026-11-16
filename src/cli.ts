@@ -7,6 +7,7 @@ import { MindGraph } from "mindgraph";
 import {
   assertHookConfigReadable,
   loadHookEnv,
+  mindgraphRuntimeDir,
   resolvedHookFeatures,
   saveHookEnv,
   stableAgentId,
@@ -22,6 +23,14 @@ import {
 } from "./consent-cli.js";
 import { runOffAll } from "./consent-residue.js";
 import { runImportNotes } from "./import-notes.js";
+import {
+  EVAL_REQUIRES_HOME,
+  EVAL_REQUIRES_LOOPBACK,
+  evalBaseUrlRefusal,
+  evalHomeRefusal,
+  evalMode,
+  evalUserScopeRefusal,
+} from "./eval-guard.js";
 import {
   classifyMcpAddFailure,
   mcpAddFailureOutput,
@@ -45,6 +54,7 @@ import {
   installCodexHooks,
   type InstallResult,
   installHookRunner,
+  overrideRunner,
   type HookScope,
   uninstallClaudeHooks,
   uninstallCodexHooks,
@@ -66,9 +76,7 @@ declare const __PACKAGE_VERSION__: string;
  */
 function recordHookHealth(harness: string, error: string): void {
   try {
-    const dir =
-      process.env.MINDGRAPH_RUNTIME_DIR ||
-      path.join(os.homedir(), ".mindgraph", "runtime");
+    const dir = mindgraphRuntimeDir();
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const file = path.join(dir, "hook-health.json");
     let failures = 0;
@@ -98,8 +106,7 @@ function recordHookHealth(harness: string, error: string): void {
 function clearHookHealth(harness: string): void {
   try {
     const file = path.join(
-      process.env.MINDGRAPH_RUNTIME_DIR ||
-        path.join(os.homedir(), ".mindgraph", "runtime"),
+      mindgraphRuntimeDir(),
       "hook-health.json",
     );
     if (!fs.existsSync(file)) return;
@@ -361,8 +368,7 @@ function printStatus(): void {
   // Hook health — the one observable trace of fail-open hook failures.
   try {
     const healthFile = path.join(
-      process.env.MINDGRAPH_RUNTIME_DIR ||
-        path.join(os.homedir(), ".mindgraph", "runtime"),
+      mindgraphRuntimeDir(),
       "hook-health.json",
     );
     if (fs.existsSync(healthFile)) {
@@ -689,7 +695,13 @@ async function interactiveInit(baseUrl?: string): Promise<void> {
       process.exit(1);
     }
   } else {
-    // Browser auth flow
+    // Browser auth flow. An evaluation run signs in nowhere but loopback.
+    const dashboardRefusal = evalBaseUrlRefusal(DASHBOARD_URL);
+    if (dashboardRefusal) {
+      console.error(`Error: ${dashboardRefusal}`);
+      rl.close();
+      process.exit(1);
+    }
     const code = generateCode();
     const authUrl = `${DASHBOARD_URL}/dashboard/connect?code=${code}`;
 
@@ -773,8 +785,14 @@ async function main(): Promise<void> {
         process.exit(1);
       }
       const sub = positionals[0];
+      const skillsBaseUrl = baseUrl ?? "https://api.mindgraph.cloud";
+      const skillsRefusal = evalBaseUrlRefusal(skillsBaseUrl);
+      if (skillsRefusal) {
+        console.error(`Error: ${skillsRefusal}`);
+        process.exit(1);
+      }
       const api = httpSkillsApi(
-        baseUrl ?? "https://api.mindgraph.cloud",
+        skillsBaseUrl,
         apiKey,
         agentId
       );
@@ -859,6 +877,15 @@ async function main(): Promise<void> {
         );
         process.exit(1);
       }
+      {
+        // An evaluation run registers the server and installs hooks only into
+        // its own MINDGRAPH_HOME and CLAUDE_CONFIG_DIR, never the real ones.
+        const refusal = evalHomeRefusal() ?? evalUserScopeRefusal("claude-code", "user");
+        if (refusal) {
+          console.error(`Error: ${refusal}`);
+          process.exit(1);
+        }
+      }
       if (withHooksFlag()) {
         try {
           assertHookConfigReadable();
@@ -919,11 +946,32 @@ async function main(): Promise<void> {
       if (hookHarness !== "claude-code" && hookHarness !== "codex") {
         throw new Error("--harness must be claude-code or codex");
       }
+      // An evaluation run installs only into its own MINDGRAPH_HOME and, for
+      // user scope, its own harness configuration directory; it stops before
+      // reading anything else.
+      const evalRefusal = evalHomeRefusal() ?? evalUserScopeRefusal(hookHarness, scope);
+      if (evalRefusal) {
+        console.error(`Error: ${evalRefusal}`);
+        process.exit(1);
+      }
       // Stop before installing anything when hooks.json cannot be updated.
       try {
         assertHookConfigReadable();
       } catch (error) {
         process.exit(hookConfigFailure(error, console.error));
+      }
+      // Project settings are committed, so their hooks reach the runner through
+      // $HOME. Under MINDGRAPH_HOME the runner is elsewhere and those hooks
+      // would not find it: install them user-level instead.
+      const movedRunner = overrideRunner();
+      if (scope === "project" && movedRunner && !evalMode()) {
+        console.error(
+          `Error: MINDGRAPH_HOME is set, so the hook runner is installed at ${movedRunner}. ` +
+            "Project settings are shared through git and must not name a path on this machine, " +
+            "and their portable form looks for the runner under $HOME/.mindgraph. " +
+            "Run install-hooks --scope user, or unset MINDGRAPH_HOME. Nothing was installed."
+        );
+        process.exit(1);
       }
       const runner = installHookRunner(__filename, undefined, __PACKAGE_VERSION__);
       console.log(`Installed pinned hook runner at ${runner}`);
@@ -1008,6 +1056,23 @@ async function main(): Promise<void> {
         process.stdout.write("{}\n");
         break;
       }
+      // An evaluation run without its own MINDGRAPH_HOME stops before consent
+      // or hooks.json is read: falling back to the real ~/.mindgraph would run
+      // the trial on the person's own settings. The runtime directory would be
+      // the real one too, so the refusal is recorded only where
+      // MINDGRAPH_RUNTIME_DIR names one; it is always on stderr.
+      const homeRefusal = evalHomeRefusal();
+      if (homeRefusal) {
+        if (process.env.MINDGRAPH_RUNTIME_DIR) {
+          recordHookHealth(hookHarness, homeRefusal);
+          recordFailOpen(input.session_id, input.hook_event_name, EVAL_REQUIRES_HOME, {
+            harness: hookHarness,
+          });
+        }
+        console.error(`mindgraph-hook: ${homeRefusal}`);
+        process.stdout.write("{}\n");
+        break;
+      }
       // MindGraph acts only in a directory the user turned it on for. Outside
       // one, the hook checks no key, writes no file and builds no client.
       const decision = consentFor(eventDirectory(input));
@@ -1020,6 +1085,18 @@ async function main(): Promise<void> {
       const stored = loadHookEnv();
       const hookApiKey = stored.apiKey;
       const hookBaseUrl = stored.baseUrl || "https://api.mindgraph.cloud";
+      // An evaluation run talks only to a loopback server: no client is
+      // built, and the refusal is counted like any other fail-open.
+      const evalRefusal = evalBaseUrlRefusal(hookBaseUrl);
+      if (evalRefusal) {
+        recordHookHealth(hookHarness, evalRefusal);
+        recordFailOpen(input.session_id, input.hook_event_name, EVAL_REQUIRES_LOOPBACK, {
+          harness: hookHarness,
+        });
+        console.error(`mindgraph-hook: ${evalRefusal}`);
+        process.stdout.write("{}\n");
+        break;
+      }
       if (!hookApiKey) {
         recordHookHealth(hookHarness, "no-api-key");
         process.stdout.write("{}\n");

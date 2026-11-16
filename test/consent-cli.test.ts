@@ -683,7 +683,7 @@ describe.runIf(ready)("spawned on, off and install-hooks", () => {
     const project = makeRepo(path.join(scratch(), "app"));
     const store = path.join(scratch(), "store");
     const result = await runCli(
-      ["install-hooks", "--harness", "codex", "--scope", "project", "--project-dir", project],
+      ["install-hooks", "--harness", "codex", "--scope", "user", "--project-dir", project],
       { HOME: scratch(), MINDGRAPH_HOME: store, MINDGRAPH_API_KEY: "mg_test" },
       { cwd: project },
     );
@@ -691,6 +691,27 @@ describe.runIf(ready)("spawned on, off and install-hooks", () => {
     expect(result.stdout.trim().split("\n").pop()).toBe(
       "Hooks do nothing in a repository until you turn MindGraph on there: npx -y mindgraph-mcp@latest on",
     );
+  });
+
+  it("install-hooks --scope project refuses under MINDGRAPH_HOME, writing nothing", async () => {
+    // Project settings are committed: they must not name this machine's
+    // runner path, and their portable form would not find the moved runner.
+    for (const hookHarness of ["claude-code", "codex"]) {
+      const project = makeRepo(path.join(scratch(), "app"));
+      const home = scratch();
+      const store = path.join(scratch(), "store");
+      const result = await runCli(
+        ["install-hooks", "--harness", hookHarness, "--scope", "project", "--project-dir", project],
+        { HOME: home, MINDGRAPH_HOME: store, MINDGRAPH_API_KEY: "mg_test" },
+        { cwd: project },
+      );
+      expect(result.code, hookHarness).toBe(1);
+      expect(result.stderr).toContain("install-hooks --scope user");
+      expect(fs.existsSync(path.join(project, ".claude")), hookHarness).toBe(false);
+      expect(fs.existsSync(path.join(project, ".codex")), hookHarness).toBe(false);
+      expect(fs.existsSync(store), hookHarness).toBe(false);
+      expect(snapshotTree(home), hookHarness).toEqual({});
+    }
   });
 });
 

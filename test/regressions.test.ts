@@ -50,25 +50,53 @@ describe("R1 — the installed hook command line parses (owner-flag drift)", () 
     // Failure pinned: the installer embedded `--owner mindgraph`, parseArgs
     // had no arm for it, and the flag VALUE became the command — every
     // installed hook died with "Unknown command: mindgraph" on first run.
-    const root = tempDir("mindgraph-r1-");
-    fs.mkdirSync(path.join(root, ".git"));
-    installClaudeHooks("project", root);
-    const settings = JSON.parse(
-      fs.readFileSync(path.join(root, ".claude", "settings.json"), "utf8")
-    ) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
-    const commands = Object.values(settings.hooks)
-      .flat()
-      .flatMap((entry) => entry.hooks.map((h) => h.command));
-    expect(commands.length).toBeGreaterThan(0);
-    for (const command of commands) {
-      // Command form: node "$HOME/.mindgraph/bin/mindgraph-hook.cjs" hook …
-      // parseArgs sees argv[2:], i.e. everything after the runner path.
-      expect(command).toContain('node "$HOME/.mindgraph/bin/mindgraph-hook.cjs"');
-      expect(command).not.toContain("npx");
-      const tokens = command.split(/\s+/);
-      const argv = ["node", "cli.js", ...tokens.slice(2)];
-      const parsed = parseArgs(argv);
-      expect(parsed.command).toBe("hook");
+    // Project settings are committed, so they reach the runner through $HOME
+    // with or without MINDGRAPH_HOME. User settings under an accepted
+    // MINDGRAPH_HOME, and project settings in an evaluation run (a throwaway
+    // checkout), name the runner by its absolute path under that directory.
+    const override = process.env.MINDGRAPH_HOME!;
+    const portable = 'node "$HOME/.mindgraph/bin/mindgraph-hook.cjs"';
+    const absolute = `node '${override}/bin/mindgraph-hook.cjs'`;
+    const userFile = path.join(process.env.CLAUDE_CONFIG_DIR!, "settings.json");
+    const forms: Array<{ scope: "user" | "project"; env: Record<string, string | undefined>; runner: string }> = [
+      { scope: "project", env: { MINDGRAPH_HOME: undefined }, runner: portable },
+      { scope: "project", env: {}, runner: portable },
+      { scope: "project", env: { MINDGRAPH_EVAL: "1" }, runner: absolute },
+      { scope: "user", env: {}, runner: absolute },
+    ];
+    for (const { scope, env, runner } of forms) {
+      const root = tempDir("mindgraph-r1-");
+      fs.mkdirSync(path.join(root, ".git"));
+      const saved = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+      for (const [k, v] of Object.entries(env)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      try {
+        installClaudeHooks(scope, root);
+      } finally {
+        for (const [k, v] of Object.entries(saved)) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
+      }
+      const file = scope === "user" ? userFile : path.join(root, ".claude", "settings.json");
+      const settings = JSON.parse(
+        fs.readFileSync(file, "utf8")
+      ) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
+      const commands = Object.values(settings.hooks)
+        .flat()
+        .flatMap((entry) => entry.hooks.map((h) => h.command));
+      expect(commands.length).toBeGreaterThan(0);
+      for (const command of commands) {
+        // parseArgs sees argv[2:], i.e. everything after the runner path.
+        expect(command.startsWith(`${runner} hook `), command).toBe(true);
+        expect(command).not.toContain("npx");
+        const tokens = command.split(/\s+/);
+        const argv = ["node", "cli.js", ...tokens.slice(2)];
+        const parsed = parseArgs(argv);
+        expect(parsed.command).toBe("hook");
+      }
     }
   });
 });
@@ -557,7 +585,7 @@ describe("R11 — install-hooks upserts owned entries", () => {
       e.hooks.some((h) => h.command.includes("--owner mindgraph"))
     );
     expect(owned).toHaveLength(1);
-    expect(owned[0].hooks[0].command).toContain("$HOME/.mindgraph/bin/mindgraph-hook.cjs");
+    expect(owned[0].hooks[0].command).toContain("/bin/mindgraph-hook.cjs");
     expect(owned[0].hooks[0].timeout).toBeGreaterThanOrEqual(20);
     const foreign = after.hooks.SessionStart.filter((e: { hooks: Array<{ command: string }> }) =>
       e.hooks.some((h) => h.command === "echo user-hook")

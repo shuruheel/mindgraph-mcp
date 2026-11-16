@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { requireHumanTerminal } from "./agent-shell.js";
 import {
@@ -17,7 +16,7 @@ import {
   type ConsentIo,
 } from "./consent-cli.js";
 import { nodeGit, printable, type GitRunner } from "./consent-plan.js";
-import { passwdHome } from "./hook-env.js";
+import { mindgraphRuntimeDir, passwdHome } from "./hook-env.js";
 
 /**
  * `off --all`: turn MindGraph off everywhere, and remove the local files it
@@ -63,7 +62,7 @@ export interface ResidueOptions {
 
 /** The runtime directory hooks and the call ledger use today. */
 export function runtimeDirFor(env: NodeJS.ProcessEnv): string {
-  return env.MINDGRAPH_RUNTIME_DIR || path.join(os.homedir(), ".mindgraph", "runtime");
+  return mindgraphRuntimeDir(env);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

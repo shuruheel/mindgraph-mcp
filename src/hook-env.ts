@@ -76,8 +76,9 @@ export function stableAgentId(): string {
  * `hooks.json`, but only outside every git work tree, so a repository can
  * never supply its own store. A refused override falls back to the account's
  * home directory and says why in `refused`; the consent store treats that as
- * unsafe (no consent anywhere). The runner (`~/.mindgraph/bin`) and the
- * runtime directory still follow `os.homedir()`.
+ * unsafe (no consent anywhere). An accepted override also holds the hook
+ * runner (`bin/`) and the runtime directory (`runtime/`); see
+ * `mindgraphDataDir`.
  */
 export interface ConfigDir {
   dir: string;
@@ -159,6 +160,32 @@ export function mindgraphConfigDir(
         ? `the home directory (${fallback}) is inside a git work tree (${tree}) and has no account entry`
         : undefined),
   };
+}
+
+/**
+ * The directory that holds the pinned hook runner (`bin/`) and the runtime
+ * directory (`runtime/`). An explicit `homeDir` (tests, installers given a
+ * home) means `<homeDir>/.mindgraph`. Otherwise an accepted `MINDGRAPH_HOME`
+ * is used, so one override moves `hooks.json`, the runner and the runtime
+ * state together; without one, `~/.mindgraph` under `os.homedir()` as
+ * before. A refused override is ignored here as it is for `hooks.json`.
+ */
+export function mindgraphDataDir(
+  env: NodeJS.ProcessEnv = process.env,
+  homeDir?: string,
+): string {
+  if (homeDir) return path.join(homeDir, ".mindgraph");
+  if (env.MINDGRAPH_HOME) {
+    const where = mindgraphConfigDir(env);
+    if (where.source === "override") return where.dir;
+  }
+  return path.join(os.homedir(), ".mindgraph");
+}
+
+/** The runtime directory hooks, the call ledger and `status` use:
+ * `MINDGRAPH_RUNTIME_DIR` when set, else `runtime/` in `mindgraphDataDir`. */
+export function mindgraphRuntimeDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.MINDGRAPH_RUNTIME_DIR || path.join(mindgraphDataDir(env), "runtime");
 }
 
 export function hookEnvPath(dir?: string, env?: NodeJS.ProcessEnv): string {

@@ -624,6 +624,61 @@ describe("SessionStart MCP registration diagnostic", () => {
     expect(await startContext(root, file, "reg-user")).not.toContain(NOTE);
   });
 
+  async function startContextFromEnv(root: string, env: Record<string, string | undefined>): Promise<string> {
+    const saved = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+    for (const [k, v] of Object.entries(env)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    try {
+      const { client } = fakeClient();
+      const out = await runClaudeHook(
+        { session_id: `env-${Object.keys(env).join("-")}`, cwd: root, hook_event_name: "SessionStart" },
+        client,
+        { runtimeDir: path.join(root, "runtime"), consent: on(root) },
+      );
+      return String((out.hookSpecificOutput as Record<string, unknown>).additionalContext);
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  }
+
+  it("reads CLAUDE_CONFIG_DIR's .claude.json, not the one under HOME", async () => {
+    const root = tempRoot();
+    const home = path.join(root, "home");
+    const config = path.join(root, "trial-config");
+    fs.mkdirSync(home);
+    fs.mkdirSync(config);
+    // HOME's config lacks the server; the trial's config has it.
+    fs.writeFileSync(path.join(home, ".claude.json"), JSON.stringify({ mcpServers: {} }));
+    fs.writeFileSync(
+      path.join(config, ".claude.json"),
+      JSON.stringify({ mcpServers: { mindgraph: { command: "npx", args: ["-y", "mindgraph-mcp@latest"] } } }),
+    );
+    const env = { HOME: home, CLAUDE_CONFIG_DIR: config, MINDGRAPH_EVAL: undefined };
+    expect(await startContextFromEnv(root, env)).not.toContain(NOTE);
+    // And the other way round: the trial's config decides.
+    fs.writeFileSync(path.join(config, ".claude.json"), JSON.stringify({ mcpServers: {} }));
+    fs.writeFileSync(
+      path.join(home, ".claude.json"),
+      JSON.stringify({ mcpServers: { mindgraph: { command: "npx", args: ["-y", "mindgraph-mcp@latest"] } } }),
+    );
+    expect(await startContextFromEnv(root, env)).toContain(NOTE);
+  });
+
+  it("is skipped in an evaluation run, whatever the config says", async () => {
+    const root = tempRoot();
+    const config = path.join(root, "trial-config");
+    fs.mkdirSync(config);
+    fs.writeFileSync(path.join(config, ".claude.json"), JSON.stringify({ mcpServers: {} }));
+    expect(
+      await startContextFromEnv(root, { CLAUDE_CONFIG_DIR: config, MINDGRAPH_EVAL: "1" }),
+    ).not.toContain(NOTE);
+  });
+
   it("stays quiet for a project-scope registration on an ancestor of the cwd", async () => {
     const root = tempRoot();
     const nested = path.join(root, "packages", "app");

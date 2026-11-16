@@ -20,8 +20,8 @@
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { mindgraphRuntimeDir } from "./hook-env.js";
 
 /** A hook runs before a permission prompt the person may take minutes to
  * answer, so the record must outlive the prompt. */
@@ -42,9 +42,7 @@ export interface CallLedgerOptions {
 
 function callsDir(options: CallLedgerOptions): string {
   return path.join(
-    options.runtimeDir ||
-      process.env.MINDGRAPH_RUNTIME_DIR ||
-      path.join(os.homedir(), ".mindgraph", "runtime"),
+    options.runtimeDir || mindgraphRuntimeDir(),
     "calls",
   );
 }

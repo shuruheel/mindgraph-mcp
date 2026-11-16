@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { requireHumanTerminal } from "./agent-shell.js";
+import { evalMode } from "./eval-guard.js";
 import {
   loadConsentStore,
   nodeConsentFs,
@@ -75,13 +76,15 @@ export interface ConsentIo {
  * this bundle and rewrite the user-scope hook entries (never a project's
  * settings). `MINDGRAPH_HOOK_AUTOUPDATE=off` is honoured, except for a runner
  * that predates consent: turning consent on or off with a runner that ignores
- * it would mean nothing.
+ * it would mean nothing. An evaluation run (MINDGRAPH_EVAL=1) refreshes
+ * nothing: its runner and settings are the ones the trial installed.
  */
 export function refreshRunnerForConsent(
   version: string,
   bundle: string,
   homeDir?: string,
 ): string | undefined {
+  if (evalMode()) return undefined;
   const forced = runnerPredatesGate(homeDir);
   const result = refreshHookRunner(version, bundle, homeDir, { force: forced });
   if (!result.refreshed) return undefined;
