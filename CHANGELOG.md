@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed
+
+- **`mindgraph_retrieve` `action: "context"` lets the server decide on source text.**
+  Without `include_chunks` the request no longer sends `chunk_limit: 0`, so a server
+  with `MINDGRAPH_CONTEXT_SOURCE_DEFAULT=on` can add source windows to the rendered
+  context. Servers without the setting (or with it off) treat the omission as 0, so
+  nothing changes until it is turned on. `include_chunks: true` still asks for source
+  text and `include_chunks: false` now explicitly excludes it. `mindgraph_memory` topic
+  context and the prompt-recall hook read JSON and render locally, so they keep
+  `chunk_limit: 0`.
+
 ## 0.27.0 (2026-11-11)
 
 Chat apps get a brief at the start of a conversation, forgetting a memory takes a

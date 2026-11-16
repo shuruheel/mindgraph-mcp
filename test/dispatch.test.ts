@@ -774,20 +774,57 @@ describe("mindgraph_plan dispatch (agent plan + procedure + risk + governance)",
 });
 
 describe("mindgraph_retrieve dispatch", () => {
-  it("context -> retrieveContext() with chunk_limit gated by include_chunks", async () => {
+  it("context -> retrieveContext() leaves chunk_limit to the server without include_chunks", async () => {
     await handleTool(client, "mindgraph_retrieve", { action: "context", query: "Kissinger NATO" });
     expect(client.retrieveContext).toHaveBeenCalledTimes(1);
-    expect(client.retrieveContext.mock.calls[0][0]).toMatchObject({
+    const request = client.retrieveContext.mock.calls[0][0];
+    expect(request).toMatchObject({
       query: "Kissinger NATO",
-      chunk_limit: 0,
       graph_expansion_limit: 3,
       graph_max_depth: 2,
+      format: "text",
+      max_tokens: 6000,
     });
+    expect(request).not.toHaveProperty("chunk_limit");
   });
 
   it("context include_chunks=true sets a nonzero chunk_limit", async () => {
     await handleTool(client, "mindgraph_retrieve", { action: "context", query: "q", include_chunks: true, limit: 3 });
     expect(client.retrieveContext.mock.calls[0][0]).toMatchObject({ chunk_limit: 3 });
+  });
+
+  it("context include_chunks=false sends an explicit chunk_limit 0", async () => {
+    await handleTool(client, "mindgraph_retrieve", { action: "context", query: "q", include_chunks: false });
+    expect(client.retrieveContext.mock.calls[0][0]).toMatchObject({ chunk_limit: 0 });
+  });
+
+  // RD2: the HTTP body itself, through the real SDK. An omitted chunk_limit is
+  // what lets MINDGRAPH_CONTEXT_SOURCE_DEFAULT apply; an explicit value wins.
+  it.each([
+    [{}, undefined],
+    [{ include_chunks: true }, 5],
+    [{ include_chunks: true, limit: 4 }, 4],
+    [{ include_chunks: false }, 0],
+  ])("context %j sends chunk_limit %s on the wire", async (extra, expected) => {
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string | URL | Request, options: RequestInit) => {
+        bodies.push(JSON.parse(String(options.body)));
+        return new Response(JSON.stringify({ graph: { nodes: [], edges: [] } }), { status: 200 });
+      }),
+    );
+    try {
+      const { MindGraph } = await import("mindgraph");
+      const real = new MindGraph({ baseUrl: "https://offline.invalid" });
+      await handleTool(real, "mindgraph_retrieve", { action: "context", query: "q", ...extra });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(bodies).toHaveLength(1);
+    if (expected === undefined) expect(bodies[0]).not.toHaveProperty("chunk_limit");
+    else expect(bodies[0].chunk_limit).toBe(expected);
+    expect(bodies[0]).toMatchObject({ format: "text", max_tokens: 6000 });
   });
 
   it("context forwards explicit graph expansion budgets", async () => {
