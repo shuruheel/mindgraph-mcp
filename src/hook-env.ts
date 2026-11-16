@@ -198,6 +198,40 @@ export function resolvedHookFeatures(stored: HookEnv): {
   };
 }
 
+/** `hooks.json` exists but is not a JSON object, so it is never replaced. The
+ * CLI prints the message and exits 1 instead of showing a stack trace. */
+export class HookConfigError extends Error {
+  constructor(file: string) {
+    super(
+      `${file} is not valid JSON, so it was left unchanged. Fix or remove it, then run this again.`,
+    );
+    this.name = "HookConfigError";
+  }
+}
+
+/** Throws `HookConfigError` when `hooks.json` exists but is not a JSON
+ * object. Commands that write it call this first, so they stop before
+ * changing anything else. */
+export function assertHookConfigReadable(
+  target: { dir?: string; env?: NodeJS.ProcessEnv } = {},
+): void {
+  const file = hookEnvPath(target.dir, target.env);
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    parsed = undefined;
+  }
+  if (!isRecord(parsed)) throw new HookConfigError(file);
+}
+
 /**
  * Read-modify-write of `hooks.json`, keeping every key the caller does not
  * touch (the consent store among them). The file is replaced atomically: a
@@ -235,11 +269,7 @@ export function updateHookConfig(
     } catch {
       parsed = undefined;
     }
-    if (!isRecord(parsed)) {
-      throw new Error(
-        `${file} is not valid JSON, so it was left unchanged. Fix or remove it, then run this again.`,
-      );
-    }
+    if (!isRecord(parsed)) throw new HookConfigError(file);
     raw = parsed;
   }
   for (const key of RETIRED_KEYS) delete raw[key];

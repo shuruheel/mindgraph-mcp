@@ -227,3 +227,27 @@ export function built(file: string): boolean {
   }
   return false;
 }
+
+/** A workspace shaped like the owner's: a git top-level root holding
+ * .mindgraph/workspace.json that declares sibling repositories with spaces,
+ * plus repositories beside them that it does not list. */
+export function ownerWorkspace(base: string) {
+  const root = makeRepo(path.join(base, "mindgraph"));
+  const names = ["mindgraph-rs", "mindgraph-cloud", "mindgraph-mcp"];
+  const repos = names.map((name) => makeRepo(path.join(root, name)));
+  git(["-C", repos[0], "remote", "add", "origin", "git@github.com:shuruheel/mindgraph-rs.git"]);
+  const undeclared = ["mindgraph-tools", "mindgraph-mobile"].map((name) =>
+    makeRepo(path.join(root, name)),
+  );
+  fs.mkdirSync(path.join(root, "docs"));
+  const workspace = makeWorkspace(
+    root,
+    [
+      { root: "mindgraph-rs", space_uid: "space:project:rs" },
+      { root: "mindgraph-cloud", space_uid: "space:project:cloud" },
+      { root: "mindgraph-mcp", space_uid: "space:project:mcp" },
+    ],
+    "mindgraph",
+  );
+  return { root, repos, undeclared, workspace };
+}

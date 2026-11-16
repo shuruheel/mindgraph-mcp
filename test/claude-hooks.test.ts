@@ -837,6 +837,25 @@ describe("refreshOwnedClaudeHooks", () => {
     expect(settings.permissions).toEqual({ defaultMode: "auto" });
   });
 
+  it("with scopes [\"user\"], a project's settings are never rewritten", () => {
+    const home = tempRoot();
+    const project = tempRoot();
+    const stale = JSON.stringify({
+      hooks: {
+        SessionStart: [{ matcher: "startup", hooks: [{ type: "command", command: OWNED_COMMAND, timeout: 8 }] }],
+      },
+    });
+    const userFile = path.join(home, ".claude", "settings.json");
+    const projectFile = path.join(project, ".claude", "settings.json");
+    for (const file of [userFile, projectFile]) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, stale);
+    }
+    expect(refreshOwnedClaudeHooks(project, home, ["user"])).toEqual([userFile]);
+    expect(fs.readFileSync(projectFile, "utf8")).toBe(stale);
+    expect(fs.readFileSync(userFile, "utf8")).not.toBe(stale);
+  });
+
   it("never expands scope: files without owned entries (or absent) are untouched", () => {
     const home = tempRoot();
     const project = tempRoot();

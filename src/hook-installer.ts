@@ -108,6 +108,17 @@ function semverNewer(
   return false;
 }
 
+/** The first version whose hook runner checks consent. */
+export const GATE_MIN_VERSION = "0.28.0";
+
+/** A runner is installed and its version is unrecorded or below the gate
+ * floor, so it runs hooks without checking consent. */
+export function runnerPredatesGate(homeDir?: string): boolean {
+  if (!fs.existsSync(path.join(homeDir || os.homedir(), RUNNER_RELATIVE))) return false;
+  const pinned = parseSemver(installedHookRunnerVersion(homeDir));
+  return !pinned || semverNewer(parseSemver(GATE_MIN_VERSION)!, pinned);
+}
+
 export interface RunnerRefresh {
   refreshed: boolean;
   reason:
@@ -132,14 +143,15 @@ export interface RunnerRefresh {
  * sidecar itself (≤0.17.0), so it is older than any server carrying this
  * code and safe to refresh. A machine with no runner has no hooks (e.g.
  * Claude Desktop serving this MCP) and is left untouched. Never throws.
- * Opt out with MINDGRAPH_HOOK_AUTOUPDATE=off. */
+ * Opt out with MINDGRAPH_HOOK_AUTOUPDATE=off; `force` refreshes anyway. */
 export function refreshHookRunner(
   serverVersion: string,
   sourceBundle: string,
   homeDir?: string,
+  options: { force?: boolean } = {},
 ): RunnerRefresh {
   try {
-    if (process.env.MINDGRAPH_HOOK_AUTOUPDATE === "off") {
+    if (process.env.MINDGRAPH_HOOK_AUTOUPDATE === "off" && !options.force) {
       return { refreshed: false, reason: "disabled" };
     }
     const home = homeDir || os.homedir();
@@ -180,9 +192,9 @@ export function refreshHookRunner(
 export function refreshOwnedClaudeHooks(
   projectDir = process.cwd(),
   homeDir?: string,
+  scopes: HookScope[] = ["user", "project"],
 ): string[] {
   const refreshed: string[] = [];
-  const scopes: HookScope[] = ["user", "project"];
   for (const scope of scopes) {
     try {
       const file = settingsPath("claude-code", scope, projectDir, undefined, homeDir);

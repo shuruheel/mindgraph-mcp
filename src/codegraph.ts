@@ -269,7 +269,7 @@ function toCandidate(node: QueryNode): CodegraphCandidate | null {
   };
 }
 
-function normalizeRemote(remote: string): string | null {
+export function normalizeRemote(remote: string): string | null {
   const trimmed = remote.trim();
   if (!trimmed) return null;
   const scp = /^(?:[^@]+@)?([^:]+):(.+)$/.exec(trimmed);
