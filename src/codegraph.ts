@@ -151,14 +151,35 @@ type CodegraphStatus = {
   initialized?: boolean;
   projectPath?: string;
   lastIndexed?: string;
+  nodeCount?: number;
   pendingChanges?: { added?: number; modified?: number; removed?: number };
   worktreeMismatch?: unknown;
   index?: {
-    state?: string;
+    /** Completeness marker. `codegraph index` writes it; sync only closes an
+     * interrupted "indexing" and never creates one. Null or absent means no
+     * marker is recorded: the index was built before codegraph recorded one,
+     * or was filled only by sync. The CLI also reports null for a stored
+     * value it does not recognise. */
+    state?: string | null;
     pendingRefs?: number;
     reindexRecommended?: boolean;
   };
 };
+
+/** Caveat for an index that works but carries no completeness marker. It
+ * states what status shows, not why: the adapter cannot tell an index built
+ * before the marker existed from one filled only by sync. The model relays
+ * caveats verbatim, and indexing is the user's decision, so the line names
+ * the command without telling the model to run it. It names the repository
+ * because resolveRefs merges caveats across repositories. */
+function unmarkedIndexCaveat(repoRoot: string): string {
+  return (
+    "this codegraph index has no completeness marker (built before codegraph " +
+    "recorded one, or filled only by sync), so whether it is complete is " +
+    `unverified; the user can run \`codegraph index\` in ${repoRoot} to write ` +
+    "the marker"
+  );
+}
 
 type QueryNode = {
   kind?: string;
@@ -600,6 +621,17 @@ export class CodegraphAdapter {
         "-j",
       ]);
       const caveats: string[] = [];
+      const state = status.index?.state;
+      // No marker at all (null or absent) says nothing either way about
+      // completeness: the index is usable when it holds nodes, but never
+      // reported as fresh. Any string other than "complete" is codegraph
+      // saying the index is not ready, and stays unavailable.
+      const unmarked = state == null;
+      const nodeCount =
+        typeof status.nodeCount === "number" && Number.isFinite(status.nodeCount)
+          ? status.nodeCount
+          : undefined;
+      const unusable = unmarked ? !(nodeCount !== undefined && nodeCount > 0) : state !== "complete";
       let availability: CodegraphAvailability;
       if (status.worktreeMismatch != null) {
         availability = {
@@ -609,7 +641,7 @@ export class CodegraphAdapter {
           caveats: ["the index belongs to a different worktree"],
           lastIndexed: status.lastIndexed,
         };
-      } else if (!status.initialized || status.index?.state !== "complete") {
+      } else if (!status.initialized || unusable) {
         availability = {
           available: false,
           reason: "index_incomplete",
@@ -617,11 +649,16 @@ export class CodegraphAdapter {
           caveats: [
             !status.initialized
               ? "codegraph is not initialized for this repository"
-              : `codegraph index state is ${status.index?.state ?? "unknown"}`,
+              : !unmarked
+                ? `codegraph index state is ${state}`
+                : nodeCount === undefined
+                  ? "codegraph index has no completeness marker and reports no node count, so it cannot be confirmed usable"
+                  : "codegraph index has no completeness marker and reports no nodes",
           ],
           lastIndexed: status.lastIndexed,
         };
       } else {
+        if (unmarked) caveats.push(unmarkedIndexCaveat(repository.repoRoot));
         const pending =
           (status.pendingChanges?.added ?? 0) +
           (status.pendingChanges?.modified ?? 0) +

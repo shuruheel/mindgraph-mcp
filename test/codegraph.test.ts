@@ -292,6 +292,280 @@ describe("CodegraphAdapter", () => {
   });
 });
 
+describe("CodegraphAdapter index completeness marker", () => {
+  async function availabilityWith(extra: NodeJS.ProcessEnv) {
+    const adapter = new CodegraphAdapter({ env: adapterEnv(extra) });
+    return adapter.availability(await adapter.resolveRepository());
+  }
+
+  it("treats a null state with nodes as available, stale and unverified", async () => {
+    const availability = await availabilityWith({
+      FAKE_CODEGRAPH_INDEX_STATE: "null",
+      FAKE_CODEGRAPH_NODE_COUNT: "1254",
+    });
+    expect(availability.available).toBe(true);
+    expect(availability.reason).toBeUndefined();
+    expect(availability.stale).toBe(true);
+    expect(availability.caveats).toHaveLength(1);
+    expect(availability.caveats[0]).toContain("this codegraph index has no completeness marker");
+    expect(availability.caveats[0]).toContain("unverified");
+    expect(availability.caveats[0]).toContain("the user can run `codegraph index`");
+  });
+
+  it("treats an absent state with nodes the same as a null one", async () => {
+    const availability = await availabilityWith({
+      FAKE_CODEGRAPH_INDEX_STATE: "absent",
+      FAKE_CODEGRAPH_NODE_COUNT: "1254",
+    });
+    expect(availability.available).toBe(true);
+    expect(availability.stale).toBe(true);
+    expect(availability.caveats).toHaveLength(1);
+    expect(availability.caveats[0]).toContain("this codegraph index has no completeness marker");
+  });
+
+  it("treats a status with no index block and nodes as a legacy index", async () => {
+    const availability = await availabilityWith({
+      FAKE_CODEGRAPH_STATUS: JSON.stringify({
+        initialized: true,
+        nodeCount: 12,
+        worktreeMismatch: null,
+      }),
+    });
+    expect(availability.available).toBe(true);
+    expect(availability.stale).toBe(true);
+    expect(availability.caveats[0]).toContain("this codegraph index has no completeness marker");
+  });
+
+  it("resolves refs against a legacy index and carries the caveat", async () => {
+    const adapter = new CodegraphAdapter({
+      env: adapterEnv({
+        FAKE_CODEGRAPH_INDEX_STATE: "null",
+        FAKE_CODEGRAPH_NODE_COUNT: "1254",
+        FAKE_CODEGRAPH_QUERY: JSON.stringify([queryHit()]),
+      }),
+    });
+    const result = await adapter.resolveRefs([{ symbol: "target" }]);
+    expect(result.results[0].resolved?.qualifiedName).toBe("module.target");
+    expect(result.results[0].error).toBeUndefined();
+    expect(result.availability.available).toBe(true);
+    expect(result.availability.stale).toBe(true);
+    expect(result.availability.caveats.join(" ")).toContain("unverified");
+  });
+
+  it("names each repository when several unmarked indexes are merged", async () => {
+    const workspace = fs.mkdtempSync(
+      path.join(os.tmpdir(), "mindgraph-workspace-"),
+    );
+    const engine = path.join(workspace, "engine");
+    const core = path.join(workspace, "core");
+    for (const root of [engine, core]) {
+      fs.mkdirSync(path.join(root, "src"), { recursive: true });
+      fs.writeFileSync(path.join(root, "src", "module.ts"), "export {};\n");
+    }
+    fs.mkdirSync(path.join(workspace, ".mindgraph"));
+    fs.writeFileSync(
+      path.join(workspace, ".mindgraph", "workspace.json"),
+      JSON.stringify({
+        v: 1,
+        workspace_id: "overlay",
+        repositories: [
+          { repo_id: "github.com/example/engine", root: "engine" },
+          { repo_id: "github.com/example/core", root: "core" },
+        ],
+      }),
+    );
+    try {
+      const adapter = new CodegraphAdapter({
+        env: adapterEnv({
+          MINDGRAPH_REPO_ID: undefined,
+          FAKE_CODEGRAPH_INDEX_STATE: "null",
+          FAKE_CODEGRAPH_NODE_COUNT: "1254",
+          FAKE_CODEGRAPH_QUERY: JSON.stringify([queryHit()]),
+        }),
+        cwd: workspace,
+      });
+      const result = await adapter.resolveRefs([
+        { path: path.join(engine, "src", "module.ts"), symbol: "target" },
+        { path: path.join(core, "src", "module.ts"), symbol: "target" },
+      ]);
+      const roots = result.repositories.map((repo) => repo.repoRoot);
+      expect(roots).toHaveLength(2);
+      expect(result.availability.available).toBe(true);
+      expect(result.availability.stale).toBe(true);
+      expect(result.availability.caveats).toHaveLength(2);
+      for (const [index, root] of roots.entries()) {
+        expect(result.availability.caveats[index]).toContain(
+          `the user can run \`codegraph index\` in ${root} to write the marker`,
+        );
+      }
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the pending and reindex caveats on a legacy index", async () => {
+    // The shape `codegraph status -j` reports for an index built before the
+    // marker existed and kept current by sync.
+    const availability = await availabilityWith({
+      FAKE_CODEGRAPH_STATUS: JSON.stringify({
+        initialized: true,
+        lastIndexed: "2026-11-14T00:46:06.228Z",
+        nodeCount: 1635,
+        pendingChanges: { added: 2, modified: 2, removed: 0 },
+        worktreeMismatch: null,
+        index: {
+          builtWithVersion: null,
+          reindexRecommended: true,
+          state: null,
+          pendingRefs: 3,
+        },
+      }),
+    });
+    expect(availability.available).toBe(true);
+    expect(availability.stale).toBe(true);
+    expect(availability.lastIndexed).toBe("2026-11-14T00:46:06.228Z");
+    expect(availability.caveats).toEqual([
+      expect.stringContaining("this codegraph index has no completeness marker"),
+      "4 worktree changes are not indexed",
+      "3 references remain pending",
+      "codegraph recommends reindexing",
+    ]);
+  });
+
+  it("keeps a null state with zero nodes unavailable", async () => {
+    const adapter = new CodegraphAdapter({
+      env: adapterEnv({
+        FAKE_CODEGRAPH_INDEX_STATE: "null",
+        FAKE_CODEGRAPH_NODE_COUNT: "0",
+        FAKE_CODEGRAPH_QUERY: JSON.stringify([queryHit()]),
+      }),
+    });
+    const result = await adapter.resolveRefs([{ symbol: "target" }]);
+    expect(result.availability.available).toBe(false);
+    expect(result.availability.reason).toBe("index_incomplete");
+    expect(result.availability.stale).toBe(false);
+    expect(result.availability.caveats).toEqual([
+      "codegraph index has no completeness marker and reports no nodes",
+    ]);
+    expect(result.results[0].resolved).toBeUndefined();
+    expect(result.results[0].error).toBe("index_incomplete");
+  });
+
+  it("keeps a null state with no node count unavailable", async () => {
+    const availability = await availabilityWith({ FAKE_CODEGRAPH_INDEX_STATE: "null" });
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toBe("index_incomplete");
+    expect(availability.stale).toBe(false);
+    expect(availability.caveats).toHaveLength(1);
+    expect(availability.caveats[0]).toContain("reports no node count");
+  });
+
+  it("keeps an absent state with no node count unavailable", async () => {
+    const availability = await availabilityWith({ FAKE_CODEGRAPH_INDEX_STATE: "absent" });
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toBe("index_incomplete");
+    expect(availability.caveats[0]).toContain("reports no node count");
+  });
+
+  it("does not accept a non-numeric node count as nodes", async () => {
+    const availability = await availabilityWith({
+      FAKE_CODEGRAPH_STATUS: JSON.stringify({
+        initialized: true,
+        nodeCount: "1254",
+        worktreeMismatch: null,
+        index: { state: null },
+      }),
+    });
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toBe("index_incomplete");
+  });
+
+  it("keeps an uninitialized legacy index unavailable even with nodes", async () => {
+    const availability = await availabilityWith({
+      FAKE_CODEGRAPH_STATUS: JSON.stringify({
+        initialized: false,
+        nodeCount: 1254,
+        worktreeMismatch: null,
+        index: { state: null },
+      }),
+    });
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toBe("index_incomplete");
+    expect(availability.caveats).toEqual([
+      "codegraph is not initialized for this repository",
+    ]);
+  });
+
+  it("reports a worktree mismatch ahead of a legacy index with nodes", async () => {
+    const availability = await availabilityWith({
+      FAKE_CODEGRAPH_STATUS: JSON.stringify({
+        initialized: true,
+        nodeCount: 1254,
+        worktreeMismatch: { expected: "/a", actual: "/b" },
+        index: { state: null },
+      }),
+    });
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toBe("wrong_index");
+  });
+
+  it("keeps an indexing state unavailable even with nodes", async () => {
+    const availability = await availabilityWith({
+      FAKE_CODEGRAPH_INDEX_STATE: "indexing",
+      FAKE_CODEGRAPH_NODE_COUNT: "1254",
+    });
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toBe("index_incomplete");
+    expect(availability.stale).toBe(false);
+    expect(availability.caveats).toEqual(["codegraph index state is indexing"]);
+  });
+
+  it("keeps a partial state unavailable even with nodes", async () => {
+    const availability = await availabilityWith({
+      FAKE_CODEGRAPH_INDEX_STATE: "partial",
+      FAKE_CODEGRAPH_NODE_COUNT: "1254",
+    });
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toBe("index_incomplete");
+    expect(availability.stale).toBe(false);
+    expect(availability.caveats).toEqual(["codegraph index state is partial"]);
+  });
+
+  it("keeps a failed state unavailable even with nodes", async () => {
+    const availability = await availabilityWith({
+      FAKE_CODEGRAPH_INDEX_STATE: "failed",
+      FAKE_CODEGRAPH_NODE_COUNT: "1254",
+    });
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toBe("index_incomplete");
+    expect(availability.stale).toBe(false);
+    expect(availability.caveats).toEqual(["codegraph index state is failed"]);
+  });
+
+  it("keeps an unrecognized state string unavailable even with nodes", async () => {
+    const availability = await availabilityWith({
+      FAKE_CODEGRAPH_INDEX_STATE: "rebuilding-v2",
+      FAKE_CODEGRAPH_NODE_COUNT: "1254",
+    });
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toBe("index_incomplete");
+    expect(availability.stale).toBe(false);
+    expect(availability.caveats).toEqual(["codegraph index state is rebuilding-v2"]);
+  });
+
+  it("leaves a complete index available and fresh whatever its node count", async () => {
+    const plain = await availabilityWith({});
+    expect(plain).toEqual({
+      available: true,
+      stale: false,
+      caveats: [],
+      lastIndexed: "2026-07-28T00:00:00.000Z",
+    });
+    const empty = await availabilityWith({ FAKE_CODEGRAPH_NODE_COUNT: "0" });
+    expect(empty).toEqual(plain);
+  });
+});
+
 describe("mindgraph_code", () => {
   it("does not write when resolution is ambiguous", async () => {
     const entity = vi.fn();
