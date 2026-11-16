@@ -244,6 +244,70 @@ absolute path or is inside a git work tree, MindGraph refuses it and stays off
 everywhere until you unset or move it: `status` says why, and `on` and `off`
 refuse.
 
+### Importing Claude Code's notes
+
+Claude Code keeps its own notes for each project (its auto memory). To copy
+them into MindGraph, so other machines and other agents can use them, run this
+in a repository or workspace where MindGraph is on, in a terminal you opened
+yourself:
+
+```bash
+npx -y mindgraph-mcp@latest import notes            # or: import notes <path>
+npx -y mindgraph-mcp@latest import notes --dry-run  # show the list, send nothing
+```
+
+The command reads the notes folder Claude Code uses for that place:
+`autoMemoryDirectory` from `.claude/settings.local.json` (only when git does
+not track that file; the card then warns you that a file in the repository
+chose the folder) or from your user settings when set, otherwise
+`~/.claude/projects/<the folder's path with every character other than a letter or digit replaced by ->/memory`
+(`CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_PROJECT_DIR_NAME` are honoured). Like
+Claude Code, it ignores `autoMemoryDirectory` in the checked-in
+`.claude/settings.json`, and it refuses a folder that is a file-system root,
+your home folder, or the repository or workspace itself or a folder above it. Before
+sending anything it lists every note with its size, whether it is new or
+updated, where it goes (the memory for that repository or workspace), and who
+can read it: anyone holding an API key for your organization. Pressing Enter
+never sends; you choose 1 to import.
+
+- **One item per note.** Each note is stored as written, with no
+  language-model call. The note's path in the folder, together with an id for
+  this notes folder on this machine, is its key, so importing again updates
+  changed notes only and sends nothing when nothing changed, and an import
+  never changes or hides notes that a teammate or another machine imported
+  into the same memory. A note you deleted is hidden in MindGraph on the next
+  import (hidden items can be restored). If part of the folder cannot be read,
+  notes the import could not reach are not hidden that time.
+- **Never sent:** the index files at the top of the folder (`MEMORY.md`,
+  `CATALOG.md`, `README.md`, `ARCHIVE.md`); notes of type `user` (`type: user`
+  or `metadata.type: user` in the frontmatter) unless you add
+  `--include-user`; notes longer than 8 KB; any note containing text that
+  looks like a secret (an API key, token, private key, `..._PASSWORD=` or
+  `..._TOKEN=` value, or a password in a URL), which the list names without
+  showing its content, or whose file or folder name looks like one; and any note whose
+  frontmatter says `mindgraph: skip`. A note imported before that now falls
+  under one of these is hidden on the next import.
+- **Files a note names.** For a path in backticks in a note, such as
+  `` `src/consent.ts` ``, that names a file git tracks inside the repository or
+  workspace, the import records the file's git blob hash in its local record
+  and sends it with the note. MindGraph does not keep it yet. Untracked and
+  ignored files, such as `.env`, are never hashed.
+- **Your files stay yours.** The import never writes to the notes folder. It
+  refuses a notes folder that is inside a git repository (such a `memory/`
+  folder is written by the repository's authors) and skips repositories
+  nested in the folder. It refuses to run from inside Claude Code, Codex or
+  Cursor (a dry run is allowed), and no hook runs it.
+- **Where it goes.** The destination is the base URL and organization saved in
+  `~/.mindgraph/hooks.json`, and the space pinned when you turned MindGraph on.
+  If you change the base URL or organization, the next import sends every note
+  to the new one and leaves the items in the old one alone (hide them there if
+  you no longer want them). If the space changes, items in the old space are
+  hidden there, and the card names that space.
+  A repository turned on by itself has no space of its own yet, so the import
+  refuses there; inside a workspace each repository and the workspace root have
+  one. What was sent is recorded in `~/.mindgraph/import-notes.json` (readable
+  only by you).
+
 ### Multi-repository workspaces
 
 Working across sibling repositories (a parent directory holding several
@@ -385,6 +449,10 @@ mindgraph-mcp on [path]        Turn MindGraph on for a repository or workspace (
 mindgraph-mcp off [path]       Turn MindGraph off for a repository or workspace
 mindgraph-mcp off --all        Turn it off everywhere and remove its local files from
                                repositories you never turned on (--dry-run: list only)
+mindgraph-mcp import notes [path]
+                               Copy Claude Code's notes for a place you turned on into
+                               MindGraph, one item per note (asks first; --dry-run:
+                               list only; --include-user: also notes of type user)
 mindgraph-mcp status           Show whether MindGraph is on here, and installation status
 ```
 

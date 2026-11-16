@@ -56,6 +56,12 @@ export function redactSecrets(text: string): string {
   return out;
 }
 
+/** Whether `text` holds anything `redactSecrets` would redact. Used by the
+ * notes import to leave a note out entirely rather than send it redacted. */
+export function containsSecret(text: string): boolean {
+  return SECRET_PATTERNS.some(([pattern]) => new RegExp(pattern.source, pattern.flags).test(text));
+}
+
 /** Discriminating keywords for BM25 topic recall (port of Hermes
  * `topic_query`): a full sentence dilutes the query with words every node
  * shares. Returns "" for prompts too short or slash commands. */
