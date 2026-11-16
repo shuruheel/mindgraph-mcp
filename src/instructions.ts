@@ -56,7 +56,7 @@ The ${harness} adapter supplies invocation_context; omit it.`;
 
 const CODING_GENERAL = `## Reading and writing
 
-- Call memory only when prior state may matter. For a topic, call \`mindgraph_memory\` action \`context\`, mode \`topic\`, with 1–3 discriminating keywords. With no matches, try \`mindgraph_retrieve\` \`semantic\` or \`hybrid\`. Set \`include_chunks: true\` only when you need source text to quote.
+- Call memory only when prior state may matter. For a topic, call \`mindgraph_memory\` action \`context\`, mode \`topic\`, with 1–3 discriminating keywords. With no matches, try \`mindgraph_retrieve\` \`semantic\` or \`hybrid\`. Source text follows the server's default; set \`include_chunks: true\` only when you need it to quote.
 - To learn what this integration does on its own, call \`mindgraph_memory\` action \`status\` rather than assuming a hook supplied context.
 - Treat superseded, refuted or out-of-validity items as warnings, not current facts.
 - An isError result is a failed call, not an empty graph. Keep its code and retry guidance. If retriable is false, do not repeat the unchanged call or quietly switch retrieval mode; explain the failure.
@@ -81,7 +81,7 @@ Preserve selectively after a material durable change: a fact, correction, decisi
 
 const GENERAL_RETRIEVAL = `## Retrieval
 
-Topic context is graph-only by default; set \`include_chunks: true\` only for source text needed for a quote, citation or missing detail. \`mindgraph_retrieve\` \`context\` adds source text when the server defaults to it; \`include_chunks\` true or false overrides that. Query with a few proper nouns or technical terms, not a sentence. If keyword retrieval returns no matches, use \`semantic\` or \`hybrid\`; \`document_index\` lists ingested sources. Inventory and state questions use the matching \`mindgraph_retrieve\` action (\`active_goals\`, \`open_questions\`); advice uses \`preferences\` with topic keywords; \`neighborhood\`, \`chain\` and \`subgraph\` explore from start_uid, and \`path\` connects start_uid to end_uid.`;
+Topic context and \`mindgraph_retrieve\` \`context\` add source text when the server defaults to it; \`include_chunks\` true or false overrides that. Set it to true only for source text needed for a quote, citation or missing detail. Query with a few proper nouns or technical terms, not a sentence. If keyword retrieval returns no matches, use \`semantic\` or \`hybrid\`; \`document_index\` lists ingested sources. Inventory and state questions use the matching \`mindgraph_retrieve\` action (\`active_goals\`, \`open_questions\`); advice uses \`preferences\` with topic keywords; \`neighborhood\`, \`chain\` and \`subgraph\` explore from start_uid, and \`path\` connects start_uid to end_uid.`;
 
 const GENERAL_WRITING = `## Writing
 

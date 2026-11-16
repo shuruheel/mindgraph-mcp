@@ -110,12 +110,14 @@ describe("mindgraph_memory M0 contract", () => {
       query: "graph continuation",
       project_uid: "project-1",
       node_limit: 8,
-      chunk_limit: 0,
       article_limit: 0,
       include_graph: true,
       graph_expansion_limit: 3,
       graph_max_depth: 2,
+      format: "text",
+      max_tokens: 500,
     }));
+    expect(retrieveContext.mock.calls[0][0]).not.toHaveProperty("chunk_limit");
     expect(envelope).toMatchObject({
       action: "context",
       mode: "topic",
@@ -398,5 +400,154 @@ describe("mode='brief' (conversation-start orientation)", () => {
     const text = (await handleMemoryTool(c, { action: "context", mode: "brief", max_output_chars: 600 }, config)).content[0].text;
     expect(text.length).toBeLessThanOrEqual(600);
     expect(text).toContain("brief truncated");
+  });
+});
+
+describe("mindgraph_memory topic mode on server-rendered text (RD2)", () => {
+  const graph = {
+    nodes: [
+      { uid: "claim-1", node_type: "Claim", label: "Pilot budget is $8,000", summary: "The current budget." },
+      { uid: "obs-1", node_type: "Observation", label: "Budget was raised", summary: "An observation." },
+      { uid: "obs-2", node_type: "Observation", label: "Travel was discussed", summary: "Off topic." },
+    ],
+    edges: [{ from_uid: "obs-1", to_uid: "claim-1", edge_type: "SUPPORTS" }],
+  };
+  const articles = [{ uid: "art-1", label: "Budget overview", content: "How the budget changed." }];
+  const serverText = [
+    "Legend: dates are when something was said.",
+    "Now: 2026-11-16",
+    "## Undated",
+    "[undated] Claim — Pilot budget is $8,000: The current budget.",
+    "[undated] Observation — Budget was raised",
+    "## Background",
+    "[article] Budget overview",
+    "How the budget changed.",
+  ].join("\n");
+  const topic = { action: "context", mode: "topic", query: "pilot budget" };
+
+  it.each([
+    [{}, undefined],
+    [{ include_chunks: true }, 8],
+    [{ include_chunks: true, limit: 4 }, 4],
+    [{ include_chunks: false }, 0],
+  ])("sends a text read with %j and chunk_limit %s on the wire", async (extra, expected) => {
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string | URL | Request, options: RequestInit) => {
+        bodies.push(JSON.parse(String(options.body)));
+        return new Response(JSON.stringify({ graph: { nodes: [], edges: [] } }), { status: 200 });
+      }),
+    );
+    try {
+      const { MindGraph } = await import("mindgraph");
+      const real = new MindGraph({ baseUrl: "https://offline.invalid" });
+      await handleMemoryTool(real, { ...topic, ...extra });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(bodies).toHaveLength(1);
+    if (expected === undefined) expect(bodies[0]).not.toHaveProperty("chunk_limit");
+    else expect(bodies[0].chunk_limit).toBe(expected);
+    // The default 8,000-character budget at four characters per token.
+    expect(bodies[0]).toMatchObject({ query: "pilot budget", format: "text", max_tokens: 2000, article_limit: 0 });
+  });
+
+  it("returns the server text and exactly the items it lists", async () => {
+    const c = client({
+      retrieveContext: vi.fn(async () => ({
+        graph,
+        articles,
+        context_text: serverText,
+        used_tokens: 60,
+        truncated: true,
+        omitted: { nodes: 1, chunks: 0, articles: 0, conflicts: 0, node_details: 1 },
+        rendered: { nodes: ["claim-1", "obs-1"], brief_nodes: ["obs-1"], chunks: [], articles: ["art-1"] },
+      })),
+    });
+    const result = await handleMemoryTool(c, topic);
+    const envelope = result.structuredContent!;
+    expect(result.content[0].text).toBe(serverText);
+    expect(envelope.rendered_context).toBe(serverText);
+    expect(envelope.items).toEqual([
+      expect.objectContaining({ uid: "claim-1", type: "Claim" }),
+      expect.objectContaining({ uid: "obs-1", type: "Observation", brief: true }),
+      expect.objectContaining({ uid: "art-1", type: "Article" }),
+    ]);
+    expect((envelope.items as Record<string, unknown>[])[0]).not.toHaveProperty("brief");
+    expect(envelope.budget).toMatchObject({
+      available_items: 4,
+      returned_items: 3,
+      omitted_items: 1,
+      bounded: true,
+    });
+    expect(envelope.retrieval_trace).toMatchObject({
+      rendering: "server",
+      available_items: 4,
+      returned_items: 3,
+      omitted_items: 1,
+      server_omitted: { nodes: 1, node_details: 1 },
+    });
+    const codes = (envelope.warnings as Array<{ code: string }>).map((w) => w.code);
+    expect(codes).toContain("context_bounded");
+    // The server's `truncated` is its text budget, not truncated source fields.
+    expect(codes).not.toContain("source_truncated");
+  });
+
+  it("is unbounded when the server wrote everything", async () => {
+    const c = client({
+      retrieveContext: vi.fn(async () => ({
+        graph: { nodes: graph.nodes.slice(0, 2), edges: graph.edges },
+        context_text: serverText,
+        truncated: false,
+        omitted: { nodes: 0, chunks: 0, articles: 0, conflicts: 0, node_details: 0 },
+        rendered: { nodes: ["claim-1", "obs-1"], brief_nodes: [], chunks: [], articles: [] },
+      })),
+    });
+    const envelope = (await handleMemoryTool(c, topic)).structuredContent!;
+    expect(envelope.items).toHaveLength(2);
+    expect(envelope.budget).toMatchObject({ omitted_items: 0, bounded: false });
+    const codes = (envelope.warnings as Array<{ code: string }>).map((w) => w.code);
+    expect(codes).not.toContain("context_bounded");
+  });
+
+  it("drops listed items the character budget cut from the server text", async () => {
+    const long = `${serverText.split("\n").slice(0, 4).join("\n")}\n${"filler ".repeat(120)}\n[undated] Observation — Budget was raised`;
+    const c = client({
+      retrieveContext: vi.fn(async () => ({
+        graph,
+        context_text: long,
+        truncated: false,
+        omitted: { nodes: 0, chunks: 0, articles: 0, conflicts: 0, node_details: 0 },
+        rendered: { nodes: ["claim-1", "obs-1"], brief_nodes: [], chunks: [], articles: [] },
+      })),
+    });
+    const result = await handleMemoryTool(c, { ...topic, max_output_chars: 512 });
+    const envelope = result.structuredContent!;
+    expect(result.content[0].text).toContain("[truncated to 512 characters]");
+    expect((envelope.items as Array<{ uid: string }>).map((item) => item.uid)).toEqual(["claim-1"]);
+    expect(envelope.budget).toMatchObject({ bounded: true });
+  });
+
+  it("renders locally, as before, when the server does not list what it rendered", async () => {
+    const json = { graph, articles: [], chunks: [{ chunk_uid: "c-1", content: "Source text about the budget.", document_title: "Session 1" }] };
+    const older = { ...json, context_text: serverText, used_tokens: 60, truncated: true, omitted: { nodes: 0 } };
+    const before = await handleMemoryTool(client({ retrieveContext: vi.fn(async () => ({ ...json, chunks: [] })) }), topic);
+    const after = await handleMemoryTool(client({ retrieveContext: vi.fn(async () => older) }), topic);
+    // A JSON read without include_chunks carried no source excerpts; an older
+    // server's text read may, and its text and accounting are set aside.
+    expect(after.content[0].text).toBe(before.content[0].text);
+    expect(after.structuredContent).toEqual(before.structuredContent);
+    expect(after.content[0].text).toContain("[claim-1]");
+    expect(after.content[0].text).not.toContain("Source text about the budget.");
+    expect(after.structuredContent?.retrieval_trace).not.toHaveProperty("rendering");
+    const items = after.structuredContent?.items as Array<{ type: string }>;
+    expect(items.some((item) => item.type === "Relationship")).toBe(true);
+
+    const withChunks = await handleMemoryTool(
+      client({ retrieveContext: vi.fn(async () => older) }),
+      { ...topic, include_chunks: true },
+    );
+    expect(withChunks.content[0].text).toContain("Source text about the budget.");
   });
 });
