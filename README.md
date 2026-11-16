@@ -239,7 +239,11 @@ mg_…` once. Environment variables can only turn hook features off
 `MINDGRAPH_HOOK_PROMPT_RECALL=off`), never on.
 
 `hooks.json` is found through your account's home directory, not `$HOME`. Set
-`MINDGRAPH_HOME` to keep it somewhere else. When that folder is not an
+`MINDGRAPH_HOME` to keep it somewhere else; the pinned hook runner (`bin/`) and
+the hooks' runtime files (`runtime/`) then live there too. Install hooks with
+`--scope user` while it is set: project settings are shared through git, so
+`install-hooks --scope project` refuses rather than name a path on your
+machine. When that folder is not an
 absolute path or is inside a git work tree, MindGraph refuses it and stays off
 everywhere until you unset or move it: `status` says why, and `on` and `off`
 refuse.
@@ -481,7 +485,8 @@ teammates one logical agent, which claims each other's work).
 | `MINDGRAPH_HARNESS` | `generic` | `claude-code` / `codex` — adapter selection and provenance |
 | `MINDGRAPH_AGENT_ID` | *(stable per-user id)* | Agent identity stamped on every write and used for durable-work leases. Defaults to a stable `u-<hash>` derived from user@host, shared by the hooks, the registration, and the serve path — set explicitly for cross-device continuity or per-teammate identities |
 | `MINDGRAPH_ORG_ID` | *(unset)* | Pin the MCP server's operations to a specific organization when a key has access to more than one. `install-hooks` saves it for the hooks, which do not read it at runtime |
-| `MINDGRAPH_HOME` | *(your account's `~/.mindgraph`)* | Absolute path of the folder holding `hooks.json` (hook connection settings and where MindGraph is on). Inside a git work tree, or when not absolute, it is refused and MindGraph stays off everywhere |
+| `MINDGRAPH_HOME` | *(your account's `~/.mindgraph`)* | Absolute path of the folder holding `hooks.json` (hook connection settings and where MindGraph is on), the pinned hook runner (`bin/`) and the hooks' runtime files (`runtime/`). Inside a git work tree, or when not absolute, it is refused and MindGraph stays off everywhere |
+| `MINDGRAPH_EVAL` | *(unset)* | `1` lets the MCP server, the hooks, `import notes`, `skills` and `init` talk only to a MindGraph at a local address (`localhost`, `127.x.x.x`, `::1`); any other address is refused with `eval_requires_loopback` before anything is sent. Also requires an accepted `MINDGRAPH_HOME` (`eval_requires_home`), installs user-scope hooks only under `CLAUDE_CONFIG_DIR`/`CODEX_HOME`, and turns off the runner self-heal. For evaluation and benchmark runs |
 | `MINDGRAPH_HOOKS` | *(unset)* | `off` pauses the hooks and the coding-profile server, even where MindGraph is on. No variable can turn MindGraph on |
 | `MINDGRAPH_CODEGRAPH_BIN` | *(auto)* | Explicit path to the codegraph binary (PATH and `~/.local/bin` are probed) |
 | `MINDGRAPH_HOOK_AUTOUPDATE` | *(on)* | `off` disables the server's startup self-heal of the pinned hook runner; the version-skew note then signals drift instead |

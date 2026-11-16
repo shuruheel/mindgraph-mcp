@@ -6,6 +6,13 @@ import { requireHumanTerminal } from "./agent-shell.js";
 import { loadConsentStore, pathContains, resolveConsent, type OnDecision } from "./consent.js";
 import { COMMAND, displayPath, storeProblem, type ConsentIo } from "./consent-cli.js";
 import { nodeGit, printable, type GitRunner } from "./consent-plan.js";
+import {
+  assertEvalBaseUrl,
+  evalBaseUrlRefusal,
+  evalClaudeReadRefusal,
+  evalHomeRefusal,
+  isLoopbackUrl,
+} from "./eval-guard.js";
 import { loadHookEnv, mindgraphConfigDir, passwdHome, type HookEnv } from "./hook-env.js";
 import { containsSecret } from "./hook-memory.js";
 
@@ -654,15 +661,6 @@ function size(bytes: number): string {
   return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
 }
 
-function isLoopback(baseUrl: string): boolean {
-  try {
-    const host = new URL(baseUrl).hostname;
-    return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1";
-  } catch {
-    return false;
-  }
-}
-
 export function importCard(plan: ImportPlan, decision: OnDecision, stored: HookEnv): string[] {
   const name = (s: string) => printable(s);
   const baseUrl = (stored.baseUrl || "https://api.mindgraph.cloud").replace(/\/+$/, "");
@@ -686,7 +684,7 @@ export function importCard(plan: ImportPlan, decision: OnDecision, stored: HookE
       "      the folder that holds your notes before you import.",
     );
   }
-  if (isLoopback(baseUrl)) {
+  if (isLoopbackUrl(baseUrl)) {
     lines.push(`To    MindGraph on this machine (${baseUrl}), memory for ${name(what)} (${plan.space_uid})`);
     lines.push("      Nothing leaves this machine.");
   } else {
@@ -763,7 +761,7 @@ export interface ImportClient {
  * (auth, org header, error type) through a narrow cast. */
 export function sdkImportClient(stored: HookEnv): ImportClient {
   const client = new MindGraph({
-    baseUrl: stored.baseUrl || "https://api.mindgraph.cloud",
+    baseUrl: assertEvalBaseUrl(stored.baseUrl || "https://api.mindgraph.cloud"),
     apiKey: stored.apiKey,
     orgId: stored.orgId,
     maxRetries: 1,
@@ -908,6 +906,15 @@ export async function runImportNotes(
       return 2;
     }
   }
+  // An evaluation run imports only from its own MINDGRAPH_HOME (without one
+  // it would read the person's real consent store and connection settings)
+  // and its own CLAUDE_CONFIG_DIR (without one it would read the person's
+  // real Claude Code settings and notes into the trial's graph).
+  const homeRefusal = evalHomeRefusal(io.env) ?? evalClaudeReadRefusal(io.env);
+  if (homeRefusal) {
+    io.err(homeRefusal);
+    return 1;
+  }
   const loaded = loadConsentStore(io.env);
   const problem = storeProblem(loaded);
   if (problem) {
@@ -959,6 +966,13 @@ export async function runImportNotes(
   const manifest = loadManifest(file);
   const stored = loadHookEnv(mindgraphConfigDir(io.env).dir);
   const destination = destinationOf(stored);
+  // An evaluation run imports only into a loopback server; refuse before the
+  // card, so nothing is asked and nothing is sent.
+  const evalRefusal = evalBaseUrlRefusal(destination.base_url, io.env);
+  if (evalRefusal) {
+    io.err(evalRefusal);
+    return 1;
+  }
   const key = manifestKey(root, memoryDir, destination);
   const previous = manifest.imports[key];
   const plan = planImport({

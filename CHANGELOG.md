@@ -33,9 +33,18 @@ the 0.27.1 security fix.
   environment, run `install-hooks` once. Environment variables can only turn
   things off (`MINDGRAPH_HOOKS=off` pauses everything). `hooks.json` is found
   through your account's home directory rather than `$HOME`, and
-  `MINDGRAPH_HOME` can move it (inside a git work tree, or when not absolute,
-  it is refused and MindGraph stays off everywhere until you unset or move
-  it). In the default profile, `mindgraph_memory` `scope='workspace'` now
+  `MINDGRAPH_HOME` can move it, together with the pinned hook runner
+  (`bin/`) and the hooks' per-session files (`runtime/`; `MINDGRAPH_RUNTIME_DIR`
+  still wins). Inside a git work tree, or when not absolute, it is refused and
+  MindGraph stays off everywhere until you unset or move it. User-scope hooks
+  installed while `MINDGRAPH_HOME` is set name that runner by its full path;
+  project settings, which are shared through git, never do, so
+  `install-hooks --scope project` refuses while `MINDGRAPH_HOME` is set
+  (outside an evaluation run). Hooks installed before `MINDGRAPH_HOME` was set
+  still run the runner under `$HOME/.mindgraph`, so while that runner predates
+  consent the server, `status`, `on`, `off` and `install-hooks` keep treating
+  it as below the floor (warning, and updating it in place), and `off --all`
+  also clears the per-session files left under `$HOME/.mindgraph/runtime`. In the default profile, `mindgraph_memory` `scope='workspace'` now
   returns an error; it works only in the coding setup. In the coding setup, `mindgraph_plan create_task` and the
   code tools at a workspace root need a `repo`, because the root itself is not
   a repository. A registration pinned to an older `mindgraph-mcp@x.y.z` keeps
@@ -89,6 +98,12 @@ the 0.27.1 security fix.
   Without `include_chunks` the server's source-text default decides;
   `include_chunks: true` or `false` still overrides it. Older servers get the local
   rendering exactly as before. The prompt-recall hook is unchanged.
+- **Hook settings follow `CLAUDE_CONFIG_DIR`.** User-scope Claude Code hooks
+  are installed into `$CLAUDE_CONFIG_DIR/settings.json` when that variable is
+  set, and the SessionStart check for a registered MCP server reads
+  `$CLAUDE_CONFIG_DIR/.claude.json`, matching where Claude Code keeps them.
+  When the server refreshes existing hook entries it keeps the runner they
+  already name.
 
 ### Added
 
@@ -200,6 +215,29 @@ the 0.27.1 security fix.
   In `hooks stats`, tool calls after which the hook also renewed the task
   lease over the network are counted as `PostToolUse/renew`, so the
   `PostToolUse` p99 is the time of the local path alone.
+- **`MINDGRAPH_EVAL=1` keeps MindGraph on this machine.** With it set, the MCP
+  server, the hooks, `import notes`, `skills` and the browser sign-in of
+  `init` talk only to a MindGraph at a local address (`localhost`,
+  `127.x.x.x` or `::1`). Any other address is refused before anything is
+  sent, with the error code `eval_requires_loopback`: the MCP server exits at
+  start, each hook does nothing and records the refusal as a failed-open call
+  (in the hook health file and in `hooks stats`), and `import notes` stops
+  before it lists anything. An evaluation run also needs its own
+  `MINDGRAPH_HOME`: without an accepted one, the MCP server, the hooks,
+  `import notes`, `install-hooks` and `install-code` stop with
+  `eval_requires_home` instead of using your real `~/.mindgraph`. In an
+  evaluation run, user-scope hooks and the `install-code` registration are
+  written (and, by `uninstall-hooks` and `uninstall-code`, removed) only in
+  the directory `CLAUDE_CONFIG_DIR` (or `CODEX_HOME`) names, `import notes`
+  and `off --all` read Claude Code's settings, notes and project list only
+  from `CLAUDE_CONFIG_DIR` (`eval_requires_config_dir` otherwise), `on`,
+  `off` and `off --all` need the trial's `MINDGRAPH_HOME`, the commands that
+  change Claude Desktop's or Cursor's configuration (`install`, `uninstall`,
+  `install-cursor`, `uninstall-cursor` and `init`'s Claude Desktop choice)
+  refuse, the server and `on`/`off` never refresh the hook runner or hook
+  settings, and the SessionStart check for a registered MCP server is
+  skipped. It is meant for evaluation and benchmark runs, which must never
+  write to a hosted organization or to your own settings.
 
 ### Fixed
 
