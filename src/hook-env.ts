@@ -28,7 +28,11 @@ export interface HookEnv {
    * leases in the key's default org while the MCP tools write to the pinned
    * one. */
   orgId?: string;
-  /** Claude UserPromptSubmit recall (default on when unset). */
+  /** Claude UserPromptSubmit recall: true only after an explicit
+   * `--prompt-recall` (default off). Persisted as `promptRecallOptIn`. The
+   * older `promptRecall` key is deliberately not read: installs before the
+   * default flipped wrote `promptRecall: true` whether or not the user chose
+   * it, so it records the old default, not a choice. */
   promptRecall?: boolean;
   /** Claude PreCompact/SessionEnd transcript capture (default off). */
   capture?: boolean;
@@ -75,7 +79,9 @@ export function loadHookEnv(dir?: string): HookEnv {
       agentId: typeof parsed.agentId === "string" ? parsed.agentId : undefined,
       orgId: typeof parsed.orgId === "string" ? parsed.orgId : undefined,
       promptRecall:
-        typeof parsed.promptRecall === "boolean" ? parsed.promptRecall : undefined,
+        typeof parsed.promptRecallOptIn === "boolean"
+          ? parsed.promptRecallOptIn
+          : undefined,
       capture: typeof parsed.capture === "boolean" ? parsed.capture : undefined,
     };
   } catch {
@@ -103,7 +109,11 @@ export function saveHookEnv(
     promptRecall: env.promptRecall ?? existing.promptRecall,
     capture: env.capture ?? existing.capture,
   };
-  fs.writeFileSync(file, `${JSON.stringify(merged, null, 2)}\n`, {
+  // The opt-in is written under its own key; the legacy `promptRecall` key is
+  // dropped from the file on this write (see HookEnv.promptRecall).
+  const { promptRecall, ...stored } = merged;
+  const record = { ...stored, promptRecallOptIn: promptRecall };
+  fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, {
     mode: 0o600,
   });
   fs.chmodSync(file, 0o600);

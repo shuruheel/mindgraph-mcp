@@ -210,6 +210,11 @@ export async function handleCodeTool(
         });
       }
       case "recall": {
+        // A ref-less call (path/symbol at the top level) would otherwise
+        // return an empty success that reads as "this code has no history".
+        if (refs.length === 0 && anchorUids.length === 0) {
+          return err("missing_code_refs", "code_refs or anchor_uids is required for recall");
+        }
         const materialized = new Set(anchorUids);
         let resolution:
           | Awaited<ReturnType<CodegraphAdapter["resolveRefs"]>>

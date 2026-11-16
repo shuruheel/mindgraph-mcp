@@ -119,7 +119,8 @@ cleanly. Connection settings persist to `~/.mindgraph/hooks.json` (mode 600) so
 hooks work regardless of shell environment; the API key is never written into
 project settings.
 
-**Per-prompt recall (on by default).** A `UserPromptSubmit` hook runs a
+**Per-prompt recall (off by default; `--prompt-recall` turns it on).** When
+enabled, a `UserPromptSubmit` hook runs a
 bounded topic recall for each prompt — the same request the Hermes provider
 makes: `POST /retrieve/context` with up to 8 keywords from the prompt (obvious
 secrets redacted first), 5 items, no source chunks — and injects at most 4,000
@@ -129,9 +130,13 @@ label or summary mentions two distinct keywords from the prompt, so a prompt
 can inject nothing (a prompt with a single usable keyword never injects). Prompts under 12 characters and
 slash commands are skipped, a block identical to the last one injected is not re-injected in the same
 session, and the hook gives up after 4 s and injects nothing on any error, so
-it never blocks a prompt. Turn it off with
-`install-hooks --no-prompt-recall` (or `MINDGRAPH_HOOK_PROMPT_RECALL=off` in
-the environment); `--prompt-recall` turns it back on.
+it never blocks a prompt. It is off by default because, in a replay of 59
+real prompts, only 0–4% of the items it injected were relevant to the prompt.
+Turn it on with `install-hooks --prompt-recall` (or `install-code --hooks
+--prompt-recall`); `--no-prompt-recall` turns it back off, and
+`MINDGRAPH_HOOK_PROMPT_RECALL=off` disables it at runtime. Re-running the
+installer without the flag removes MindGraph's recall entry and says so;
+`UserPromptSubmit` hooks from other tools are left alone.
 
 **Transcript capture (off by default).** `install-hooks --capture` adds a
 `PreCompact` hook and makes `SessionEnd` capture too. **What leaves the
@@ -300,7 +305,8 @@ mindgraph-mcp status           Show installation status
 
 Options: `--api-key <key>`, `--base-url <url>`, `--agent-id <id>`,
 `--scope user|project`, `--project-dir <dir>`, `--harness <name>`,
-`--no-prompt-recall` / `--prompt-recall`, `--capture` / `--no-capture`,
+`--prompt-recall` / `--no-prompt-recall` (recall is off by default),
+`--capture` / `--no-capture`,
 `--session-id <id>` (for `hooks preview` and `hooks stats`), `--help`.
 
 **Teams**: when several people share one org graph, give each member a
@@ -321,7 +327,7 @@ teammates one logical agent, which claims each other's work).
 | `MINDGRAPH_ORG_ID` | *(unset)* | Pin operations to a specific organization when a key has access to more than one |
 | `MINDGRAPH_CODEGRAPH_BIN` | *(auto)* | Explicit path to the codegraph binary (PATH and `~/.local/bin` are probed) |
 | `MINDGRAPH_HOOK_AUTOUPDATE` | *(on)* | `off` disables the server's startup self-heal of the pinned hook runner; the version-skew note then signals drift instead |
-| `MINDGRAPH_HOOK_PROMPT_RECALL` | *(on)* | `off` disables the Claude `UserPromptSubmit` recall at runtime |
+| `MINDGRAPH_HOOK_PROMPT_RECALL` | *(on when opted in)* | `off` disables the Claude `UserPromptSubmit` recall at runtime; the hook is installed only with `--prompt-recall` |
 | `MINDGRAPH_HOOK_CAPTURE` | *(stored choice; off)* | `on`/`off` overrides the stored `--capture` choice for Claude transcript capture at runtime. With capture stored off, `on` captures only at `SessionEnd`, because the `PreCompact` entry is not installed; run `install-hooks --capture` to add it |
 | `MINDGRAPH_SKIP_MCP_REGISTRATION_CHECK` | *(unset)* | `1` silences the SessionStart warning for hooks running without a registered MindGraph MCP server (exotic registration layouts) |
 

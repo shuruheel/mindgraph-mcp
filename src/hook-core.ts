@@ -97,8 +97,9 @@ export interface HookRuntimeOptions {
   /** Claude Code's config file (default ~/.claude.json), used only by the
    * SessionStart registration diagnostic. Injectable for tests. */
   claudeConfigPath?: string;
-  /** UserPromptSubmit recall; default on (the event is only installed when
-   * enabled). MINDGRAPH_HOOK_PROMPT_RECALL=off disables at runtime. */
+  /** UserPromptSubmit recall; runs unless false. The event is installed only
+   * on opt-in (`--prompt-recall`) and the CLI runner passes false without
+   * one. MINDGRAPH_HOOK_PROMPT_RECALL=off disables at runtime. */
   promptRecall?: boolean;
   /** PreCompact/SessionEnd transcript capture; default OFF. */
   capture?: boolean;

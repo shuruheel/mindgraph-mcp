@@ -4,6 +4,37 @@
 
 ### Changed
 
+- **Per-prompt recall is now off by default.** The Claude Code `UserPromptSubmit`
+  hook that searched memory on every prompt is installed only with
+  `--prompt-recall` (on `install-hooks` or `install-code --hooks`). When we
+  measured it on 59 real prompts, only 0–4% of the items it injected were
+  relevant to the prompt, and each prompt could wait up to 4 s for it. Upgrading
+  removes it: the server's automatic hook refresh after an upgrade, and any
+  re-run of the installer without the flag, take out MindGraph's own
+  `UserPromptSubmit` entry (hooks from other tools on that event stay), and the
+  installer prints one line saying so. A choice saved by an earlier version does
+  not count, because earlier versions saved "on" for every install; to keep
+  recall, run `npx mindgraph-mcp install-hooks --prompt-recall` once after
+  upgrading. `--no-prompt-recall` is still accepted and turns a saved opt-in
+  back off. The recall itself, its runtime switch
+  `MINDGRAPH_HOOK_PROMPT_RECALL=off` and `hooks preview` are unchanged.
+- **The server's instructions fit inside Claude Code's limit.** Claude Code keeps
+  only the first 4,096 characters of an MCP server's instructions, and the coding
+  profile sent 6,391, so its coding guidance (resume work state first, use
+  `mindgraph_code` for code history, what to write and when) was cut off before
+  the model saw it. The coding profile now sends under 3,200 characters with that
+  guidance first; every other profile stays under 4,000. The instructions no
+  longer suggest passing several node types in one `node_types` filter, which
+  the server currently rejects when graph expansion is on. In Claude Code and
+  Codex they tell the model to start from the work brief the SessionStart hook
+  already injected instead of fetching it again.
+- **`mindgraph_memory` stays loaded in Claude Code.** Claude Code defers MCP tools
+  behind tool search, so the model had to find the memory tool before it could
+  use it. `mindgraph_memory` now carries `_meta["anthropic/alwaysLoad"]: true`
+  in `tools/list`; the other tools are still deferred. Hosts that do not know
+  the key ignore it. Its description no longer asks for `mode='brief'` at the
+  start of every conversation: a coding session resumes with `mode='resume'`,
+  and the brief is for chat clients that get no brief at session start.
 - **`mindgraph_retrieve` `action: "context"` lets the server decide on source text.**
   Without `include_chunks` the request no longer sends `chunk_limit: 0`, so a server
   with `MINDGRAPH_CONTEXT_SOURCE_DEFAULT=on` can add source windows to the rendered
@@ -22,6 +53,15 @@
   that names the repository and says its completeness is unverified; running
   `codegraph index` there once records the state and removes that caveat. An index that
   is still building, partial, failed or empty is rejected as before.
+- **`mindgraph_code` `recall` with no `code_refs` or `anchor_uids` is an error.**
+  A call that put `path` and `symbol` at the top level used to return an empty
+  success, which read as "this code has no history". It now returns
+  `missing_code_refs`, as `anchor` already did.
+- **Hook installs keep another tool's hook that shares MindGraph's entry.**
+  Re-installing, refreshing, or turning an optional hook off removed the whole
+  settings entry that held MindGraph's hook, including any other command in the
+  same entry. Installs now remove only MindGraph's own hooks, as uninstall
+  already did.
 
 ## 0.27.0 (2026-11-11)
 

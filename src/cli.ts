@@ -22,6 +22,7 @@ import { previewCapture, readHookStats } from "./hook-core.js";
 import {
   installClaudeHooks,
   installCodexHooks,
+  type InstallResult,
   installHookRunner,
   type HookScope,
   uninstallClaudeHooks,
@@ -354,13 +355,16 @@ function withHooksFlag(): boolean {
 }
 
 /** Optional Claude hook features: explicit flags win, then the stored
- * choice in ~/.mindgraph/hooks.json, then the defaults (recall on, capture
- * off). */
+ * choice in ~/.mindgraph/hooks.json, then the defaults (both off). Per-prompt
+ * recall is opt-in: in a replay of 59 real prompts, 0-4% of the items it
+ * injected were relevant, so a plain install or re-install leaves it off and
+ * removes an entry an earlier default added. --no-prompt-recall is still
+ * accepted; it only clears a stored opt-in. */
 function claudeHookFeatures(): { promptRecall: boolean; capture: boolean } {
   const flags = parseArgs(process.argv);
   const stored = loadHookEnv();
   return {
-    promptRecall: flags.promptRecall ?? stored.promptRecall ?? true,
+    promptRecall: flags.promptRecall ?? stored.promptRecall ?? false,
     capture: flags.capture ?? stored.capture ?? false,
   };
 }
@@ -370,8 +374,20 @@ function printClaudeHookFeatures(features: {
   capture: boolean;
 }): void {
   console.log(
-    `Prompt recall (UserPromptSubmit): ${features.promptRecall ? "on" : "off"}; ` +
+    `Prompt recall (UserPromptSubmit): ${features.promptRecall ? "on" : "off (opt in with --prompt-recall)"}; ` +
       `transcript capture (PreCompact/SessionEnd): ${features.capture ? "ON — user and assistant text (never tool calls or tool output), secrets redacted, is sent to MindGraph /ingest/session" : "off (enable with --capture)"}`
+  );
+}
+
+/** One plain line when an install removed MindGraph's own per-prompt recall
+ * entry, so a user who had it (usually from the old default) learns why it
+ * went and how to get it back. Hooks from other tools on the event stay. */
+function printRemovedPromptRecall(result: InstallResult): void {
+  if (!result.removedEvents.includes("UserPromptSubmit")) return;
+  console.log(
+    parseArgs(process.argv).promptRecall === false
+      ? "Removed MindGraph's per-prompt recall hook (UserPromptSubmit)."
+      : "Removed MindGraph's per-prompt recall hook (UserPromptSubmit): it is now off by default. Re-run this command with --prompt-recall to turn it back on."
   );
 }
 
@@ -410,6 +426,7 @@ function finishCodeInstall(
       `Installed ${result.added} and refreshed ${result.updated} MindGraph Claude Code hook entries in ${result.path}`
     );
     printClaudeHookFeatures(features);
+    printRemovedPromptRecall(result);
     const envPath = saveHookEnv({
       apiKey,
       baseUrl,
@@ -499,7 +516,8 @@ OPTIONS:
   --scope <scope>     Hook settings scope: project (default) or user
   --project-dir <dir> Project root for project-scoped hooks
   --harness <name>    Hook harness (claude-code or codex)
-  --no-prompt-recall  Claude hooks: omit per-prompt recall (UserPromptSubmit)
+  --prompt-recall     Claude hooks: add per-prompt recall (UserPromptSubmit;
+                      off by default; --no-prompt-recall turns it back off)
   --capture           Claude hooks: send user/assistant text to MindGraph
                       before compaction and at session end (off by default;
                       --no-capture turns it back off)
@@ -848,7 +866,10 @@ async function main(): Promise<void> {
       console.log(
         `Installed ${result.added} and refreshed ${result.updated} MindGraph ${hookHarness === "codex" ? "Codex" : "Claude Code"} hook entries in ${result.path}`
       );
-      if (features) printClaudeHookFeatures(features);
+      if (features) {
+        printClaudeHookFeatures(features);
+        printRemovedPromptRecall(result);
+      }
       printCodegraphStatus();
       // Hooks run with the harness's environment, which rarely carries the
       // MindGraph connection settings — persist them user-level (0600; never
@@ -936,7 +957,9 @@ async function main(): Promise<void> {
             : {}),
         });
         const hookOptions = {
-          promptRecall: stored.promptRecall,
+          // Recall runs only for an explicit opt-in: a UserPromptSubmit entry
+          // left in a settings file no install has refreshed does nothing.
+          promptRecall: stored.promptRecall === true,
           capture: stored.capture,
           // No harness-name fallback here: hook-core derives a stable
           // per-user default shared by both harnesses, which is what lets a

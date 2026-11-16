@@ -378,14 +378,50 @@ describe("Claude hook installer", () => {
     );
     const first = installClaudeHooks("project", root);
     const second = installClaudeHooks("project", root);
-    expect(first.added).toBe(8);
+    // Seven events: per-prompt recall (UserPromptSubmit) is opt-in.
+    expect(first.added).toBe(7);
     expect(second.added).toBe(0);
     const removed = uninstallClaudeHooks("project", root);
-    expect(removed.removed).toBe(8);
+    expect(removed.removed).toBe(7);
     const settings = JSON.parse(
       fs.readFileSync(path.join(settingsDir, "settings.json"), "utf8"),
     );
     expect(settings.hooks.Stop[0].hooks[0].command).toBe("echo existing");
+  });
+
+  it("turning prompt recall off keeps a foreign hook that shares MindGraph's entry", () => {
+    const root = tempRoot();
+    const file = path.join(root, ".claude", "settings.json");
+    installClaudeHooks("project", root, { promptRecall: true });
+    const read = () => JSON.parse(fs.readFileSync(file, "utf8"));
+    const withShared = read();
+    const owned = withShared.hooks.UserPromptSubmit[0].hooks[0];
+    withShared.hooks.UserPromptSubmit = [
+      { hooks: [{ type: "command", command: "echo foreign" }] },
+      { matcher: "", hooks: [{ type: "command", command: "echo shared" }, owned] },
+    ];
+    fs.writeFileSync(file, JSON.stringify(withShared));
+
+    // Re-installing with recall on refreshes our hook and keeps the neighbour.
+    const refreshed = installClaudeHooks("project", root, { promptRecall: true });
+    expect(refreshed.removedEvents).toEqual([]);
+    const commands = (entries: Array<{ hooks: Array<{ command: string }> }>) =>
+      entries.map((entry) => entry.hooks.map((hook) => hook.command));
+    const afterRefresh = commands(read().hooks.UserPromptSubmit);
+    expect(afterRefresh.slice(0, 2)).toEqual([["echo foreign"], ["echo shared"]]);
+    expect(afterRefresh).toHaveLength(3);
+
+    const off = installClaudeHooks("project", root, {});
+    expect(off.removedEvents).toEqual(["UserPromptSubmit"]);
+    const settings = read();
+    expect(commands(settings.hooks.UserPromptSubmit)).toEqual([
+      ["echo foreign"],
+      ["echo shared"],
+    ]);
+    expect(settings.hooks.UserPromptSubmit[1].matcher).toBe("");
+
+    // Nothing owned is left, so a second plain install reports no removal.
+    expect(installClaudeHooks("project", root, {}).removedEvents).toEqual([]);
   });
 });
 
