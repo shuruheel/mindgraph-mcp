@@ -3,7 +3,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { CodegraphAdapter } from "./codegraph.js";
+import {
+  consentFor,
+  eventDirectory,
+  type ConsentDecision,
+  type OffDecision,
+  type OnDecision,
+} from "./consent.js";
 import { renderOtherEligibleWork } from "./render.js";
 import {
   resolveRepositoryScope,
@@ -70,11 +76,6 @@ interface RuntimeLedger {
    * Drives time-based renewal so a lease survives quiet stretches and client
    * clock skew — the expiry comparison alone misses both. */
   lastLeaseRenewalAt?: number;
-  /** Per-cwd repository identity cache: resolving every configured workspace
-   * repo on EVERY PreToolUse blew the hook's time budget on large overlays. */
-  repoContextCwd?: string;
-  repoContextRepoId?: string;
-  repoContextAt?: number;
   /** Hash of the last UserPromptSubmit recall block injected (dedup). */
   lastRecallHash?: string;
   /** Byte offset in the transcript up to which turns were captured. */
@@ -89,7 +90,10 @@ export interface HookRuntimeOptions {
   runtimeDir?: string;
   agentId?: string;
   now?: () => number;
-  workspaceFile?: string;
+  /** Whether MindGraph is on for this event's directory. Defaults to the
+   * user's consent store (`consentFor`). Tests pass a decision here; there is
+   * no environment variable that turns MindGraph on. */
+  consent?: ConsentDecision | ((cwd: string | undefined) => ConsentDecision);
   /** Identifies the API key, base URL and organization the hook talks to.
    * When set, resolved repository uids are remembered in the runtime
    * directory for that tenant only; unset means no cache. */
@@ -112,6 +116,11 @@ interface CoreHookRuntimeOptions extends HookRuntimeOptions {
   reinjectUnchangedCompact: boolean;
 }
 
+/** Options inside a consented root: the decision is always an on decision. */
+interface GatedHookRuntimeOptions extends CoreHookRuntimeOptions {
+  decision: OnDecision;
+}
+
 export interface HookEventStats {
   count: number;
   totalMs: number;
@@ -123,7 +132,9 @@ export type HookCoreOutput =
   | { kind: "noop" }
   | { kind: "context"; context: string; event?: string }
   | { kind: "rewrite"; updatedInput: Record<string, unknown> }
-  | { kind: "block"; reason: string };
+  | { kind: "block"; reason: string }
+  /** Fixed local text for the user; never model context. */
+  | { kind: "notice"; message: string };
 
 const NOOP: HookCoreOutput = { kind: "noop" };
 
@@ -408,6 +419,8 @@ function renderBrief(
     "MindGraph durable work brief (authoritative across sessions/harnesses):",
   ];
   if (meta.scopeNote) lines.push(meta.scopeNote);
+  // No selection ran: say why, and claim nothing about what is eligible.
+  if (brief?.status === "scope_unresolved") return lines.join("\n");
   const task = object(brief?.task);
   const scopedOut = number(brief?.scoped_out_tasks);
   if (!task) {
@@ -645,10 +658,28 @@ function claudeMcpRegistrationNote(
   );
 }
 
+/** Why durable work cannot be selected for this session, or undefined when
+ * the scope fully resolved. */
+function scopeUnloadedReason(
+  client: HookClient,
+  scope: { uids: string[]; failures: string[] },
+): string | undefined {
+  if (!client.entity) {
+    return "this connection cannot resolve repositories";
+  }
+  if (scope.failures.length > 0) {
+    return `the repository scope could not be resolved (${scope.failures.join("; ")})`;
+  }
+  if (scope.uids.length === 0) {
+    return "no repository is turned on here";
+  }
+  return undefined;
+}
+
 async function sessionStart(
   input: HookInput,
   client: HookClient,
-  options: CoreHookRuntimeOptions,
+  options: GatedHookRuntimeOptions,
 ): Promise<HookCoreOutput> {
   const agentId = resolveAgentId(options);
   const harnessLabel = options.harness === "claude-code" ? "Claude Code" : "Codex";
@@ -679,29 +710,35 @@ async function sessionStart(
       return undefined;
     });
   }
+  // Scope is exactly the repositories the user turned on: no discovery, so a
+  // workspace file inside a repository can never widen it.
   const scope = await resolveRepositoryScope(input.cwd, client, agentId, {
-    workspaceFile: options.workspaceFile,
+    repositories: options.decision.repositories,
     cache: options.scopeCacheTenant
       ? { dir: runtimeDir(options), tenant: options.scopeCacheTenant }
       : undefined,
   });
-  if (scope.failures.length > 0) {
-    console.error(
-      `mindgraph-hook: ${scope.failures.length} repository scope(s) failed to resolve (${scope.failures.join("; ")}); resume runs ${scope.uids.length > 0 ? "narrowed" : "UNSCOPED"}`,
-    );
-  }
   const scopeUids = scope.uids;
-  let brief = object(
-    await client.plan({
-      action: "resume_work",
-      session_uid: sessionUid,
-      ...(scopeUids.length > 0 ? { scope_uids: scopeUids } : {}),
-      // Above several repositories one task is not the picture: ask for the
-      // work ranked behind it too. An older server ignores the field.
-      ...(scopeUids.length > 1 ? { limit: WORKSPACE_RESUME_LIMIT } : {}),
-      agent_id: agentId,
-    }),
-  );
+  // Durable work is selected only within a scope that fully resolved. An
+  // empty scope would select from the whole organization, and a partial one
+  // would silently miss the failed repositories' work.
+  const unloaded = scopeUnloadedReason(client, scope);
+  if (unloaded) {
+    console.error(`mindgraph-hook: durable work not loaded (${unloaded})`);
+  }
+  let brief = unloaded
+    ? undefined
+    : object(
+        await client.plan({
+          action: "resume_work",
+          session_uid: sessionUid,
+          scope_uids: scopeUids,
+          // Above several repositories one task is not the picture: ask for
+          // the work ranked behind it too. An older server ignores the field.
+          ...(scopeUids.length > 1 ? { limit: WORKSPACE_RESUME_LIMIT } : {}),
+          agent_id: agentId,
+        }),
+      );
   const workspaceList = {
     task_scope_uids: brief?.task_scope_uids,
     other_eligible: brief?.other_eligible,
@@ -758,7 +795,7 @@ async function sessionStart(
             action: "resume_work",
             task_uid: task!.uid,
             session_uid: sessionUid,
-            ...(scopeUids.length > 0 ? { scope_uids: scopeUids } : {}),
+            scope_uids: scopeUids,
             agent_id: agentId,
           }),
         );
@@ -774,16 +811,20 @@ async function sessionStart(
   // A transiently-failed re-claim of a lease this session already tracks is
   // NOT a lost claim — the session still holds it server-side.
   const stillHeld = !claimed && claimFailed && heldByThisSession;
-  const scopeNote =
-    scope.failures.length > 0
-      ? `Scope: ${scopeUids.length} repositories resolved, ${scope.failures.length} FAILED — durable-work selection ran ${scopeUids.length > 0 ? "narrowed" : "unscoped"}; tasks in the failed repositories may be missing.`
-      : undefined;
-  const briefText = renderBrief(brief || { status: "no_eligible_work" }, {
-    claimed: Boolean(claimed) || stillHeld,
-    claimFailed: claimFailed && !stillHeld,
-    scopeNote,
-    repositoryNames: scope.names,
-  });
+  const briefText = unloaded
+    ? renderBrief(
+        { status: "scope_unresolved" },
+        {
+          claimed: false,
+          claimFailed: false,
+          scopeNote: `Durable work was not loaded: ${unloaded}. Nothing outside the repositories turned on here was searched.`,
+        },
+      )
+    : renderBrief(brief || { status: "no_eligible_work" }, {
+        claimed: Boolean(claimed) || stillHeld,
+        claimFailed: claimFailed && !stillHeld,
+        repositoryNames: scope.names,
+      });
   const registrationNote = claudeMcpRegistrationNote(input, options);
   if (registrationNote) {
     console.error(`mindgraph-hook: ${registrationNote}`);
@@ -842,6 +883,9 @@ async function sessionStart(
       // already tracks (compact/resume + maxRetries:0 network blip): keep
       // the live bookkeeping — wiping it orphans a lease the session still
       // holds server-side.
+    } else if (unloaded) {
+      // No selection ran, so nothing here says the session lost its work:
+      // keep whatever it already holds.
     } else {
       ledger.taskUid = undefined;
       ledger.taskVersion = undefined;
@@ -858,30 +902,13 @@ async function sessionStart(
 
 async function preTool(
   input: HookInput,
-  options: CoreHookRuntimeOptions,
+  options: GatedHookRuntimeOptions,
 ): Promise<HookCoreOutput> {
   const original = { ...(input.tool_input || {}) };
   const ledger = readLedger(input.session_id, options);
-  let repoId =
-    ledger.repoContextCwd === input.cwd &&
-    ledger.repoContextAt !== undefined &&
-    Date.now() - ledger.repoContextAt < 300_000
-      ? ledger.repoContextRepoId
-      : undefined;
-  if (!repoId) {
-    repoId = (
-      await new CodegraphAdapter({
-        cwd: input.cwd,
-        workspaceFile: options.workspaceFile,
-      }).resolveRepository()
-    ).repoId;
-    withLedger(input.session_id, options, (fresh) => {
-      fresh.repoContextCwd = input.cwd;
-      fresh.repoContextRepoId = repoId;
-      fresh.repoContextAt = Date.now();
-      return undefined;
-    });
-  }
+  // The repository comes from the consent decision: the one the user turned
+  // on that contains this directory. At a workspace root there is none.
+  const repoId = options.decision.repo?.repo_id;
   const updatedInput: Record<string, unknown> = {
     ...original,
     invocation_context: invocationContext(input, options, repoId),
@@ -1363,9 +1390,10 @@ async function captureTranscript(
   client: HookClient,
   options: CoreHookRuntimeOptions,
 ): Promise<void> {
+  // Only the user's stored choice turns capture on. The hook environment can
+  // come from a project's settings file, so it may only turn capture off.
   const enabled =
-    process.env.MINDGRAPH_HOOK_CAPTURE === "on" ||
-    (options.capture === true && process.env.MINDGRAPH_HOOK_CAPTURE !== "off");
+    options.capture === true && process.env.MINDGRAPH_HOOK_CAPTURE !== "off";
   if (!enabled || !client.ingestSession || !input.transcript_path) return;
   try {
     const agentId = resolveAgentId(options);
@@ -1407,13 +1435,73 @@ async function captureTranscript(
   }
 }
 
+const TURN_ON_COMMAND = "npx -y mindgraph-mcp@latest on";
+
+/**
+ * What a hook returns where MindGraph is not on: nothing, except for a short
+ * notice at SessionStart in two cases. The text is fixed and local; producing
+ * it makes no request and writes no file.
+ */
+export function offOutput(
+  input: Pick<HookInput, "hook_event_name">,
+  decision: OffDecision,
+): HookCoreOutput {
+  if (input.hook_event_name !== "SessionStart") return NOOP;
+  if (
+    decision.state === "needs_reapproval" &&
+    (decision.reason === "workspace_changed" || decision.reason === "workspace_missing") &&
+    decision.root
+  ) {
+    return {
+      kind: "notice",
+      message: `MindGraph is paused in ${decision.root}: .mindgraph/workspace.json changed since you turned it on. Review: ${TURN_ON_COMMAND} ${decision.root}`,
+    };
+  }
+  // Until the user has run on or off once, sessions in a repository or a
+  // workspace say why MindGraph went quiet after the upgrade.
+  if (
+    decision.reason === "not_consented" &&
+    !decision.storeAcknowledged &&
+    decision.directory &&
+    (decision.inRepository === true ||
+      holdsWorkspaceFile(decision.directory))
+  ) {
+    return {
+      kind: "notice",
+      message: `MindGraph hooks now run only where you turn them on; nothing was sent from this session. Turn on here: ${TURN_ON_COMMAND}`,
+    };
+  }
+  return NOOP;
+}
+
+function holdsWorkspaceFile(directory: string): boolean {
+  try {
+    return fs.statSync(path.join(directory, ".mindgraph", "workspace.json")).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function decide(
+  input: HookInput,
+  consent: HookRuntimeOptions["consent"],
+): ConsentDecision {
+  const directory = eventDirectory(input);
+  if (consent === undefined) return consentFor(directory);
+  return typeof consent === "function" ? consent(directory) : consent;
+}
+
 export async function runHookCore(
   input: HookInput,
   client: HookClient,
   options: CoreHookRuntimeOptions,
 ): Promise<HookCoreOutput> {
+  // The gate comes first: outside a consented root a hook makes no request,
+  // sweeps nothing and writes no ledger.
+  const decision = decide(input, options.consent);
+  if (decision.state !== "on") return offOutput(input, decision);
   const started = performance.now();
-  const output = await dispatchHook(input, client, options);
+  const output = await dispatchHook(input, client, { ...options, decision });
   // A PreToolUse for another server's tool does no work and keeps no record.
   if (
     input.session_id &&
@@ -1446,7 +1534,7 @@ export async function runHookCore(
 async function dispatchHook(
   input: HookInput,
   client: HookClient,
-  options: CoreHookRuntimeOptions,
+  options: GatedHookRuntimeOptions,
 ): Promise<HookCoreOutput> {
   switch (input.hook_event_name) {
     case "SessionStart":
@@ -1490,7 +1578,11 @@ export async function readHookInput(
   for await (const chunk of stream) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as HookInput;
+  const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("hook input is not a JSON object");
+  }
+  return parsed as HookInput;
 }
 
 /** What transcript capture WOULD send for a Claude Code session right now,

@@ -13,8 +13,9 @@ import path from "node:path";
  *
  * The file is USER-level and mode 0600 because the API key is a secret:
  * project-scoped `.claude/settings.json` is commonly committed, so credentials
- * must never be written there. Resolution order everywhere: process env first,
- * then this file.
+ * must never be written there. The `hook` command takes the key, base URL and
+ * organization from this file only, so a project's settings cannot redirect
+ * hook traffic; the agent id may still come from MINDGRAPH_AGENT_ID.
  */
 export interface HookEnv {
   baseUrl?: string;

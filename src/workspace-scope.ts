@@ -1,7 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
-import { CodegraphAdapter, repositoryIdentityKey } from "./codegraph.js";
+import {
+  CodegraphAdapter,
+  repositoryIdentityKey,
+  type RepositoryIdentity,
+} from "./codegraph.js";
 import { anchorRepository, type CodeClient } from "./code-tool.js";
+import type { PinnedRepository } from "./consent.js";
 
 export interface RepositoryScope {
   uids: string[];
@@ -84,7 +89,11 @@ function record(value: unknown): Record<string, unknown> | undefined {
 }
 
 /**
- * The repositories a session's durable work is selected from: every
+ * The repositories a session's durable work is selected from.
+ *
+ * With `repositories` (the set the user turned on), exactly those: no
+ * discovery, no git, no file written into any repository, and `[]` resolves
+ * nothing. Without it (the MCP server's own workspace scope): every
  * repository the workspace file at or above `cwd` declares, else the ones
  * declared by workspace files one directory below it, else the repository
  * `cwd` is in.
@@ -93,19 +102,33 @@ export async function resolveRepositoryScope(
   cwd: string,
   client: ScopeClient,
   agentId: string,
-  options: { workspaceFile?: string; cache?: ScopeCache } = {},
+  options: {
+    workspaceFile?: string;
+    cache?: ScopeCache;
+    repositories?: PinnedRepository[];
+  } = {},
 ): Promise<RepositoryScope> {
   if (!client.entity) return { uids: [], names: {}, failures: [] };
-  const adapter = new CodegraphAdapter({
-    cwd,
-    workspaceFile: options.workspaceFile,
-    childWorkspaces: true,
-  });
-  const configured = await adapter.resolveRepositories();
-  const repositories =
-    configured.length > 0
-      ? configured
-      : [await adapter.resolveRepository()];
+  let repositories: RepositoryIdentity[];
+  if (options.repositories) {
+    repositories = options.repositories.map((pinned) => ({
+      repoId: pinned.repo_id,
+      repoRoot: pinned.root,
+      ...(pinned.space_uid ? { spaceUid: pinned.space_uid } : {}),
+    }));
+  } else {
+    const adapter = new CodegraphAdapter({
+      cwd,
+      workspaceFile: options.workspaceFile,
+      childWorkspaces: true,
+    });
+    const configured = await adapter.resolveRepositories();
+    repositories =
+      configured.length > 0
+        ? configured
+        : [await adapter.resolveRepository()];
+  }
+  if (repositories.length === 0) return { uids: [], names: {}, failures: [] };
   const failures: string[] = [];
   const names: Record<string, string> = {};
   const cached = readScopeCache(options.cache);

@@ -328,7 +328,7 @@ teammates one logical agent, which claims each other's work).
 | `MINDGRAPH_CODEGRAPH_BIN` | *(auto)* | Explicit path to the codegraph binary (PATH and `~/.local/bin` are probed) |
 | `MINDGRAPH_HOOK_AUTOUPDATE` | *(on)* | `off` disables the server's startup self-heal of the pinned hook runner; the version-skew note then signals drift instead |
 | `MINDGRAPH_HOOK_PROMPT_RECALL` | *(on when opted in)* | `off` disables the Claude `UserPromptSubmit` recall at runtime; the hook is installed only with `--prompt-recall` |
-| `MINDGRAPH_HOOK_CAPTURE` | *(stored choice; off)* | `on`/`off` overrides the stored `--capture` choice for Claude transcript capture at runtime. With capture stored off, `on` captures only at `SessionEnd`, because the `PreCompact` entry is not installed; run `install-hooks --capture` to add it |
+| `MINDGRAPH_HOOK_CAPTURE` | *(stored choice; off)* | `off` turns Claude transcript capture off at runtime. It cannot turn capture on: only `install-hooks --capture` does, because a project's settings file can set hook environment variables |
 | `MINDGRAPH_SKIP_MCP_REGISTRATION_CHECK` | *(unset)* | `1` silences the SessionStart warning for hooks running without a registered MindGraph MCP server (exotic registration layouts) |
 
 ## Usage in Claude
