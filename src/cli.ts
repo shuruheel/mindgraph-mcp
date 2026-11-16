@@ -5,12 +5,21 @@ import * as crypto from "crypto";
 import { execFileSync } from "child_process";
 import { MindGraph } from "mindgraph";
 import {
+  assertHookConfigReadable,
   loadHookEnv,
   resolvedHookFeatures,
   saveHookEnv,
   stableAgentId,
 } from "./hook-env.js";
 import { consentFor, eventDirectory } from "./consent.js";
+import {
+  consentStatusLines,
+  hookConfigFailure,
+  INSTALL_CONSENT_LINE,
+  nodeConsentIo,
+  runOff,
+  runOn,
+} from "./consent-cli.js";
 import {
   classifyMcpAddFailure,
   mcpAddFailureOutput,
@@ -310,6 +319,11 @@ function uninstallClaudeCode(): void {
 }
 
 function printStatus(): void {
+  // This directory's consent state comes first: it decides whether anything
+  // below does work here.
+  for (const line of consentStatusLines(process.cwd())) console.log(line);
+  console.log("");
+
   // Check Claude Desktop
   const desktopPath = getClaudeDesktopConfigPath();
   if (fs.existsSync(desktopPath)) {
@@ -458,6 +472,7 @@ function finishCodeInstall(
     );
   }
   printCodegraphStatus();
+  console.log(INSTALL_CONSENT_LINE);
 }
 
 function printCodegraphStatus(): void {
@@ -502,7 +517,11 @@ USAGE:
   mindgraph-mcp hooks stats [--session-id <id>]
                                  Per-event hook calls, time and characters
                                  injected for a session (latest by default).
-  mindgraph-mcp status           Show installation status
+  mindgraph-mcp on [path]        Turn MindGraph on for a repository or workspace
+                                 (asks first; run it in your own terminal)
+  mindgraph-mcp off [path]       Turn MindGraph off for a repository or workspace
+  mindgraph-mcp status           Show this directory's consent state and the
+                                 installation status
   mindgraph-mcp skills pull [--dir .claude/skills]
                                  Write your org's published+granted skills as
                                  SKILL.md directories (allowlisted frontmatter
@@ -811,6 +830,13 @@ async function main(): Promise<void> {
         );
         process.exit(1);
       }
+      if (withHooksFlag()) {
+        try {
+          assertHookConfigReadable();
+        } catch (error) {
+          process.exit(hookConfigFailure(error, console.error));
+        }
+      }
       installClaudeCode(apiKey, baseUrl, agentId);
       finishCodeInstall(apiKey, baseUrl, withHooksFlag(), agentId);
       break;
@@ -839,6 +865,7 @@ async function main(): Promise<void> {
       console.log(
         "Open Cursor Settings › MCP to confirm the server is enabled."
       );
+      console.log(INSTALL_CONSENT_LINE);
       break;
     }
 
@@ -862,6 +889,12 @@ async function main(): Promise<void> {
       const hookHarness = harness || "claude-code";
       if (hookHarness !== "claude-code" && hookHarness !== "codex") {
         throw new Error("--harness must be claude-code or codex");
+      }
+      // Stop before installing anything when hooks.json cannot be updated.
+      try {
+        assertHookConfigReadable();
+      } catch (error) {
+        process.exit(hookConfigFailure(error, console.error));
       }
       const runner = installHookRunner(__filename, undefined, __PACKAGE_VERSION__);
       console.log(`Installed pinned hook runner at ${runner}`);
@@ -909,6 +942,7 @@ async function main(): Promise<void> {
             "to save them now."
         );
       }
+      console.log(INSTALL_CONSENT_LINE);
       break;
     }
 
@@ -1076,6 +1110,33 @@ async function main(): Promise<void> {
     case "status":
       printStatus();
       break;
+
+    case "on":
+    case "off": {
+      if (command === "off" && process.argv.slice(3).includes("--all")) {
+        console.error(
+          "off --all is not available in this version. Turn off one place at a time: npx -y mindgraph-mcp@latest off <path>"
+        );
+        process.exit(1);
+      }
+      if (positionals.length > 1) {
+        console.error(`Usage: npx -y mindgraph-mcp@latest ${command} [path]`);
+        process.exit(1);
+      }
+      const io = nodeConsentIo(__PACKAGE_VERSION__, __filename);
+      let code: number;
+      try {
+        code =
+          command === "on"
+            ? await runOn(positionals[0], io)
+            : await runOff(positionals[0], io);
+      } catch (error) {
+        code = hookConfigFailure(error, console.error);
+      } finally {
+        io.close();
+      }
+      process.exit(code);
+    }
 
     case "serve": {
       // When run without a subcommand, start the MCP server
