@@ -17,6 +17,12 @@ import { errorDetail } from "../src/error-detail.js";
 import { handleSyncTool } from "../src/sync-tool.js";
 import { classifyMcpAddFailure, parseArgs } from "../src/cli-args.js";
 import { loadHookEnv, saveHookEnv } from "../src/hook-env.js";
+import { built, consentOn, pinned, writeStore, repoEntry } from "./fixtures/consent.js";
+
+/** MindGraph turned on for the single repository at `root`. */
+function on(root: string) {
+  return consentOn(root, [pinned(root)]);
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // Regression tests for the four defects found in the 2026-07-28 L4/L5 live
@@ -116,6 +122,14 @@ describe("R3 — composite actions forward execution_uid (field drift)", () => {
   );
 });
 
+/** The decision of a coding server whose session is in `root`, a repository
+ * the user turned on under the hook-reported id. */
+function r18Consent(root: string) {
+  return consentOn(root, [
+    { root, repo_id: "github.com/example/repository", space_uid: null },
+  ]);
+}
+
 describe("R18 — created Tasks carry the repository topology SessionStart filters on", () => {
   it("materializes the hook-owned repository and adds its UID to create_task scope_uids", async () => {
     // Failure pinned: create_task accepted repo/scope fields but persisted no
@@ -127,6 +141,8 @@ describe("R18 — created Tasks carry the repository topology SessionStart filte
     });
     const plan = vi.fn().mockResolvedValue({ uid: "task-1" });
     const client = { entity, plan } as unknown as MindGraph;
+    const r18Repo = fs.realpathSync.native(tempDir("mindgraph-r18-cwd-"));
+    fs.mkdirSync(path.join(r18Repo, ".git"));
 
     await handleTool(client, "mindgraph_plan", {
       action: "create_task",
@@ -139,14 +155,15 @@ describe("R18 — created Tasks carry the repository topology SessionStart filte
         // .mindgraph/workspace.json (space:project:* would then beat the
         // space:agent:* fallback asserted below) — exactly the layout the
         // product recommends for dev machines.
-        cwd: tempDir("mindgraph-r18-cwd-"),
+        cwd: r18Repo,
         repoId: "github.com/example/repository",
         harness: "codex",
         harnessSessionId: "session-1",
         injectedBy: "hook",
       },
-      // Repository scope resolves only in the local coding profile.
-    }, {}, { profile: "coding" });
+      // Repository scope resolves only in the local coding profile, and
+      // there from the repository the user turned on.
+    }, {}, { profile: "coding", consent: r18Consent(r18Repo) });
 
     expect(entity).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -178,16 +195,18 @@ describe("R18 — created Tasks carry the repository topology SessionStart filte
     });
     const plan = vi.fn();
     const client = { entity, plan } as unknown as MindGraph;
+    const r18Repo = fs.realpathSync.native(tempDir("mindgraph-r18-cwd-"));
+    fs.mkdirSync(path.join(r18Repo, ".git"));
 
     const result = await handleTool(client, "mindgraph_plan", {
       action: "create_task",
       label: "Must not become an invisible handoff",
       invocation_context: {
-        cwd: process.cwd(),
+        cwd: r18Repo,
         repoId: "github.com/example/repository",
         injectedBy: "hook",
       },
-    }, {}, { profile: "coding" });
+    }, {}, { profile: "coding", consent: r18Consent(r18Repo) });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("exists_but_inaccessible");
@@ -198,6 +217,11 @@ describe("R18 — created Tasks carry the repository topology SessionStart filte
 describe("R4 — the ledger fills, never overwrites, model work-targeting args", () => {
   function client(): HookClient {
     return {
+      // Inside consent, SessionStart selects work only once its pinned
+      // repository resolves.
+      async entity() {
+        return { uid: "repository-root", status: "existing" };
+      },
       async session() {
         return { uid: "session-graph" };
       },
@@ -241,7 +265,7 @@ describe("R4 — the ledger fills, never overwrites, model work-targeting args",
         source: "startup",
       },
       c,
-      { agentId: "r4-agent", runtimeDir: runtime }
+      { consent: on(root), agentId: "r4-agent", runtimeDir: runtime }
     );
   }
 
@@ -271,7 +295,7 @@ describe("R4 — the ledger fills, never overwrites, model work-targeting args",
         tool_input: toolInput,
       },
       c,
-      { agentId: "r4-agent", runtimeDir: runtime }
+      { consent: on(root), agentId: "r4-agent", runtimeDir: runtime }
     );
     expect(out).toEqual({});
     const updated: Record<string, unknown> = {
@@ -302,7 +326,7 @@ describe("R4 — the ledger fills, never overwrites, model work-targeting args",
         tool_input: toolInput,
       },
       c,
-      { agentId: "r4-agent", runtimeDir: runtime }
+      { consent: on(root), agentId: "r4-agent", runtimeDir: runtime }
     );
     expect(out).toEqual({});
     const updated: Record<string, unknown> = {
@@ -377,28 +401,51 @@ describe("R7 — pinned hook runner replaces per-invocation npx", () => {
     // cjs/loader error. Every earlier test executed the bundle from the repo
     // directory, where the require resolves; this one copies it away first.
     const bundle = path.join(__dirname, "..", "dist", "cli.js");
-    if (!fs.existsSync(bundle)) return; // unit runs without a prior build
-    const iso = tempDir("mindgraph-r7-iso-");
+    if (!built(bundle)) return; // unit runs without a prior build
+    const iso = fs.realpathSync.native(tempDir("mindgraph-r7-iso-"));
     const runner = path.join(iso, "runner.cjs");
     fs.copyFileSync(bundle, runner);
-    // Every hook event, not only Stop: the bundle also carries the MCP server,
-    // whose SDK imports must stay lazy. An eager require on any hook path
-    // would crash here, where no node_modules exists.
-    for (const event of ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "Stop", "SessionEnd"]) {
-      const out = execFileSync("node", [runner, "hook", "--harness", "claude-code", "--owner", "mindgraph"], {
-        cwd: iso,
+    const home = path.join(iso, "home");
+    const repo = path.join(iso, "repo");
+    const runtime = path.join(iso, "runtime");
+    fs.mkdirSync(home, { mode: 0o700 });
+    fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
+    const run = (event: string) =>
+      execFileSync("node", [runner, "hook", "--harness", "claude-code", "--owner", "mindgraph"], {
+        cwd: repo,
         input: JSON.stringify({
           hook_event_name: event,
           session_id: "iso",
-          cwd: iso,
+          cwd: repo,
           stop_hook_active: true,
           prompt: "what about the deploy plan",
           tool_name: "mcp__mindgraph__mindgraph_memory",
           tool_input: { action: "status" },
         }),
-        env: { ...process.env, MINDGRAPH_API_KEY: "", MINDGRAPH_RUNTIME_DIR: iso, HOME: iso },
-      });
-      expect(out.toString().trim(), event).toBe("{}");
+        env: {
+          ...process.env,
+          MINDGRAPH_API_KEY: "",
+          MINDGRAPH_RUNTIME_DIR: runtime,
+          HOME: home,
+          MINDGRAPH_HOME: home,
+        },
+      })
+        .toString()
+        .trim();
+    // Every hook event, not only Stop: the bundle also carries the MCP server,
+    // whose SDK imports must stay lazy. An eager require on any hook path
+    // would crash here, where no node_modules exists. Each event runs twice:
+    // with no consent store (off: nothing written), then with the repository
+    // turned on but no API key (the key check, inside consent).
+    const events = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "Stop", "SessionEnd"];
+    for (const event of events) {
+      expect(run(event), event).toBe("{}");
+    }
+    expect(fs.readdirSync(home)).toEqual([]);
+    expect(fs.existsSync(runtime)).toBe(false);
+    writeStore(home, [repoEntry(repo)]);
+    for (const event of events) {
+      expect(run(event), event).toBe("{}");
     }
 
     const root = tempDir("mindgraph-r7-root-");
@@ -590,11 +637,15 @@ describe("R16 — the verbatim Codex hook command is self-contained", () => {
     // The Codex adapter must prove both properties on the exact command it
     // writes: --owner is consumed, and the copied bundle needs no node_modules.
     const bundle = path.join(__dirname, "..", "dist", "cli.js");
-    if (!fs.existsSync(bundle)) return; // exercised when the release build exists
+    if (!built(bundle)) return; // exercised when the release build exists
     const root = tempDir("mindgraph-r16-root-");
     fs.mkdirSync(path.join(root, ".git"));
     const home = tempDir("mindgraph-r16-home-");
-    const isolated = tempDir("mindgraph-r16-iso-");
+    const isolated = fs.realpathSync.native(tempDir("mindgraph-r16-iso-"));
+    // Turned on, with no API key: every event runs past the consent gate to
+    // the key check, so the lazy imports on those paths are exercised.
+    fs.mkdirSync(path.join(isolated, ".git"));
+    writeStore(path.join(home, ".mindgraph"), [repoEntry(isolated)]);
     installHookRunner(bundle, home);
     installCodexHooks("project", root);
     const settings = JSON.parse(
@@ -672,6 +723,7 @@ describe("R16 — the verbatim Codex hook command is self-contained", () => {
           ...process.env,
           HOME: home,
           USERPROFILE: home,
+          MINDGRAPH_HOME: path.join(home, ".mindgraph"),
           MINDGRAPH_API_KEY: "",
           MINDGRAPH_RUNTIME_DIR: path.join(home, "runtime"),
         },
@@ -714,6 +766,11 @@ function continuityClient(overrides?: {
 }): HookClient {
   const plans = overrides?.plans ?? [];
   return {
+    // Inside consent, SessionStart selects work only once its pinned
+    // repository resolves.
+    async entity() {
+      return { uid: "repository-root", status: "existing" };
+    },
     async session() {
       return { uid: "session-graph" };
     },
@@ -759,7 +816,7 @@ async function claimedLedger(
       source: "startup",
     },
     c,
-    { agentId: "continuity-agent", runtimeDir: runtime, now },
+    { consent: on(root), agentId: "continuity-agent", runtimeDir: runtime, now },
   );
 }
 
@@ -778,7 +835,7 @@ async function preToolFills(
       tool_input: toolInput,
     },
     c,
-    { agentId: "continuity-agent", runtimeDir: runtime },
+    { consent: on(root), agentId: "continuity-agent", runtimeDir: runtime },
   );
   return {
     ...toolInput,
@@ -808,7 +865,7 @@ describe("R19 — completing the task clears the ledger's work-targeting state",
         tool_response: { uid: "ledger-task", version: 3, lease_released: true },
       },
       c,
-      { agentId: "continuity-agent", runtimeDir: runtime },
+      { consent: on(root), agentId: "continuity-agent", runtimeDir: runtime },
     );
     const updated = await preToolFills(runtime, root, c, {
       action: "resume_work",
@@ -928,7 +985,7 @@ describe("R22 — an expired lease is re-claimed, not heartbeaten", () => {
         tool_response: {},
       },
       c,
-      { agentId: "continuity-agent", runtimeDir: runtime, now: () => clock },
+      { consent: on(root), agentId: "continuity-agent", runtimeDir: runtime, now: () => clock },
     );
     const reclaim = plans.find(
       (request) =>
@@ -964,7 +1021,7 @@ describe("R23 — structured conflict payloads re-sync the ledger", () => {
         },
       },
       c,
-      { agentId: "continuity-agent", runtimeDir: runtime },
+      { consent: on(root), agentId: "continuity-agent", runtimeDir: runtime },
     );
     const updated = await preToolFills(runtime, root, c, {
       action: "checkpoint_iteration",
@@ -995,7 +1052,7 @@ describe("R24 — a PlanStep's version never clobbers the task version", () => {
         tool_response: { uid: "plan-step-7", status: "completed", version: 41 },
       },
       c,
-      { agentId: "continuity-agent", runtimeDir: runtime },
+      { consent: on(root), agentId: "continuity-agent", runtimeDir: runtime },
     );
     const updated = await preToolFills(runtime, root, c, {
       action: "checkpoint_iteration",
@@ -1071,7 +1128,7 @@ describe("R26 — an unanchored repository is anchored at SessionStart, not skip
         source: "startup",
       },
       client,
-      { agentId: "r26-agent", runtimeDir: tempDir("mindgraph-r26-runtime-") },
+      { consent: on(root), agentId: "r26-agent", runtimeDir: tempDir("mindgraph-r26-runtime-") },
     );
     const anchor = entityCalls.find((call) => call.action === "create");
     expect(anchor).toBeDefined();
@@ -1143,7 +1200,7 @@ describe("R27 — hook-driven renewal adopts the fence from a thrown 409", () =>
           tool_response: {},
         },
         c,
-        { agentId: "continuity-agent", runtimeDir: runtime, now: () => clock },
+        { consent: on(root), agentId: "continuity-agent", runtimeDir: runtime, now: () => clock },
       );
     };
     // Lease (expires 100) has lapsed → reclaim fires with the ledger's

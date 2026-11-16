@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -21,6 +22,12 @@ import {
   sep,
 } from "node:path";
 import { randomUUID } from "node:crypto";
+import type { OnDecision, PinnedRepository } from "./consent.js";
+import {
+  noConsentDecision,
+  outsidePinnedSet,
+  type NotOptedInPayload,
+} from "./consent-refusal.js";
 
 export type CodeRef = {
   repo?: string;
@@ -69,6 +76,101 @@ export class UnknownRepositoryError extends Error {
     );
     this.name = "UnknownRepositoryError";
   }
+}
+
+/** Inside consent: a repository, ref path or name outside the pinned set, or
+ * no repository named where one is needed. Never falls back to discovery.
+ * A subclass of UnknownRepositoryError, so a stored anchor in such a
+ * repository is reported unavailable rather than failing a whole read. */
+export class NotOptedInRepositoryError extends UnknownRepositoryError {
+  constructor(readonly payload: NotOptedInPayload) {
+    super(payload.directory);
+    this.message = payload.error;
+    this.name = "NotOptedInRepositoryError";
+  }
+}
+
+/** The pinned scope of an on decision, as the adapter uses it. */
+export type PinnedScope = {
+  /** In a linked worktree the session's repository carries the worktree as
+   * `root` and the root stored at consent time as `pinned_root`. */
+  repositories: Array<PinnedRepository & { pinned_root?: string }>;
+  /** The decision's real directory; relative ref paths resolve from it. */
+  directory: string;
+  /** The consented root, for messages. */
+  root: string;
+  /** The repository the directory resolved to; undefined at a workspace root. */
+  repo?: PinnedRepository;
+};
+
+/** The variables that widen repository scope by discovery; ignored inside
+ * consent. */
+const SCOPE_VARIABLES = [
+  "MINDGRAPH_WORKSPACE_FILE",
+  "MINDGRAPH_CODE_REPOS",
+  "MINDGRAPH_REPO_ROOT",
+  "MINDGRAPH_REPO_ID",
+  "MINDGRAPH_CODE_SPACE_UID",
+] as const;
+
+/** Still the repository that was turned on: its root is a real path and
+ * holds a `.git` (file or directory). */
+function pinnedPresent(root: string): boolean {
+  try {
+    return realpathSync.native(root) === root && existsSync(join(root, ".git"));
+  } catch {
+    return false;
+  }
+}
+
+/** The top of the checkout containing `directory`: the nearest directory at
+ * or above it holding `.git`. */
+function checkoutTop(directory: string): string | undefined {
+  let current = directory;
+  for (;;) {
+    if (existsSync(join(current, ".git"))) return current;
+    const parent = dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+/** The scope an on decision pins. In a linked worktree of a pinned
+ * repository the repository's files are read from the worktree the session
+ * is in, under the same identity. */
+export function pinnedScope(decision: OnDecision): PinnedScope {
+  let repositories = decision.repositories;
+  let repo = decision.repo;
+  if (decision.reason === "consented_worktree" && repo) {
+    const top = checkoutTop(decision.directory);
+    if (top && top !== repo.root) {
+      const worktree = { ...repo, root: top, pinned_root: repo.root };
+      repositories = [
+        ...repositories.filter((candidate) => candidate.repo_id !== repo!.repo_id),
+        worktree,
+      ];
+      repo = worktree;
+    }
+  }
+  return { repositories, directory: decision.directory, root: decision.root, repo };
+}
+
+/**
+ * The adapter for a tool call. An on decision in the runtime gives a pinned
+ * adapter. The local coding profile with no decision fails closed. Anything
+ * else (direct callers outside the server) keeps discovery.
+ */
+export function adapterFor(
+  args: Record<string, unknown>,
+  runtime: { consent?: OnDecision; profile?: string; hosted?: boolean } = {},
+): CodegraphAdapter {
+  if (runtime.consent?.state === "on") {
+    return new CodegraphAdapter({ pinned: pinnedScope(runtime.consent) });
+  }
+  if (runtime.profile === "coding" && !runtime.hosted) {
+    throw new NotOptedInRepositoryError(noConsentDecision());
+  }
+  return new CodegraphAdapter({ cwd: invocationCwd(args) });
 }
 
 /** The working directory a tool call should resolve repositories from: the
@@ -210,6 +312,10 @@ type AdapterOptions = {
    * brief asks for this; code routing and sync keep the upward search. */
   childWorkspaces?: boolean;
   now?: () => number;
+  /** Inside consent: exactly these repositories. No workspace file, child
+   * workspace or scope variable is consulted, no git runs to resolve an
+   * identity, and nothing is written into any repository. */
+  pinned?: PinnedScope;
 };
 
 type ConfiguredRepository = {
@@ -269,7 +375,7 @@ function toCandidate(node: QueryNode): CodegraphCandidate | null {
   };
 }
 
-function normalizeRemote(remote: string): string | null {
+export function normalizeRemote(remote: string): string | null {
   const trimmed = remote.trim();
   if (!trimmed) return null;
   const scp = /^(?:[^@]+@)?([^:]+):(.+)$/.exec(trimmed);
@@ -414,6 +520,7 @@ export class CodegraphAdapter {
   private readonly cwd: string;
   private readonly workspaceFile?: string;
   private readonly childWorkspaceFiles: string[];
+  private readonly pinned?: PinnedScope;
   private readonly now: () => number;
   private readonly identityCache = new Map<string, Promise<RepositoryIdentity>>();
   private readonly statusCache = new Map<
@@ -424,6 +531,16 @@ export class CodegraphAdapter {
   constructor(options: AdapterOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.statusTtlMs = options.statusTtlMs ?? DEFAULT_STATUS_TTL_MS;
+    this.now = options.now ?? Date.now;
+    if (options.pinned) {
+      const env = { ...(options.env ?? process.env) };
+      for (const name of SCOPE_VARIABLES) delete env[name];
+      this.env = env;
+      this.cwd = options.pinned.directory;
+      this.pinned = options.pinned;
+      this.childWorkspaceFiles = [];
+      return;
+    }
     this.env = options.env ?? process.env;
     this.cwd = options.cwd ?? process.cwd();
     this.workspaceFile = findWorkspaceFile(
@@ -434,10 +551,63 @@ export class CodegraphAdapter {
       !this.workspaceFile && options.childWorkspaces
         ? findChildWorkspaceFiles(this.cwd)
         : [];
-    this.now = options.now ?? Date.now;
+  }
+
+  /** The pinned repositories still present, as identities stored at
+   * consent time. */
+  private pinnedRepositories(fallbackSpaceUid?: string): RepositoryIdentity[] {
+    return (this.pinned?.repositories ?? [])
+      .filter((repository) => pinnedPresent(repository.root))
+      .map((repository) => ({
+        repoId: repository.repo_id,
+        repoRoot: repository.root,
+        ...(repository.space_uid || fallbackSpaceUid
+          ? { spaceUid: repository.space_uid ?? fallbackSpaceUid }
+          : {}),
+      }));
+  }
+
+  private notOptedIn(message: string): NotOptedInRepositoryError {
+    return new NotOptedInRepositoryError(outsidePinnedSet(this.pinned!, message));
+  }
+
+  private resolvePinnedRepository(repo?: string, fallbackSpaceUid?: string): RepositoryIdentity {
+    const repositories = this.pinnedRepositories(fallbackSpaceUid);
+    if (repo) {
+      // A root or its name matches as stored at consent time too (in a
+      // worktree, `repoRoot` is the worktree checkout).
+      const roots = (candidate: RepositoryIdentity) => {
+        const stored = this.pinned!.repositories.find(
+          (entry) => entry.repo_id === candidate.repoId,
+        )?.pinned_root;
+        return stored ? [candidate.repoRoot, stored] : [candidate.repoRoot];
+      };
+      const selected =
+        repositories.find((candidate) => candidate.repoId === repo) ??
+        repositories.find((candidate) =>
+          roots(candidate).some((root) => root === repo || basename(root) === repo),
+        );
+      if (selected) return selected;
+      throw this.notOptedIn(`"${repo}" is not a repository MindGraph is turned on for here.`);
+    }
+    const current = this.pinned!.repo;
+    const selected = current
+      ? repositories.find((candidate) => candidate.repoRoot === current.root)
+      : undefined;
+    if (selected) return selected;
+    if (current) {
+      throw this.notOptedIn(
+        `${current.root} is no longer the repository MindGraph was turned on for.`,
+      );
+    }
+    const names = repositories.map((candidate) => basename(candidate.repoRoot));
+    throw this.notOptedIn(
+      `This session is at the root of ${this.pinned!.root}: name a repository with repo${names.length > 0 ? ` (one of: ${names.join(", ")})` : ""}.`,
+    );
   }
 
   async resolveRepository(repo?: string, fallbackSpaceUid?: string): Promise<RepositoryIdentity> {
+    if (this.pinned) return this.resolvePinnedRepository(repo, fallbackSpaceUid);
     const configured = await this.resolveRepositories(fallbackSpaceUid);
     const selected =
       (repo && configured.find((candidate) => candidate.repoId === repo)) ||
@@ -501,6 +671,7 @@ export class CodegraphAdapter {
   }
 
   async resolveRepositories(fallbackSpaceUid?: string): Promise<RepositoryIdentity[]> {
+    if (this.pinned) return this.pinnedRepositories(fallbackSpaceUid);
     return Promise.all(
       this.configuredRepositories().map((repository) =>
         this.resolveRepositoryIdentity(
@@ -602,6 +773,9 @@ export class CodegraphAdapter {
   /** Why the workspace map yielded no repositories — for callers that were
    * explicitly asked to fan out and would otherwise return silently empty. */
   workspaceDiagnostic(): string {
+    if (this.pinned) {
+      return `no repository is turned on for ${this.pinned.root}`;
+    }
     if (!this.workspaceFile || !existsSync(this.workspaceFile)) {
       return (
         "no .mindgraph/workspace.json was found between the working " +
@@ -762,6 +936,19 @@ export class CodegraphAdapter {
     if (ref.repo || defaultRepo) {
       return this.resolveRepository(ref.repo || defaultRepo, fallbackSpaceUid);
     }
+    if (ref.path && this.pinned) {
+      const requested = isAbsolute(ref.path)
+        ? resolve(ref.path)
+        : resolve(this.cwd, ref.path);
+      const absolute = await realpath(requested).catch(() => requested);
+      const defining = this.pinnedRepositories(fallbackSpaceUid)
+        .sort((a, b) => b.repoRoot.length - a.repoRoot.length)
+        .find((candidate) => pathContains(candidate.repoRoot, absolute));
+      if (defining) return defining;
+      throw this.notOptedIn(
+        `${ref.path} is outside the repositories MindGraph is turned on for here.`,
+      );
+    }
     if (ref.path) {
       const requested = isAbsolute(ref.path)
         ? resolve(ref.path)
@@ -866,6 +1053,13 @@ export class CodegraphAdapter {
   }
 
   private configuredRepositories(): ConfiguredRepository[] {
+    if (this.pinned) {
+      return this.pinnedRepositories().map((repository) => ({
+        repoId: repository.repoId,
+        repoRoot: repository.repoRoot,
+        spaceUid: repository.spaceUid,
+      }));
+    }
     const configured: ConfiguredRepository[] = [];
     const workspaceFiles = this.workspaceFile
       ? [this.workspaceFile]

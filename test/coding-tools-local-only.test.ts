@@ -16,6 +16,8 @@ import {
   type MindGraphServerOptions,
 } from "../src/server.js";
 import { handleTool } from "../src/tools.js";
+import type { OnDecision } from "../src/consent.js";
+import { consentOn } from "./fixtures/consent.js";
 
 // Count every CodegraphAdapter built and every child process spawned (git
 // runs only through the adapter's spawn); both still behave as before.
@@ -28,7 +30,13 @@ vi.mock("../src/codegraph.js", async (importOriginal) => {
       probes.adapters += 1;
     }
   }
-  return { ...actual, CodegraphAdapter: CountingAdapter };
+  // The tools build their adapter through adapterFor, inside the module.
+  const adapterFor = (...args: Parameters<typeof actual.adapterFor>) => {
+    const adapter = actual.adapterFor(...args);
+    probes.adapters += 1;
+    return adapter;
+  };
+  return { ...actual, CodegraphAdapter: CountingAdapter, adapterFor };
 });
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -87,8 +95,9 @@ function hostedServer(client: FakeClient, log?: (event: Record<string, unknown>)
   return createMindGraphServer(opts);
 }
 
-function stdioServer(client: FakeClient, profile: string): Server {
+function stdioServer(client: FakeClient, profile: string, consent?: OnDecision): Server {
   return buildMindGraphServer({
+    ...(consent ? { consent: () => ({ allowed: true as const, decision: consent }) } : {}),
     client: client as unknown as MindGraph,
     serverVersion: "test",
     instructions: "",
@@ -279,8 +288,11 @@ describe("stdio profiles", () => {
 
   it("the coding profile still runs mindgraph_sync and mindgraph_code", async () => {
     const client = makeClient();
-    const dir = sentinelDir();
-    const server = () => stdioServer(client, "coding");
+    const dir = fs.realpathSync.native(sentinelDir());
+    // The coding profile is gated: the directory is a repository turned on.
+    fs.mkdirSync(path.join(dir, ".git"));
+    const decision = consentOn(dir, [{ root: dir, repo_id: "local/sentinel", space_uid: null }]);
+    const server = () => stdioServer(client, "coding", decision);
     const sync = await call(server(), "mindgraph_sync", {
       action: "begin",
       repo: dir,

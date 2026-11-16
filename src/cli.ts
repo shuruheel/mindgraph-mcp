@@ -4,7 +4,23 @@ import * as os from "os";
 import * as crypto from "crypto";
 import { execFileSync } from "child_process";
 import { MindGraph } from "mindgraph";
-import { loadHookEnv, saveHookEnv, stableAgentId } from "./hook-env.js";
+import {
+  assertHookConfigReadable,
+  loadHookEnv,
+  resolvedHookFeatures,
+  saveHookEnv,
+  stableAgentId,
+} from "./hook-env.js";
+import { consentFor, eventDirectory } from "./consent.js";
+import {
+  consentStatusLines,
+  hookConfigFailure,
+  INSTALL_CONSENT_LINE,
+  nodeConsentIo,
+  runOff,
+  runOn,
+} from "./consent-cli.js";
+import { runOffAll } from "./consent-residue.js";
 import {
   classifyMcpAddFailure,
   mcpAddFailureOutput,
@@ -12,14 +28,17 @@ import {
 } from "./cli-args.js";
 import { httpSkillsApi, skillsPull, skillsPush } from "./skills-cli.js";
 import {
+  claudeHookOutput,
   readHookInput,
   runClaudeHook,
+  type ClaudeHookInput as HookInput,
   type HookClient,
 } from "./claude-hooks.js";
-import { runCodexHook } from "./codex-hooks.js";
+import { codexHookOutput, runCodexHook } from "./codex-hooks.js";
 import { installCursor, uninstallCursor } from "./cursor-install.js";
-import { previewCapture, readHookStats } from "./hook-core.js";
+import { offOutput, previewCapture, readHookStats } from "./hook-core.js";
 import {
+  gateFloorWarning,
   installClaudeHooks,
   installCodexHooks,
   type InstallResult,
@@ -302,6 +321,19 @@ function uninstallClaudeCode(): void {
 }
 
 function printStatus(): void {
+  // This directory's consent state comes first: it decides whether anything
+  // below does work here.
+  for (const line of consentStatusLines(process.cwd())) console.log(line);
+  const gateWarning = (() => {
+    try {
+      return gateFloorWarning();
+    } catch {
+      return undefined;
+    }
+  })();
+  if (gateWarning) console.log(`Hook runner: ${gateWarning}`);
+  console.log("");
+
   // Check Claude Desktop
   const desktopPath = getClaudeDesktopConfigPath();
   if (fs.existsSync(desktopPath)) {
@@ -450,6 +482,7 @@ function finishCodeInstall(
     );
   }
   printCodegraphStatus();
+  console.log(INSTALL_CONSENT_LINE);
 }
 
 function printCodegraphStatus(): void {
@@ -494,7 +527,15 @@ USAGE:
   mindgraph-mcp hooks stats [--session-id <id>]
                                  Per-event hook calls, time and characters
                                  injected for a session (latest by default).
-  mindgraph-mcp status           Show installation status
+  mindgraph-mcp on [path]        Turn MindGraph on for a repository or workspace
+                                 (asks first; run it in your own terminal)
+  mindgraph-mcp off [path]       Turn MindGraph off for a repository or workspace
+  mindgraph-mcp off --all [--dry-run]
+                                 Turn MindGraph off everywhere and remove its
+                                 local files from repositories you never turned
+                                 on (asks first; run it in your own terminal)
+  mindgraph-mcp status           Show this directory's consent state and the
+                                 installation status
   mindgraph-mcp skills pull [--dir .claude/skills]
                                  Write your org's published+granted skills as
                                  SKILL.md directories (allowlisted frontmatter
@@ -803,6 +844,13 @@ async function main(): Promise<void> {
         );
         process.exit(1);
       }
+      if (withHooksFlag()) {
+        try {
+          assertHookConfigReadable();
+        } catch (error) {
+          process.exit(hookConfigFailure(error, console.error));
+        }
+      }
       installClaudeCode(apiKey, baseUrl, agentId);
       finishCodeInstall(apiKey, baseUrl, withHooksFlag(), agentId);
       break;
@@ -831,6 +879,7 @@ async function main(): Promise<void> {
       console.log(
         "Open Cursor Settings › MCP to confirm the server is enabled."
       );
+      console.log(INSTALL_CONSENT_LINE);
       break;
     }
 
@@ -854,6 +903,12 @@ async function main(): Promise<void> {
       const hookHarness = harness || "claude-code";
       if (hookHarness !== "claude-code" && hookHarness !== "codex") {
         throw new Error("--harness must be claude-code or codex");
+      }
+      // Stop before installing anything when hooks.json cannot be updated.
+      try {
+        assertHookConfigReadable();
+      } catch (error) {
+        process.exit(hookConfigFailure(error, console.error));
       }
       const runner = installHookRunner(__filename, undefined, __PACKAGE_VERSION__);
       console.log(`Installed pinned hook runner at ${runner}`);
@@ -896,11 +951,12 @@ async function main(): Promise<void> {
       console.log(`Saved hook connection settings to ${envPath} (mode 600)`);
       if (!apiKey && !baseUrl) {
         console.log(
-          "Note: hooks resolve MINDGRAPH_API_KEY/MINDGRAPH_BASE_URL from the " +
-            "environment or ~/.mindgraph/hooks.json — pass --api-key/--base-url " +
-            "to persist them now."
+          "Note: hooks read the API key and base URL only from " +
+            `${envPath} — pass --api-key/--base-url ` +
+            "to save them now."
         );
       }
+      console.log(INSTALL_CONSENT_LINE);
       break;
     }
 
@@ -923,31 +979,44 @@ async function main(): Promise<void> {
     }
 
     case "hook": {
-      // Command hooks must fail open. A missing key or transient API failure
-      // disables context/checkpoint nudges but never blocks Claude Code.
-      // Resolution order: process env / flags, then ~/.mindgraph/hooks.json.
-      const stored = loadHookEnv();
+      // Command hooks must fail open: nothing here may block the harness.
       const hookHarness = harness || "claude-code";
       if (hookHarness !== "claude-code" && hookHarness !== "codex") {
         throw new Error("--harness must be claude-code or codex");
       }
-      const hookApiKey = apiKey ?? stored.apiKey;
-      const hookBaseUrl = baseUrl ?? stored.baseUrl;
+      const wire = hookHarness === "codex" ? codexHookOutput : claudeHookOutput;
+      let input: HookInput;
+      try {
+        input = await readHookInput();
+      } catch (error) {
+        recordHookHealth(hookHarness, (error as Error)?.message || "unreadable hook input");
+        process.stdout.write("{}\n");
+        break;
+      }
+      // MindGraph acts only in a directory the user turned it on for. Outside
+      // one, the hook checks no key, writes no file and builds no client.
+      const decision = consentFor(eventDirectory(input));
+      if (decision.state !== "on") {
+        process.stdout.write(`${JSON.stringify(wire(offOutput(input, decision)))}\n`);
+        break;
+      }
+      // The destination comes only from hooks.json, which the user's own
+      // install wrote; the hook environment cannot redirect it.
+      const stored = loadHookEnv();
+      const hookApiKey = stored.apiKey;
+      const hookBaseUrl = stored.baseUrl || "https://api.mindgraph.cloud";
       if (!hookApiKey) {
         recordHookHealth(hookHarness, "no-api-key");
         process.stdout.write("{}\n");
         break;
       }
       try {
-        const input = await readHookInput();
         const client = new MindGraph({
-          baseUrl: hookBaseUrl || "https://api.mindgraph.cloud",
+          baseUrl: hookBaseUrl,
           apiKey: hookApiKey,
-          // Hooks run with the harness's environment, which usually lacks
-          // MINDGRAPH_ORG_ID even when the MCP registration pins it — on a
-          // multi-org key the hooks would otherwise track work in the key's
-          // DEFAULT org while the MCP tools write to the pinned one.
-          orgId: process.env.MINDGRAPH_ORG_ID || stored.orgId,
+          // The org pin is stored beside the key, so hooks and the MCP tools
+          // write to the same organization on a multi-org key.
+          orgId: stored.orgId,
           maxRetries: 0,
           telemetrySurface: "mcp",
           // Prompt recall must never hold the prompt: abort the request at
@@ -956,38 +1025,26 @@ async function main(): Promise<void> {
             ? { timeoutMs: 4_000 }
             : {}),
         });
+        const features = resolvedHookFeatures(stored);
         const hookOptions = {
+          consent: decision,
           // Recall runs only for an explicit opt-in: a UserPromptSubmit entry
           // left in a settings file no install has refreshed does nothing.
-          promptRecall: stored.promptRecall === true,
-          capture: stored.capture,
+          promptRecall: features.promptRecall,
+          capture: features.capture,
           // No harness-name fallback here: hook-core derives a stable
           // per-user default shared by both harnesses, which is what lets a
           // task claimed under Codex rebind under Claude Code.
           agentId: process.env.MINDGRAPH_AGENT_ID || stored.agentId,
           scopeCacheTenant: crypto.createHash("sha256")
-            .update(
-              [
-                hookBaseUrl || "https://api.mindgraph.cloud",
-                hookApiKey,
-                process.env.MINDGRAPH_ORG_ID || stored.orgId || "",
-              ].join("\n"),
-            )
+            .update([hookBaseUrl, hookApiKey, stored.orgId || ""].join("\n"))
             .digest("hex")
             .slice(0, 16),
         };
         const output =
           hookHarness === "codex"
-            ? await runCodexHook(
-                input,
-                client as unknown as HookClient,
-                hookOptions
-              )
-            : await runClaudeHook(
-                input,
-                client as unknown as HookClient,
-                hookOptions
-              );
+            ? await runCodexHook(input, client as unknown as HookClient, hookOptions)
+            : await runClaudeHook(input, client as unknown as HookClient, hookOptions);
         clearHookHealth(hookHarness);
         process.stdout.write(`${JSON.stringify(output)}\n`, () => {
           // A recall that hit its deadline can leave a socket open that keeps
@@ -1067,6 +1124,40 @@ async function main(): Promise<void> {
     case "status":
       printStatus();
       break;
+
+    case "on":
+    case "off": {
+      const flags = process.argv.slice(3);
+      const all = command === "off" && flags.includes("--all");
+      const dryRun = flags.includes("--dry-run");
+      if (dryRun && !all) {
+        console.error("--dry-run works only with: npx -y mindgraph-mcp@latest off --all --dry-run");
+        process.exit(1);
+      }
+      if (all && positionals.length > 0) {
+        console.error("Usage: npx -y mindgraph-mcp@latest off --all [--dry-run]");
+        process.exit(1);
+      }
+      if (positionals.length > 1) {
+        console.error(`Usage: npx -y mindgraph-mcp@latest ${command} [path]`);
+        process.exit(1);
+      }
+      const io = nodeConsentIo(__PACKAGE_VERSION__, __filename);
+      let code: number;
+      try {
+        code =
+          command === "on"
+            ? await runOn(positionals[0], io)
+            : all
+              ? await runOffAll(io, { dryRun })
+              : await runOff(positionals[0], io);
+      } catch (error) {
+        code = hookConfigFailure(error, console.error);
+      } finally {
+        io.close();
+      }
+      process.exit(code);
+    }
 
     case "serve": {
       // When run without a subcommand, start the MCP server

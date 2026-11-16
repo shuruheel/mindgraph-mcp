@@ -14,8 +14,20 @@ import {
   uninstallHookRunner,
   versionSkewNote,
 } from "../src/hook-installer.js";
+import { consentOn, makeRepo, pinned } from "./fixtures/consent.js";
 
 const cleanup: string[] = [];
+
+/** MindGraph turned on for the single repository at `root`. */
+function on(root: string) {
+  return consentOn(root, [pinned(root)]);
+}
+
+/** Every hook client inside consent resolves its pinned repository. */
+async function existingRepository(request: Record<string, unknown>) {
+  const key = (request.identity as Record<string, unknown>).key as Record<string, unknown>;
+  return { uid: `repository-${String(key.repo_id)}`, status: "existing" };
+}
 
 function tempRoot(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mindgraph-hooks-"));
@@ -34,6 +46,7 @@ function fakeClient() {
   const sessions: Array<Record<string, unknown>> = [];
   const plans: Array<Record<string, unknown>> = [];
   const client: HookClient = {
+    entity: existingRepository,
     async session(request) {
       sessions.push(request);
       return { uid: "session-graph", created: sessions.length === 1 };
@@ -68,55 +81,59 @@ function fakeClient() {
 }
 
 describe("Claude Code normalized hook adapter", () => {
-  it("scopes resume across the repository entities declared by a parent overlay", async () => {
+  it("scopes resume across exactly the repositories turned on in a workspace", async () => {
     const workspace = tempRoot();
     const engine = path.join(workspace, "engine");
     const core = path.join(workspace, "core");
-    fs.mkdirSync(engine);
-    fs.mkdirSync(core);
+    const extra = path.join(workspace, "extra");
+    // Git repositories with no remote and no repo_id in the file: workspace
+    // discovery would have written an identity file into each one.
+    for (const dir of [engine, core, extra]) makeRepo(dir);
     fs.mkdirSync(path.join(workspace, ".mindgraph"));
+    // The file declares three repositories; the user turned on two.
     fs.writeFileSync(
       path.join(workspace, ".mindgraph", "workspace.json"),
       JSON.stringify({
         v: 1,
-        repositories: [
-          { repo_id: "engine", root: "engine" },
-          { repo_id: "core", root: "core" },
-        ],
+        repositories: [{ root: "engine" }, { root: "core" }, { root: "extra" }],
       }),
     );
+    const repositories = [
+      { root: engine, repo_id: "engine", space_uid: null },
+      { root: core, repo_id: "core", space_uid: null },
+    ];
     const { client, plans } = fakeClient();
+    const resolved: unknown[] = [];
     client.entity = async (request) => {
-      const key = (
-        (request.identity as Record<string, unknown>).key as Record<
-          string,
-          unknown
-        >
-      );
-      return {
-        uid: `repository-${key.repo_id}`,
-        status: "existing",
-      };
+      const key = (request.identity as Record<string, unknown>).key as Record<string, unknown>;
+      resolved.push(key.repo_id);
+      return { uid: `repository-${String(key.repo_id)}`, status: "existing" };
     };
 
     await runClaudeHook(
-      {
-        session_id: "workspace-session",
-        cwd: engine,
-        hook_event_name: "SessionStart",
-      },
+      { session_id: "workspace-session", cwd: engine, hook_event_name: "SessionStart" },
       client,
-      { runtimeDir: path.join(workspace, "runtime") },
+      {
+        runtimeDir: path.join(workspace, "runtime"),
+        consent: consentOn(workspace, repositories, { directory: engine, repo: repositories[0] }),
+      },
     );
+    expect(resolved.sort()).toEqual(["core", "engine"]);
     expect(plans.find((request) => request.action === "resume_work")).toMatchObject({
       scope_uids: ["repository-engine", "repository-core"],
     });
+    // Nothing was written into any repository.
+    for (const dir of [engine, core, extra]) {
+      expect(fs.readdirSync(dir)).toEqual([".git"]);
+      expect(fs.existsSync(path.join(dir, ".git", "mindgraph"))).toBe(false);
+    }
   });
 
   it("does not auto-claim backlog work the agent never owned", async () => {
     const cwd = tempRoot();
     const plans: Array<Record<string, unknown>> = [];
     const client: HookClient = {
+      entity: existingRepository,
       async session() {
         return { uid: "session-graph" };
       },
@@ -135,7 +152,7 @@ describe("Claude Code normalized hook adapter", () => {
     const out = await runClaudeHook(
       { session_id: "s-backlog", cwd, hook_event_name: "SessionStart" },
       client,
-      { runtimeDir: path.join(cwd, "runtime") },
+      { runtimeDir: path.join(cwd, "runtime"), consent: on(cwd) },
     );
     expect(plans.filter((r) => r.action === "claim_task")).toHaveLength(0);
     // No claim also means no redundant second resume_work round-trip.
@@ -150,6 +167,7 @@ describe("Claude Code normalized hook adapter", () => {
     const cwd = tempRoot();
     const plans: Array<Record<string, unknown>> = [];
     const client: HookClient = {
+      entity: existingRepository,
       async session() {
         return { uid: "session-graph" };
       },
@@ -177,7 +195,7 @@ describe("Claude Code normalized hook adapter", () => {
     await runClaudeHook(
       { session_id: "s-rebind", cwd, hook_event_name: "SessionStart" },
       client,
-      { runtimeDir: path.join(cwd, "runtime") },
+      { runtimeDir: path.join(cwd, "runtime"), consent: on(cwd) },
     );
     expect(plans.filter((r) => r.action === "claim_task")).toHaveLength(1);
   });
@@ -193,8 +211,8 @@ describe("Claude Code normalized hook adapter", () => {
       source: "compact",
       model: "claude-test",
     };
-    const first = await runClaudeHook(start, client, { runtimeDir });
-    const second = await runClaudeHook(start, client, { runtimeDir });
+    const first = await runClaudeHook(start, client, { runtimeDir, consent: on(cwd) });
+    const second = await runClaudeHook(start, client, { runtimeDir, consent: on(cwd) });
     expect(
       (first.hookSpecificOutput as Record<string, unknown>).additionalContext,
     ).toContain("task-1");
@@ -219,7 +237,7 @@ describe("Claude Code normalized hook adapter", () => {
         },
       },
       client,
-      { runtimeDir },
+      { runtimeDir, consent: on(cwd) },
     );
     // H1: the hook must not change the call's input — Claude Code's auto mode
     // refuses a call whose input a hook rewrote. The fields reach the server
@@ -276,7 +294,7 @@ describe("Claude Code normalized hook adapter", () => {
         hook_event_name: "SessionStart",
       },
       client,
-      { runtimeDir },
+      { runtimeDir, consent: on(cwd) },
     );
     const context = (
       output.hookSpecificOutput as Record<string, unknown>
@@ -300,7 +318,7 @@ describe("Claude Code normalized hook adapter", () => {
         tool_response: { ok: true },
       },
       client,
-      { runtimeDir },
+      { runtimeDir, consent: on(cwd) },
     );
     await runClaudeHook(
       {
@@ -312,17 +330,17 @@ describe("Claude Code normalized hook adapter", () => {
         tool_response: { ok: true },
       },
       client,
-      { runtimeDir },
+      { runtimeDir, consent: on(cwd) },
     );
     const first = await runClaudeHook(
       { session_id: "s", cwd, hook_event_name: "Stop" },
       client,
-      { runtimeDir },
+      { runtimeDir, consent: on(cwd) },
     );
     const second = await runClaudeHook(
       { session_id: "s", cwd, hook_event_name: "Stop" },
       client,
-      { runtimeDir },
+      { runtimeDir, consent: on(cwd) },
     );
     expect(first.decision).toBe("block");
     expect(second).toEqual({});
@@ -347,7 +365,7 @@ describe("Claude Code normalized hook adapter", () => {
         tool_input: { subject: "secret local subject" },
       },
       client,
-      { runtimeDir },
+      { runtimeDir, consent: on(cwd) },
     );
     const ledger = fs
       .readdirSync(runtimeDir)
@@ -356,6 +374,133 @@ describe("Claude Code normalized hook adapter", () => {
       .join("");
     expect(ledger).toContain('"nativeTasksCreated":1');
     expect(ledger).not.toContain("secret local subject");
+  });
+});
+
+describe("SessionStart inside consent loads durable work only within its scope", () => {
+  async function start(
+    client: HookClient,
+    consent: ReturnType<typeof on>,
+    cwd: string,
+  ): Promise<string> {
+    const out = await runClaudeHook(
+      { session_id: `scope-${path.basename(cwd)}`, cwd, hook_event_name: "SessionStart" },
+      client,
+      { runtimeDir: path.join(cwd, "runtime"), consent, claudeConfigPath: path.join(cwd, "none.json") },
+    );
+    return String((out.hookSpecificOutput as Record<string, unknown>).additionalContext);
+  }
+
+  function noEntityClient() {
+    const { client, sessions, plans } = fakeClient();
+    delete client.entity;
+    return { client, sessions, plans };
+  }
+
+  it("with no entity client: opens the session, selects no work, says why", async () => {
+    const cwd = tempRoot();
+    const { client, sessions, plans } = noEntityClient();
+    const context = await start(client, on(cwd), cwd);
+    expect(sessions.map((r) => r.action)).toEqual(["open"]);
+    expect(plans).toEqual([]);
+    expect(context).toContain("Durable work was not loaded");
+    expect(context).toContain("cannot resolve repositories");
+    expect(context).not.toContain("No durable task is eligible");
+  });
+
+  it("with no repository resolved (an empty pinned set): selects no work", async () => {
+    const cwd = tempRoot();
+    const { client, sessions, plans } = fakeClient();
+    const entity: Array<Record<string, unknown>> = [];
+    client.entity = async (request) => {
+      entity.push(request);
+      return existingRepository(request);
+    };
+    const context = await start(client, consentOn(cwd, []), cwd);
+    expect(sessions.map((r) => r.action)).toEqual(["open"]);
+    // [] resolves nothing, never falls back to discovery.
+    expect(entity).toEqual([]);
+    expect(plans).toEqual([]);
+    expect(context).toContain("no repository is turned on here");
+  });
+
+  it("with any scope failure: no resume_work or claim_task, and the failure is named", async () => {
+    const workspace = tempRoot();
+    const a = path.join(workspace, "a");
+    const b = path.join(workspace, "b");
+    fs.mkdirSync(a);
+    fs.mkdirSync(b);
+    const { client, plans } = fakeClient();
+    client.entity = async (request) => {
+      const key = (request.identity as Record<string, unknown>).key as Record<string, unknown>;
+      if (key.repo_id === "local/b") throw new Error("forbidden");
+      return existingRepository(request);
+    };
+    const context = await start(client, consentOn(workspace, [pinned(a), pinned(b)]), workspace);
+    expect(plans.filter((r) => r.action === "resume_work" || r.action === "claim_task")).toEqual([]);
+    expect(context).toContain("local/b: forbidden");
+    expect(context).toContain("Nothing outside the repositories turned on here was searched");
+  });
+
+  it("a re-entry whose scope fails to resolve keeps the task this session holds", async () => {
+    const cwd = tempRoot();
+    const runtimeDir = path.join(cwd, "runtime");
+    const { client, plans } = fakeClient();
+    const options = { runtimeDir, consent: on(cwd), claudeConfigPath: path.join(cwd, "none.json") };
+    await runClaudeHook(
+      { session_id: "held", cwd, hook_event_name: "SessionStart", source: "startup" },
+      client,
+      options,
+    );
+    expect(plans.some((r) => r.action === "claim_task")).toBe(true);
+    const ledger = () =>
+      fs
+        .readdirSync(runtimeDir)
+        .filter((name) => name.endsWith(".json"))
+        .map((name) => fs.readFileSync(path.join(runtimeDir, name), "utf8"))
+        .join("");
+    expect(ledger()).toContain('"taskUid":"task-1"');
+    client.entity = async () => {
+      throw new Error("fetch failed");
+    };
+    const out = await runClaudeHook(
+      { session_id: "held", cwd, hook_event_name: "SessionStart", source: "compact" },
+      client,
+      options,
+    );
+    expect(String((out.hookSpecificOutput as Record<string, unknown>).additionalContext)).toContain(
+      "Durable work was not loaded",
+    );
+    expect(ledger()).toContain('"taskUid":"task-1"');
+    expect(ledger()).toContain('"leaseEpoch":4');
+  });
+
+  it("PreToolUse injects the pinned repository id and writes nothing into the repository", async () => {
+    // A git repository with no remote: resolving its id from git would have
+    // written .git/mindgraph/repository-id.
+    const base = tempRoot();
+    const cwd = makeRepo(path.join(base, "repo"));
+    const runtimeDir = path.join(base, "runtime");
+    const { client } = fakeClient();
+    const repo = { root: cwd, repo_id: "github.com/acme/pinned", space_uid: null };
+    const input = {
+      action: "checkpoint_iteration",
+      summary: "s",
+    };
+    await runClaudeHook(
+      {
+        session_id: "pinned-pre",
+        cwd,
+        hook_event_name: "PreToolUse",
+        tool_name: "mcp__mindgraph__mindgraph_plan",
+        tool_input: input,
+      },
+      client,
+      { runtimeDir, consent: consentOn(cwd, [repo]) },
+    );
+    const fills = resolvePendingCall("mindgraph_plan", input, { runtimeDir });
+    expect(fills?.invocation_context).toMatchObject({ repoId: "github.com/acme/pinned" });
+    expect(fs.existsSync(path.join(cwd, ".git", "mindgraph"))).toBe(false);
   });
 });
 
@@ -447,7 +592,7 @@ describe("SessionStart MCP registration diagnostic", () => {
     const out = await runClaudeHook(
       { session_id: sessionId, cwd: root, hook_event_name: "SessionStart" },
       client,
-      { runtimeDir: path.join(root, "runtime"), claudeConfigPath },
+      { runtimeDir: path.join(root, "runtime"), claudeConfigPath, consent: on(root) },
     );
     return String(
       (out.hookSpecificOutput as Record<string, unknown>).additionalContext,
@@ -495,7 +640,11 @@ describe("SessionStart MCP registration diagnostic", () => {
     const out = await runClaudeHook(
       { session_id: "reg-project", cwd: nested, hook_event_name: "SessionStart" },
       client,
-      { runtimeDir: path.join(root, "runtime"), claudeConfigPath: file },
+      {
+        runtimeDir: path.join(root, "runtime"),
+        claudeConfigPath: file,
+        consent: on(root),
+      },
     );
     expect(
       String((out.hookSpecificOutput as Record<string, unknown>).additionalContext),
@@ -686,6 +835,25 @@ describe("refreshOwnedClaudeHooks", () => {
       ),
     ).toBe(true);
     expect(settings.permissions).toEqual({ defaultMode: "auto" });
+  });
+
+  it("with scopes [\"user\"], a project's settings are never rewritten", () => {
+    const home = tempRoot();
+    const project = tempRoot();
+    const stale = JSON.stringify({
+      hooks: {
+        SessionStart: [{ matcher: "startup", hooks: [{ type: "command", command: OWNED_COMMAND, timeout: 8 }] }],
+      },
+    });
+    const userFile = path.join(home, ".claude", "settings.json");
+    const projectFile = path.join(project, ".claude", "settings.json");
+    for (const file of [userFile, projectFile]) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, stale);
+    }
+    expect(refreshOwnedClaudeHooks(project, home, ["user"])).toEqual([userFile]);
+    expect(fs.readFileSync(projectFile, "utf8")).toBe(stale);
+    expect(fs.readFileSync(userFile, "utf8")).not.toBe(stale);
   });
 
   it("never expands scope: files without owned entries (or absent) are untouched", () => {

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { recordPendingCall, resolvePendingCall } from "../src/call-ledger.js";
+import { consentOn } from "./fixtures/consent.js";
 
 const dirs: string[] = [];
 function runtime(): string {
@@ -99,6 +100,11 @@ describe("H1 — the stdio server applies the recorded fields", () => {
         }) as unknown as typeof fetch,
       },
       memory: { profile: "coding" },
+      // The coding profile is gated: this session's directory is on.
+      consent: () => ({
+        allowed: true,
+        decision: consentOn("/repo", [{ root: "/repo", repo_id: "local/repo", space_uid: null }]),
+      }),
       resolveHookFields: (name, args) => {
         seen.push([name, args]);
         return { agent_id: "from-hook" };

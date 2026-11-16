@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { MindGraph } from "mindgraph";
 import {
   attachCodeRefsToToolResult,
+  CODE_TOOL,
   handleCodeTool,
 } from "../src/code-tool.js";
 import {
@@ -760,6 +761,10 @@ describe("mindgraph_code", () => {
       expect(JSON.parse(result.content[0].text).code).toBe(
         "missing_repository_space",
       );
+      // The local coding profile ignores MINDGRAPH_CODE_SPACE_UID, so neither
+      // the error nor the schema may tell the model to set it.
+      expect(result.content[0].text).not.toContain("MINDGRAPH_CODE_SPACE_UID");
+      expect(JSON.stringify(CODE_TOOL.inputSchema)).not.toContain("MINDGRAPH_CODE_SPACE_UID");
       expect(entity).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

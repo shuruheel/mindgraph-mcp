@@ -16,6 +16,7 @@ import { hostedInstructions } from "../src/hosted-tools.js";
 import { ALWAYS_LOAD_META_KEY } from "../src/memory-tool.js";
 import { buildMindGraphServer } from "../src/server.js";
 import { formatVersionSkewNote } from "../src/hook-installer.js";
+import { CONSENT_OFF_INSTRUCTION } from "../src/instructions.js";
 import { handleCodeTool } from "../src/code-tool.js";
 import type { CodegraphAdapter } from "../src/codegraph.js";
 
@@ -51,6 +52,11 @@ describe("server instructions fit the host's cut", () => {
         // so the note telling the user to re-run install-hooks is never cut.
         expect(
           `${rendered.text}\n\n${LONGEST_SKEW_NOTE}`.length,
+        ).toBeLessThanOrEqual(CLAUDE_CODE_CUT);
+        // The coding server also appends the off line where MindGraph is
+        // not on; with both, nothing is cut.
+        expect(
+          `${rendered.text}\n\n${CONSENT_OFF_INSTRUCTION}\n\n${LONGEST_SKEW_NOTE}`.length,
         ).toBeLessThanOrEqual(CLAUDE_CODE_CUT);
       });
     }

@@ -2,6 +2,7 @@ import {
   readHookInput,
   runHookCore,
   type HookClient,
+  type HookCoreOutput,
   type HookInput,
   type HookRuntimeOptions,
 } from "./hook-core.js";
@@ -22,6 +23,11 @@ export async function runClaudeHook(
     // be re-injected even when its content hash is unchanged.
     reinjectUnchangedCompact: true,
   });
+  return claudeHookOutput(output);
+}
+
+/** Claude Code's wire form of a hook result. */
+export function claudeHookOutput(output: HookCoreOutput): Record<string, unknown> {
   switch (output.kind) {
     case "context":
       return {
@@ -37,6 +43,9 @@ export async function runClaudeHook(
       return {};
     case "block":
       return { decision: "block", reason: output.reason };
+    case "notice":
+      // Shown to the user, never added to the model's context.
+      return { systemMessage: output.message };
     case "noop":
       return {};
   }

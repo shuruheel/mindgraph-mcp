@@ -38,6 +38,7 @@ import {
   readHookInput,
   runHookCore,
   type HookClient,
+  type HookCoreOutput,
   type HookInput,
   type HookRuntimeOptions,
 } from "./hook-core.js";
@@ -57,6 +58,11 @@ export async function runCodexHook(
     // B7's native contract suppresses repeated unchanged brief injections.
     reinjectUnchangedCompact: false,
   });
+  return codexHookOutput(output);
+}
+
+/** Codex's wire form of a hook result. */
+export function codexHookOutput(output: HookCoreOutput): Record<string, unknown> {
   switch (output.kind) {
     case "context":
       return {
@@ -75,6 +81,8 @@ export async function runCodexHook(
       };
     case "block":
       return { decision: "block", reason: output.reason };
+    case "notice":
+      // How Codex shows a systemMessage is unverified, so it gets nothing.
     case "noop":
       return {};
   }

@@ -7,6 +7,7 @@ import {
   installCodexHooks,
   installHookRunner,
 } from "../src/hook-installer.js";
+import { built, repoEntry, writeStore } from "./fixtures/consent.js";
 
 const cleanup: string[] = [];
 
@@ -61,11 +62,18 @@ describe("Codex installed-runner contract", () => {
     // parses but sends the wrong HTTP/wire output. This executes the copied
     // self-contained bundle for every Codex event against a synthetic tenant.
     const bundle = path.join(__dirname, "..", "dist", "cli.js");
-    if (!fs.existsSync(bundle)) return;
+    if (!built(bundle)) return;
 
     const root = tempDir("mindgraph-codex-runner-root-");
     const home = tempDir("mindgraph-codex-runner-home-");
-    const isolated = tempDir("mindgraph-codex-runner-iso-");
+    const isolated = fs.realpathSync.native(tempDir("mindgraph-codex-runner-iso-"));
+    // The session's directory is a repository the user turned on, and the
+    // hook's destination is the one in hooks.json.
+    fs.mkdirSync(path.join(isolated, ".git"));
+    writeStore(path.join(home, ".mindgraph"), [repoEntry(isolated)], {
+      apiKey: "mg_runner_contract",
+      baseUrl: "http://mindgraph.invalid",
+    });
     const requestLog = path.join(home, "requests.jsonl");
     const preload = path.join(home, "mock-fetch.cjs");
     fs.writeFileSync(
@@ -81,6 +89,8 @@ global.fetch = async (url, init = {}) => {
   let result = {};
   if (body.action === "open") {
     result = { uid: "runner-session" };
+  } else if (body.action === "resolve_identity") {
+    result = { uid: "runner-repository", status: "existing" };
   } else if (body.action === "resume_work") {
     result = {
       task: {
@@ -138,6 +148,7 @@ global.fetch = async (url, init = {}) => {
       ...process.env,
       HOME: home,
       USERPROFILE: home,
+      MINDGRAPH_HOME: path.join(home, ".mindgraph"),
       NODE_OPTIONS: `--require=${preload}`,
       MINDGRAPH_API_KEY: "mg_runner_contract",
       MINDGRAPH_BASE_URL: "http://mindgraph.invalid",
