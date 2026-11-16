@@ -145,7 +145,8 @@ describe("R18 — created Tasks carry the repository topology SessionStart filte
         harnessSessionId: "session-1",
         injectedBy: "hook",
       },
-    });
+      // Repository scope resolves only in the local coding profile.
+    }, {}, { profile: "coding" });
 
     expect(entity).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -186,7 +187,7 @@ describe("R18 — created Tasks carry the repository topology SessionStart filte
         repoId: "github.com/example/repository",
         injectedBy: "hook",
       },
-    });
+    }, {}, { profile: "coding" });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("exists_but_inaccessible");

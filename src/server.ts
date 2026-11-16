@@ -32,7 +32,7 @@ import {
 import type { MemoryRuntimeConfig } from "./memory-tool.js";
 import { getPrompt, PROMPTS } from "./prompts.js";
 import { RESOURCES, RESOURCE_TEMPLATES, readGovernedResource } from "./resources.js";
-import { handleTool, toolsForProfile } from "./tools.js";
+import { handleTool, localCodingToolRefusal, toolsForProfile } from "./tools.js";
 import type { ToolRuntime } from "./job-wait.js";
 
 export type { GeneratedToolsEntry, GovernanceLatch };
@@ -49,6 +49,9 @@ export interface ServerWiring {
   ) => Record<string, unknown> | undefined;
   serverVersion: string;
   instructions: string;
+  /** "coding" lists and runs mindgraph_code / mindgraph_sync (stdio only:
+   * hosted mode refuses them whatever this says). The stdio entry passes
+   * MINDGRAPH_PROFILE read once at start; the hosted entry passes "general". */
   profile: string;
   /** Trusted agent identity: the default in stdio mode, the only one in hosted mode. */
   agentId: string;
@@ -86,6 +89,20 @@ export function buildMindGraphServer(wiring: ServerWiring): Server {
 
   server.setRequestHandler('tools/call', async (request, ctx) => {
     const { name, arguments: args } = request.params;
+
+    // mindgraph_code and mindgraph_sync read the checkout and run git. They
+    // are listed only in the local coding profile, and a client can call a
+    // tool by name without listing it, so the call is refused here too: in
+    // every other profile and always in hosted mode, before any hook lookup,
+    // governance probe or graph call.
+    const refusal = localCodingToolRefusal(name, {
+      profile: wiring.profile,
+      hosted: Boolean(hosted),
+    });
+    if (refusal) {
+      hosted?.log?.({ event: "tool_refused", tool: name, agent_id: wiring.agentId, code: "not_available" });
+      return refusal;
+    }
 
     const rawArgs = {
       ...((args as Record<string, unknown>) || {}),
@@ -142,7 +159,13 @@ export function buildMindGraphServer(wiring: ServerWiring): Server {
     if (hosted && HOSTED_TOOL_NAMES.has(name)) {
       return handleHostedTool(name, toolArgs, client, hosted);
     }
-    return handleTool(client, name, toolArgs, wiring.memory, toolRuntime(ctx, Boolean(hosted)));
+    return handleTool(
+      client,
+      name,
+      toolArgs,
+      wiring.memory,
+      toolRuntime(ctx, Boolean(hosted), wiring.profile),
+    );
   });
 
   server.setRequestHandler('prompts/list', async () => {
@@ -254,12 +277,14 @@ interface CallContext {
   };
 }
 
-function toolRuntime(ctx: unknown, hosted: boolean): ToolRuntime {
+function toolRuntime(ctx: unknown, hosted: boolean, profile: string): ToolRuntime {
   const request = (ctx as CallContext | undefined)?.mcpReq;
   const token = request?._meta?.progressToken;
   const notify = request?.notify;
   return {
     signal: request?.signal,
+    profile,
+    hosted,
     ...(hosted ? { maxWaitSeconds: HOSTED_MAX_JOB_WAIT_SECONDS } : {}),
     ...(!hosted && token !== undefined && notify
       ? {
