@@ -12,6 +12,7 @@ import {
 } from "./code-tool.js";
 import { adapterFor, CodegraphAdapter, NotOptedInRepositoryError } from "./codegraph.js";
 import { refusalResult } from "./consent-refusal.js";
+import { withRepositorySpace } from "./repository-space.js";
 import { handleSyncTool, SYNC_TOOL } from "./sync-tool.js";
 import {
   handleMemoryTool,
@@ -1506,16 +1507,18 @@ export async function handleTool(
     let result: ToolResult;
     switch (name) {
       case "mindgraph_capture":
-        result = await handleCapture(client, args);
+        result = await withRepositorySpace(client, runtime, (c) => handleCapture(c, args));
         break;
       case "mindgraph_reason":
         result = await handleReason(client, args);
         break;
       case "mindgraph_commit":
-        result = await handleCommit(client, args);
+        result = await withRepositorySpace(client, runtime, (c) => handleCommit(c, args));
         break;
       case "mindgraph_plan":
-        result = await handlePlan(client, args, !runsLocalCode(runtime), runtime);
+        result = await withRepositorySpace(client, runtime, (c) =>
+          handlePlan(c, args, !runsLocalCode(runtime), runtime),
+        );
         break;
       case "mindgraph_retrieve":
         result = await handleRetrieve(client, args, memoryConfig.profile);
