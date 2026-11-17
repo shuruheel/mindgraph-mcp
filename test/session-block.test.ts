@@ -193,6 +193,38 @@ describe("session block", () => {
     });
   });
 
+  it("treats a Space the server has not created yet as empty memory, not a failed read", async () => {
+    // Until the place's first write, `memory/v1` `list` answers 404
+    // scope_not_found (seen on the owner's workspace on 2026-11-17).
+    const missing = () =>
+      Promise.reject(
+        Object.assign(new Error("No Space with this ID is visible to this credential"), {
+          status: 404,
+          code: "scope_not_found",
+        }),
+      );
+    const root = repo();
+    const { client: c } = client(missing);
+    const { context, runtimeDir } = await start(root, c);
+    expect(context).not.toContain("could not read this memory");
+    expect(context).not.toContain("unavailable");
+    expect(readHookStats("s1", { runtimeDir })!.failOpen).toBe(0);
+
+    const index = await handleMemoryTool(
+      { retrieveContext: async () => ({}), plan: async () => ({}), memoryList: missing } as never,
+      { action: "index" },
+      { consent: consentOn(root, [pinned(root)]) },
+    );
+    expect(index.isError).toBeUndefined();
+
+    // Only that code is an empty Space: any other 404 is still a failure.
+    const other = () => Promise.reject(Object.assign(new Error("Not Found"), { status: 404 }));
+    await expect(readSpace(other, "space:project:acme-api")).rejects.toThrow("Not Found");
+    const body = () =>
+      Promise.reject(Object.assign(new Error("x"), { status: 404, body: { code: "scope_not_found" } }));
+    await expect(readSpace(body, "space:project:acme-api")).resolves.toMatchObject({ items: [], read: 0, more: false });
+  });
+
   it("reads nothing where the place has no memory space, and nothing outside consent", async () => {
     const root = repo();
     const { client: c, lists } = client([item("u1", "A lesson")]);

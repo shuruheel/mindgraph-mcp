@@ -248,6 +248,15 @@ function settleWithin<T>(promise: Promise<T>, ms: number): Promise<T | undefined
  * present and only older ones are sampled. The windows are best effort: one
  * that fails or runs out of time ends them, and what was read so far stands.
  */
+/** 404 `scope_not_found`: the Space does not exist (yet). Duck-typed so it
+ * holds for the SDK's MindGraphError and for any client with the same shape. */
+export function isMissingSpace(error: unknown): boolean {
+  const e = error as { status?: unknown; code?: unknown; body?: unknown } | null;
+  if (!e || e.status !== 404) return false;
+  const body = e.body && typeof e.body === "object" ? (e.body as Record<string, unknown>) : {};
+  return e.code === "scope_not_found" || body.code === "scope_not_found";
+}
+
 export async function readSpace(
   list: MemoryList,
   spaceUid: string,
@@ -255,7 +264,16 @@ export async function readSpace(
 ): Promise<SpaceRead> {
   const pages = options.pages ?? 1;
   const nowSeconds = options.nowSeconds ?? Date.now() / 1000;
-  const first = await readPages(list, spaceUid, pages);
+  let first: Awaited<ReturnType<typeof readPages>>;
+  try {
+    first = await readPages(list, spaceUid, pages);
+  } catch (error) {
+    // A consented place's Space is created by its first write (the server's
+    // `ensure_space`), so until then the server answers 404 scope_not_found.
+    // That is an empty memory, not a failed read.
+    if (isMissingSpace(error)) return { items: [], more: false, read: 0, withheld: 0 };
+    throw error;
+  }
   // The first read's items stay in what is returned, so a handle listed from
   // a plain read still opens; parseItems drops the repeats.
   let raw = first.raw;
