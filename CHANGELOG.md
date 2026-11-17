@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.29.0 (2026-11-17)
+
+Coding writes in a repository you turned on now land in that repository's Space.
+Needs MindGraph Cloud from 2026-11-17 or later (or mindgraph-server with rs #191) to create
+a Space the first time.
+
 ### Changed
 
 - In a repository or workspace where MindGraph is on, the coding tools' Lessons,
