@@ -1,9 +1,134 @@
 # Changelog
 
-## Unreleased
+## 0.28.0 (2026-11-16)
+
+MindGraph's coding hooks and coding-profile server now act only in repositories you
+turn on yourself, the session-start block lists memory titles that Claude Code's own
+notes cannot show, an edit to a file with memory attached brings that memory up, per-prompt recall is off by default, and Claude Code's auto-memory
+notes can be imported. **Breaking for existing hook users:** after upgrading,
+MindGraph is off everywhere until you run `npx -y mindgraph-mcp@latest on` in each
+repository or workspace, from a terminal you opened yourself. 0.28.0 also carries
+the 0.27.1 security fix.
+
+### Changed
+
+- **Breaking for existing hook users: MindGraph's coding hooks and the
+  coding-profile server now do nothing in a repository until you turn
+  MindGraph on there.** After upgrading, MindGraph is off everywhere: the hooks
+  send nothing and the coding-profile server's tools refuse with a
+  `not_opted_in` error that names the command. To turn it back on, run
+  `npx -y mindgraph-mcp@latest on` in each repository or workspace, from your
+  own terminal. Until you run `on`, `off` or `off --all` once, each Claude Code
+  session started in a repository shows one line: *MindGraph hooks now run only
+  where you turn them on; nothing was sent from this session. Turn on here:
+  npx -y mindgraph-mcp@latest on* (Codex shows no notice). The first session
+  after upgrading may still run the old hook runner for its SessionStart, which
+  can open a session and show the work brief; that session is then never
+  closed, and a task it claimed is released when its lease expires. A
+  `.mindgraph/workspace.json` now only routes: it never turns anything on, and
+  editing it pauses MindGraph under that workspace until you run `on` there
+  again. The hooks also take their API key, base URL and organization only
+  from `~/.mindgraph/hooks.json`, no longer from `MINDGRAPH_API_KEY`,
+  `MINDGRAPH_BASE_URL` or `MINDGRAPH_ORG_ID`; if your key was only in the
+  environment, run `install-hooks` once. Environment variables can only turn
+  things off (`MINDGRAPH_HOOKS=off` pauses everything). `hooks.json` is found
+  through your account's home directory rather than `$HOME`, and
+  `MINDGRAPH_HOME` can move it, together with the pinned hook runner
+  (`bin/`) and the hooks' per-session files (`runtime/`; `MINDGRAPH_RUNTIME_DIR`
+  still wins). Inside a git work tree, or when not absolute, it is refused and
+  MindGraph stays off everywhere until you unset or move it. User-scope hooks
+  installed while `MINDGRAPH_HOME` is set name that runner by its full path;
+  project settings, which are shared through git, never do, so
+  `install-hooks --scope project` refuses while `MINDGRAPH_HOME` is set
+  (outside an evaluation run). Hooks installed before `MINDGRAPH_HOME` was set
+  still run the runner under `$HOME/.mindgraph`, so while that runner predates
+  consent the server, `status`, `on`, `off` and `install-hooks` keep treating
+  it as below the floor (warning, and updating it in place), and `off --all`
+  also clears the per-session files left under `$HOME/.mindgraph/runtime`. In the default profile, `mindgraph_memory` `scope='workspace'` now
+  returns an error; it works only in the coding setup. In the coding setup, `mindgraph_plan create_task` and the
+  code tools at a workspace root need a `repo`, because the root itself is not
+  a repository. A registration pinned to an older `mindgraph-mcp@x.y.z` keeps
+  the old behaviour; the default `npx -y mindgraph-mcp@latest` registration
+  picks this up on its own.
+- **Per-prompt recall is now off by default.** The Claude Code `UserPromptSubmit`
+  hook that searched memory on every prompt is installed only with
+  `--prompt-recall` (on `install-hooks` or `install-code --hooks`). When we
+  measured it on 59 real prompts, only 0–4% of the items it injected were
+  relevant to the prompt, and each prompt could wait up to 4 s for it. Upgrading
+  removes it: the server's automatic hook refresh after an upgrade, and any
+  re-run of the installer without the flag, take out MindGraph's own
+  `UserPromptSubmit` entry (hooks from other tools on that event stay), and the
+  installer prints one line saying so. A choice saved by an earlier version does
+  not count, because earlier versions saved "on" for every install; to keep
+  recall, run `npx mindgraph-mcp install-hooks --prompt-recall` once after
+  upgrading. `--no-prompt-recall` is still accepted and turns a saved opt-in
+  back off. The recall itself, its runtime switch
+  `MINDGRAPH_HOOK_PROMPT_RECALL=off` and `hooks preview` are unchanged.
+- **The server's instructions fit inside Claude Code's limit.** Claude Code keeps
+  only the first 4,096 characters of an MCP server's instructions, and the coding
+  profile sent 6,391, so its coding guidance (resume work state first, use
+  `mindgraph_code` for code history, what to write and when) was cut off before
+  the model saw it. The coding profile now sends under 3,200 characters with that
+  guidance first; every other profile stays under 4,000. The instructions no
+  longer suggest passing several node types in one `node_types` filter, which
+  the server currently rejects when graph expansion is on. In Claude Code and
+  Codex they tell the model to start from the work brief the SessionStart hook
+  already injected instead of fetching it again.
+- **`mindgraph_memory` stays loaded in Claude Code.** Claude Code defers MCP tools
+  behind tool search, so the model had to find the memory tool before it could
+  use it. `mindgraph_memory` now carries `_meta["anthropic/alwaysLoad"]: true`
+  in `tools/list`; the other tools are still deferred. Hosts that do not know
+  the key ignore it. Its description no longer asks for `mode='brief'` at the
+  start of every conversation: a coding session resumes with `mode='resume'`,
+  and the brief is for chat clients that get no brief at session start.
+- **`mindgraph_retrieve` `action: "context"` lets the server decide on source text.**
+  Without `include_chunks` the request no longer sends `chunk_limit: 0`, so a server
+  with `MINDGRAPH_CONTEXT_SOURCE_DEFAULT=on` can add source windows to the rendered
+  context. Servers without the setting (or with it off) treat the omission as 0, so
+  nothing changes until it is turned on. `include_chunks: true` still asks for source
+  text and `include_chunks: false` now explicitly excludes it. The prompt-recall hook
+  reads JSON and renders locally, so it keeps `chunk_limit: 0`.
+- **`mindgraph_memory` topic context uses the server's rendering.** Topic mode now
+  asks for the server's text (`format: "text"`, `max_tokens` = the character budget
+  ÷ 4), and on a server that lists what its text shows (mindgraph-rs #178) returns
+  that text with `items` taken from the list, in the text's order; an item the
+  server wrote in its brief form carries `brief: true`. Relationships are no longer
+  listed as items on that path, because the server text does not write them, and
+  the budget and warnings follow the server's own `truncated` and `omitted`.
+  Without `include_chunks` the server's source-text default decides;
+  `include_chunks: true` or `false` still overrides it. Older servers get the local
+  rendering exactly as before. The prompt-recall hook is unchanged.
+- **Hook settings follow `CLAUDE_CONFIG_DIR`.** User-scope Claude Code hooks
+  are installed into `$CLAUDE_CONFIG_DIR/settings.json` when that variable is
+  set, and the SessionStart check for a registered MCP server reads
+  `$CLAUDE_CONFIG_DIR/.claude.json`, matching where Claude Code keeps them.
+  When the server refreshes existing hook entries it keeps the runner they
+  already name.
 
 ### Added
 
+- **`on`, `off`, `off --all` and a status line: you choose where MindGraph
+  runs.** `npx -y mindgraph-mcp@latest on` turns MindGraph on for the
+  repository or workspace you run it in (or the path you pass). Before changing
+  anything it shows what the hooks will do, what leaves your machine and where
+  it goes, who can read it, and how to undo it, and it records only what you
+  approve. It must be run in a terminal you opened yourself: it refuses inside
+  Claude Code, Codex and Cursor sessions, so a model cannot turn it on for you.
+  At a workspace root it lists the repositories `.mindgraph/workspace.json`
+  declares and lets you pick them; worktrees of a repository you turned on
+  count as that repository. `off [path]` turns one place off and runs anywhere.
+  `off --all` turns MindGraph off everywhere and, after you confirm, removes the
+  local files it left in repositories you never turned on
+  (`.git/mindgraph/repository-id`, old session records and pending tool calls
+  under `~/.mindgraph/runtime/`, and cached repository lookups), plus every
+  session's table of memory titles under `~/.mindgraph/runtime/anchors/`,
+  whatever place it came from, since nothing stays on; `--dry-run`
+  lists them and changes nothing. Only directories that Claude Code or
+  MindGraph's own records remember are checked, and the cloud, `.codegraph/`
+  folders and settings files are never touched. `status` now starts with
+  whether MindGraph is on in the current directory, and why not if it is off.
+  `install-code`, `install-hooks` and `install-cursor` print the `on` command
+  when they finish.
 - **`npx -y mindgraph-mcp@latest import notes [path]` copies Claude Code's
   auto-memory notes into MindGraph.** Run it in a repository or workspace
   where MindGraph is on. It lists every note it would send (size, new or
@@ -114,6 +239,30 @@
   skipped. It is meant for evaluation and benchmark runs, which must never
   write to a hosted organization or to your own settings.
 
+### Fixed
+
+- **`mindgraph_code` and `code_refs` work against CodeGraph indexes that record no
+  completeness state.** An index built before CodeGraph recorded that state, or filled
+  only by sync, reports none, and was rejected as `index_incomplete` even when healthy.
+  Such an index is now used when it holds nodes, and is reported as `stale` with a caveat
+  that names the repository and says its completeness is unverified; running
+  `codegraph index` there once records the state and removes that caveat. An index that
+  is still building, partial, failed or empty is rejected as before.
+- **`mindgraph_code` `recall` with no `code_refs` or `anchor_uids` is an error.**
+  A call that put `path` and `symbol` at the top level used to return an empty
+  success, which read as "this code has no history". It now returns
+  `missing_code_refs`, as `anchor` already did.
+- **Hook installs keep another tool's hook that shares MindGraph's entry.**
+  Re-installing, refreshing, or turning an optional hook off removed the whole
+  settings entry that held MindGraph's hook, including any other command in the
+  same entry. Installs now remove only MindGraph's own hooks, as uninstall
+  already did.
+
+## 0.27.1 (2026-11-16)
+
+A security patch on 0.27.0. The only behaviour change is the one described here: code
+features now work only in the local coding setup.
+
 ### Security
 
 - **`mindgraph_code` and `mindgraph_sync` now run only in the local coding
@@ -140,145 +289,6 @@
   answered differently for a path that exists and one that does not. Outside
   the coding profile the write now succeeds with `code_anchors.wrote: false`
   and a caveat, and `create_task` uses `scope_uids` only.
-
-### Added
-
-- **`on`, `off`, `off --all` and a status line: you choose where MindGraph
-  runs.** `npx -y mindgraph-mcp@latest on` turns MindGraph on for the
-  repository or workspace you run it in (or the path you pass). Before changing
-  anything it shows what the hooks will do, what leaves your machine and where
-  it goes, who can read it, and how to undo it, and it records only what you
-  approve. It must be run in a terminal you opened yourself: it refuses inside
-  Claude Code, Codex and Cursor sessions, so a model cannot turn it on for you.
-  At a workspace root it lists the repositories `.mindgraph/workspace.json`
-  declares and lets you pick them; worktrees of a repository you turned on
-  count as that repository. `off [path]` turns one place off and runs anywhere.
-  `off --all` turns MindGraph off everywhere and, after you confirm, removes the
-  local files it left in repositories you never turned on
-  (`.git/mindgraph/repository-id`, old session records and pending tool calls
-  under `~/.mindgraph/runtime/`, and cached repository lookups), plus every
-  session's table of memory titles under `~/.mindgraph/runtime/anchors/`,
-  whatever place it came from, since nothing stays on; `--dry-run`
-  lists them and changes nothing. Only directories that Claude Code or
-  MindGraph's own records remember are checked, and the cloud, `.codegraph/`
-  folders and settings files are never touched. `status` now starts with
-  whether MindGraph is on in the current directory, and why not if it is off.
-  `install-code`, `install-hooks` and `install-cursor` print the `on` command
-  when they finish.
-
-### Changed
-
-- **Hook settings follow `CLAUDE_CONFIG_DIR`.** User-scope Claude Code hooks
-  are installed into `$CLAUDE_CONFIG_DIR/settings.json` when that variable is
-  set, and the SessionStart check for a registered MCP server reads
-  `$CLAUDE_CONFIG_DIR/.claude.json`, matching where Claude Code keeps them.
-  When the server refreshes existing hook entries it keeps the runner they
-  already name.
-- **Breaking for existing hook users: MindGraph's coding hooks and the
-  coding-profile server now do nothing in a repository until you turn
-  MindGraph on there.** After upgrading, MindGraph is off everywhere: the hooks
-  send nothing and the coding-profile server's tools refuse with a
-  `not_opted_in` error that names the command. To turn it back on, run
-  `npx -y mindgraph-mcp@latest on` in each repository or workspace, from your
-  own terminal. Until you run `on`, `off` or `off --all` once, each Claude Code
-  session started in a repository shows one line: *MindGraph hooks now run only
-  where you turn them on; nothing was sent from this session. Turn on here:
-  npx -y mindgraph-mcp@latest on* (Codex shows no notice). The first session
-  after upgrading may still run the old hook runner for its SessionStart, which
-  can open a session and show the work brief; that session is then never
-  closed, and a task it claimed is released when its lease expires. A
-  `.mindgraph/workspace.json` now only routes: it never turns anything on, and
-  editing it pauses MindGraph under that workspace until you run `on` there
-  again. The hooks also take their API key, base URL and organization only
-  from `~/.mindgraph/hooks.json`, no longer from `MINDGRAPH_API_KEY`,
-  `MINDGRAPH_BASE_URL` or `MINDGRAPH_ORG_ID`; if your key was only in the
-  environment, run `install-hooks` once. Environment variables can only turn
-  things off (`MINDGRAPH_HOOKS=off` pauses everything). `hooks.json` is found
-  through your account's home directory rather than `$HOME`, and
-  `MINDGRAPH_HOME` can move it, together with the pinned hook runner
-  (`bin/`) and the hooks' per-session files (`runtime/`; `MINDGRAPH_RUNTIME_DIR`
-  still wins). Inside a git work tree, or when not absolute, it is refused and
-  MindGraph stays off everywhere until you unset or move it. User-scope hooks
-  installed while `MINDGRAPH_HOME` is set name that runner by its full path;
-  project settings, which are shared through git, never do, so
-  `install-hooks --scope project` refuses while `MINDGRAPH_HOME` is set
-  (outside an evaluation run). Hooks installed before `MINDGRAPH_HOME` was set
-  still run the runner under `$HOME/.mindgraph`, so while that runner predates
-  consent the server, `status`, `on`, `off` and `install-hooks` keep treating
-  it as below the floor (warning, and updating it in place), and `off --all`
-  also clears the per-session files left under `$HOME/.mindgraph/runtime`. In the default profile, `mindgraph_memory` `scope='workspace'` now
-  returns an error; it works only in the coding setup. In the coding setup, `mindgraph_plan create_task` and the
-  code tools at a workspace root need a `repo`, because the root itself is not
-  a repository. A registration pinned to an older `mindgraph-mcp@x.y.z` keeps
-  the old behaviour; the default `npx -y mindgraph-mcp@latest` registration
-  picks this up on its own.
-- **Per-prompt recall is now off by default.** The Claude Code `UserPromptSubmit`
-  hook that searched memory on every prompt is installed only with
-  `--prompt-recall` (on `install-hooks` or `install-code --hooks`). When we
-  measured it on 59 real prompts, only 0–4% of the items it injected were
-  relevant to the prompt, and each prompt could wait up to 4 s for it. Upgrading
-  removes it: the server's automatic hook refresh after an upgrade, and any
-  re-run of the installer without the flag, take out MindGraph's own
-  `UserPromptSubmit` entry (hooks from other tools on that event stay), and the
-  installer prints one line saying so. A choice saved by an earlier version does
-  not count, because earlier versions saved "on" for every install; to keep
-  recall, run `npx mindgraph-mcp install-hooks --prompt-recall` once after
-  upgrading. `--no-prompt-recall` is still accepted and turns a saved opt-in
-  back off. The recall itself, its runtime switch
-  `MINDGRAPH_HOOK_PROMPT_RECALL=off` and `hooks preview` are unchanged.
-- **The server's instructions fit inside Claude Code's limit.** Claude Code keeps
-  only the first 4,096 characters of an MCP server's instructions, and the coding
-  profile sent 6,391, so its coding guidance (resume work state first, use
-  `mindgraph_code` for code history, what to write and when) was cut off before
-  the model saw it. The coding profile now sends under 3,200 characters with that
-  guidance first; every other profile stays under 4,000. The instructions no
-  longer suggest passing several node types in one `node_types` filter, which
-  the server currently rejects when graph expansion is on. In Claude Code and
-  Codex they tell the model to start from the work brief the SessionStart hook
-  already injected instead of fetching it again.
-- **`mindgraph_memory` stays loaded in Claude Code.** Claude Code defers MCP tools
-  behind tool search, so the model had to find the memory tool before it could
-  use it. `mindgraph_memory` now carries `_meta["anthropic/alwaysLoad"]: true`
-  in `tools/list`; the other tools are still deferred. Hosts that do not know
-  the key ignore it. Its description no longer asks for `mode='brief'` at the
-  start of every conversation: a coding session resumes with `mode='resume'`,
-  and the brief is for chat clients that get no brief at session start.
-- **`mindgraph_retrieve` `action: "context"` lets the server decide on source text.**
-  Without `include_chunks` the request no longer sends `chunk_limit: 0`, so a server
-  with `MINDGRAPH_CONTEXT_SOURCE_DEFAULT=on` can add source windows to the rendered
-  context. Servers without the setting (or with it off) treat the omission as 0, so
-  nothing changes until it is turned on. `include_chunks: true` still asks for source
-  text and `include_chunks: false` now explicitly excludes it. The prompt-recall hook
-  reads JSON and renders locally, so it keeps `chunk_limit: 0`.
-- **`mindgraph_memory` topic context uses the server's rendering.** Topic mode now
-  asks for the server's text (`format: "text"`, `max_tokens` = the character budget
-  ÷ 4), and on a server that lists what its text shows (mindgraph-rs #178) returns
-  that text with `items` taken from the list, in the text's order; an item the
-  server wrote in its brief form carries `brief: true`. Relationships are no longer
-  listed as items on that path, because the server text does not write them, and
-  the budget and warnings follow the server's own `truncated` and `omitted`.
-  Without `include_chunks` the server's source-text default decides;
-  `include_chunks: true` or `false` still overrides it. Older servers get the local
-  rendering exactly as before. The prompt-recall hook is unchanged.
-
-### Fixed
-
-- **`mindgraph_code` and `code_refs` work against CodeGraph indexes that record no
-  completeness state.** An index built before CodeGraph recorded that state, or filled
-  only by sync, reports none, and was rejected as `index_incomplete` even when healthy.
-  Such an index is now used when it holds nodes, and is reported as `stale` with a caveat
-  that names the repository and says its completeness is unverified; running
-  `codegraph index` there once records the state and removes that caveat. An index that
-  is still building, partial, failed or empty is rejected as before.
-- **`mindgraph_code` `recall` with no `code_refs` or `anchor_uids` is an error.**
-  A call that put `path` and `symbol` at the top level used to return an empty
-  success, which read as "this code has no history". It now returns
-  `missing_code_refs`, as `anchor` already did.
-- **Hook installs keep another tool's hook that shares MindGraph's entry.**
-  Re-installing, refreshing, or turning an optional hook off removed the whole
-  settings entry that held MindGraph's hook, including any other command in the
-  same entry. Installs now remove only MindGraph's own hooks, as uninstall
-  already did.
 
 ## 0.27.0 (2026-11-11)
 
