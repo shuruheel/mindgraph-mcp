@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- In a repository or workspace where MindGraph is on, the coding tools' Lessons,
+  journal notes, observations, sources, snippets, goals, projects, milestones,
+  decisions, options, constraints and new tasks are written to that repository's
+  Space, the one `on` pinned from `.mindgraph/workspace.json`. The Space comes only
+  from that consent, never from tool arguments. If the server does not know the
+  Space yet, the first such write creates it (`/memory/config ensure_space`, needs
+  an organization key and mindgraph-server with rs #191) and is retried once; if it
+  cannot be created, the write fails with the server's `scope_not_found` instead of
+  landing anywhere else. Entries without a pinned Space write as before.
+
 ## 0.28.0 (2026-11-16)
 
 MindGraph's coding hooks and coding-profile server now act only in repositories you
