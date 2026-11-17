@@ -406,6 +406,36 @@ function gitValue(cwd: string, args: string[]): string | undefined {
   }
 }
 
+/**
+ * Branch, commit and clean/dirty state from one `git status --porcelain=v2
+ * --branch`. Matches the three separate commands it replaces: a detached
+ * HEAD has branch "" (as `branch --show-current`), a repository with no
+ * commit has no commit, and outside a repository nothing is known.
+ */
+export function gitSnapshot(cwd: string): {
+  branch?: string;
+  commit?: string;
+  worktreeState: "clean" | "dirty" | "unknown";
+} {
+  const out = gitValue(cwd, ["status", "--porcelain=v2", "--branch"]);
+  if (out === undefined) return { worktreeState: "unknown" };
+  let branch: string | undefined;
+  let commit: string | undefined;
+  let dirty = false;
+  for (const line of out.split("\n")) {
+    if (line.startsWith("# branch.oid ")) {
+      const oid = line.slice("# branch.oid ".length);
+      if (oid !== "(initial)") commit = oid;
+    } else if (line.startsWith("# branch.head ")) {
+      const head = line.slice("# branch.head ".length);
+      branch = head === "(detached)" ? "" : head;
+    } else if (line && !line.startsWith("#")) {
+      dirty = true;
+    }
+  }
+  return { branch, commit, worktreeState: dirty ? "dirty" : "clean" };
+}
+
 function worktreeState(cwd: string): "clean" | "dirty" | "unknown" {
   const status = gitValue(cwd, ["status", "--porcelain"]);
   return status === undefined ? "unknown" : status ? "dirty" : "clean";
@@ -422,9 +452,9 @@ function invocationContext(
     harnessTurnId: input.turn_id,
     cwd: input.cwd,
     repoId,
-    branch: gitValue(input.cwd, ["branch", "--show-current"]),
-    commit: gitValue(input.cwd, ["rev-parse", "HEAD"]),
-    worktreeState: worktreeState(input.cwd),
+    // One git process instead of three: this runs before every MindGraph
+    // tool call, and each spawn costs about 20 ms in a large work tree.
+    ...gitSnapshot(input.cwd),
     model: input.model,
     injectedBy: "hook",
   };
