@@ -788,6 +788,46 @@ describe("mindgraph_retrieve dispatch", () => {
     expect(request).not.toHaveProperty("chunk_limit");
   });
 
+  it("context forwards known_on and states the bound above the evidence", async () => {
+    client.retrieveContext.mockResolvedValueOnce({
+      context_text: "## Dated evidence\n- Contract term is 24 months",
+      known_on: { date: "2026-05-01", changed_since: 1, expansion: "skipped", pool_short: false },
+    });
+    const result = await handleTool(client, "mindgraph_retrieve", {
+      action: "context",
+      query: "contract term",
+      known_on: "2026-05-01",
+    });
+    expect(client.retrieveContext.mock.calls[0][0]).toMatchObject({ known_on: "2026-05-01" });
+    const text = result.content[0].text;
+    expect(text.startsWith("Recorded-time read: what this graph held by 2026-05-01")).toBe(true);
+    expect(text).toContain("1 returned item changed after that date and shows current content");
+    expect(text).toContain("Related items were not followed.");
+    expect(text).toContain("Contract term is 24 months");
+    expect(result.isError).toBeFalsy();
+  });
+
+  it("context withholds the answer when the server ignored known_on", async () => {
+    // Failure prevented: an older server drops the unknown field and returns
+    // today's graph, which the model would read as the past.
+    client.retrieveContext.mockResolvedValueOnce({ context_text: "## Dated evidence\n- Today's answer" });
+    const result = await handleTool(client, "mindgraph_retrieve", {
+      action: "context",
+      query: "contract term",
+      known_on: "2026-05-01",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("known_on_ignored");
+    expect(result.content[0].text).not.toContain("Today's answer");
+  });
+
+  it("context without known_on sends none and adds no note", async () => {
+    client.retrieveContext.mockResolvedValueOnce({ context_text: "## Dated evidence\n- A" });
+    const result = await handleTool(client, "mindgraph_retrieve", { action: "context", query: "q" });
+    expect(client.retrieveContext.mock.calls[0][0].known_on).toBeUndefined();
+    expect(result.content[0].text.startsWith("## Dated evidence")).toBe(true);
+  });
+
   it("context include_chunks=true sets a nonzero chunk_limit", async () => {
     await handleTool(client, "mindgraph_retrieve", { action: "context", query: "q", include_chunks: true, limit: 3 });
     expect(client.retrieveContext.mock.calls[0][0]).toMatchObject({ chunk_limit: 3 });

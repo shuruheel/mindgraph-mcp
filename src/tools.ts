@@ -843,6 +843,11 @@ export const TOOLS: Tool[] = [
           description:
             "ISO-8601 date for context: answer with what had been STATED by this date (a node is admitted when one of its sources was stated on or before it; fact dates never exclude it). Use for 'what did we know / what was the value as of <date>' questions.",
         },
+        known_on: {
+          type: "string",
+          description:
+            "UTC date ('2026-05-01', read as the end of that day) or date-time for context: answer from what had been RECORDED in this graph by then, of what is still kept. Later items, links and sources are left out; kept items show current content. Deleted items stay deleted at every date. Use for 'what did the graph hold on <date>'; use as_of for when something was stated in its source.",
+        },
         retrieval_mode: {
           type: "string",
           enum: ["normal", "exhaustive"],
@@ -1458,6 +1463,27 @@ function ok(data: unknown): ToolResult {
 
 // Rendered-by-default for read surfaces; `format: "json"` is the raw escape,
 // and any response shape the renderer doesn't recognize falls back to raw.
+/**
+ * One line that states a recorded-time read above its evidence, from the
+ * server's `known_on` block. `undefined` when the block is missing: the server
+ * ignored the field.
+ */
+export function knownOnNote(response: unknown): string | undefined {
+  const block = (response as { known_on?: unknown } | null | undefined)?.known_on;
+  if (!block || typeof block !== "object") return undefined;
+  const { date, changed_since, expansion, pool_short } = block as Record<string, unknown>;
+  if (typeof date !== "string" || !date) return undefined;
+  const parts = [`Recorded-time read: what this graph held by ${date}, of what is still kept.`];
+  if (typeof changed_since === "number" && changed_since > 0) {
+    parts.push(
+      `${changed_since} returned item${changed_since === 1 ? "" : "s"} changed after that date and ${changed_since === 1 ? "shows" : "show"} current content, not the earlier wording.`,
+    );
+  }
+  if (expansion === "skipped") parts.push("Related items were not followed.");
+  if (pool_short === true) parts.push("Fewer items than requested: the date left out later candidates.");
+  return parts.join(" ");
+}
+
 function renderedResult(
   format: string | undefined,
   raw: unknown,
@@ -2552,6 +2578,7 @@ async function handleRetrieve(
     article_limit,
     valid_at,
     as_of,
+    known_on,
     retrieval_mode,
     created_after,
     created_before,
@@ -2586,6 +2613,7 @@ async function handleRetrieve(
     article_limit?: number;
     valid_at?: string;
     as_of?: string;
+    known_on?: string;
     retrieval_mode?: "normal" | "exhaustive";
     created_after?: number;
     created_before?: number;
@@ -2603,10 +2631,10 @@ async function handleRetrieve(
   ): ToolResult => renderedResult(format, raw, render);
 
   switch (action) {
-    case "context":
+    case "context": {
       if (!query) return err("query is required for context retrieval");
-      return rendered(
-        await client.retrieveContext({
+      const knownOn = typeof known_on === "string" && known_on.trim() ? known_on.trim() : undefined;
+      const response = await client.retrieveContext({
           query,
           node_limit: limit,
           node_types,
@@ -2633,6 +2661,7 @@ async function handleRetrieve(
               : {}),
           valid_at,
           as_of,
+          known_on: knownOn,
           retrieval_mode,
           include_graph,
           graph_expansion_limit: graph_expansion_limit ?? 3,
@@ -2643,9 +2672,22 @@ async function handleRetrieve(
           ...(format === "json"
             ? {}
             : { format: "text", max_tokens: Math.max(256, Math.floor((max_output_chars ?? 24_000) / 4)) }),
-        } as any),
-        (raw) => renderContext(raw, max_output_chars),
-      );
+      } as any);
+      if (knownOn === undefined) return rendered(response, (raw) => renderContext(raw, max_output_chars));
+      // A server that predates known_on ignores the field and answers from
+      // today's graph. Refuse that answer rather than present it under a date.
+      const note = knownOnNote(response);
+      if (note === undefined) {
+        return err(
+          "known_on was ignored: this server does not support the recorded-time read, so its answer is today's graph and is withheld (code: known_on_ignored). Retry without known_on for the current answer.",
+        );
+      }
+      // The server's text does not state the bound; say it above the evidence.
+      return rendered(response, (raw) => {
+        const body = renderContext(raw, max_output_chars);
+        return body === undefined ? undefined : `${note}\n\n${body}`;
+      });
+    }
 
     case "text":
       if (!query) return err("query is required for text search");
