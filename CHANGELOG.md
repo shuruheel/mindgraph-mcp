@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- **`known_on` on `mindgraph_retrieve` (action `context`).** Give a UTC date or date-time and
+  the read answers from what the graph held by then, of what is still kept. The tool states the
+  date above the evidence, with how many returned items changed afterwards. Needs MindGraph
+  Cloud from 2026-11-19 or later (or mindgraph-server with the read turned on). An older server
+  ignores the field, so the tool returns an error (`known_on_ignored`) instead of today's answer
+  under a past date.
+
 ## 0.29.0 (2026-11-17)
 
 Coding writes in a repository you turned on now land in that repository's Space.
