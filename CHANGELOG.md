@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.30.0 (2026-11-20)
+
+`mindgraph_retrieve` (`action: "context"`) adds `known_on` recorded-time reads with a
+fail-closed `known_on_ignored` check against older servers, and depends on `mindgraph` `^0.18.0`.
 
 ### Added
 
@@ -10,6 +13,16 @@
   Cloud from 2026-11-19 or later (or mindgraph-server with the read turned on). An older server
   ignores the field, so the tool returns an error (`known_on_ignored`) instead of today's answer
   under a past date.
+
+### Changed
+
+- **Hooks performance (`#82`).** Use one git process per MindGraph tool call instead of three.
+- **SDK dependency.** Update `mindgraph` dependency pin from `^0.17.0` to `^0.18.0`.
+
+### Fixed
+
+- **Session block on uninitialized Spaces (`#81`).** Treat a Space that has not been created yet
+  as empty memory instead of a failed read.
 
 ## 0.29.0 (2026-11-17)
 
