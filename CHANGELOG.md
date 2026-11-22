@@ -1,16 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.31.0 (2026-11-22)
+
+Adds read-only Document Readiness Lifecycle (`document-status.v1`, RL4 & RL5) inspection and bounded waiting via `mindgraph_ingest` (`action: "document_status"`), updates README contract examples, and depends on `mindgraph` `^0.19.0`.
 
 ### Added
 
-- **Document Readiness Lifecycle (`document-status.v1`, RL4).** Added read-only
+- **Document Readiness Lifecycle (`document-status.v1`, RL4 & RL5).** Added read-only
   `action: "document_status"` on `mindgraph_ingest` (`document_uid`, optional
   `attempt_id`, `until` in `["lexical", "vector", "extraction"]`, and bounded
   `wait_seconds` up to 50 s) with attempt pinning, `attempt_state`-only
   active/terminal classification, transparent `409 status_changed` retry,
-  progress notifications, and structured error reporting (`document_superseded`,
-  `readiness_unknown`, `readiness_not_requested`, `document_incomplete`).
+  progress notifications, structured error reporting (`document_superseded`,
+  `readiness_unknown`, `readiness_not_requested`, `document_incomplete`), and
+  README usage examples.
+
+### Changed
+
+- **SDK dependency.** Update `mindgraph` dependency pin from `^0.18.0` to `^0.19.0`.
 
 ## 0.30.0 (2026-11-20)
 
