@@ -134,6 +134,7 @@ describe("retrieve action enum vs canonical contract", () => {
       "path",
       "subgraph",
       "top_k_paths", // -> traverse()
+      "epistemic_support", // -> traverse()
     ]);
     for (const v of enumVals) {
       if (nonRetrieveButValid.has(v)) continue;

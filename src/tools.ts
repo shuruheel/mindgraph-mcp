@@ -757,6 +757,7 @@ export const TOOLS: Tool[] = [
             "path",
             "subgraph",
             "top_k_paths",
+            "epistemic_support",
             "document_index",
           ],
           description: "Retrieval or traversal strategy",
@@ -781,7 +782,7 @@ export const TOOLS: Tool[] = [
         },
         start_uid: {
           type: "string",
-          description: "Starting node UID (for chain, neighborhood, path, subgraph)",
+          description: "Starting node UID (for chain, neighborhood, path, subgraph, top_k_paths, epistemic_support)",
         },
         end_uid: {
           type: "string",
@@ -877,7 +878,7 @@ export const TOOLS: Tool[] = [
         },
         k: {
           type: "number",
-          description: "top_k_paths action: number of cheapest paths (default 3, cap 25)",
+          description: "top_k_paths / epistemic_support action: number of chains or paths to return (default 3, cap 25)",
         },
         max_cost: {
           type: "number",
@@ -2916,6 +2917,18 @@ async function handleRetrieve(
           max_cost,
           edge_types,
           exclude_edge_types,
+        } as any),
+        (raw) => renderTraversal(raw, max_output_chars),
+      );
+
+    case "epistemic_support":
+      if (!start_uid) return err("start_uid is required for epistemic_support");
+      return rendered(
+        await client.traverse({
+          action: "epistemic_support",
+          start_uid,
+          k,
+          max_hops: max_depth,
         } as any),
         (raw) => renderTraversal(raw, max_output_chars),
       );

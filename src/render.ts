@@ -760,13 +760,54 @@ export function renderNodeList(
   );
 }
 
-/** Render a traversal response: nodes + edges, and paths.
- * top_k_paths wire: `{paths: [{node_uids, labels, cost}]}`. */
+/** Render a traversal response: nodes + edges, paths, and epistemic support chains.
+ * top_k_paths wire: `{paths: [{node_uids, labels, cost}]}`.
+ * epistemic_support wire: `{mode: "epistemic_support", survival_status, has_broken_dependency, score_semantics, chains: [{node_uids, labels, support_cost, derived_confidence, hop_count}]}`. */
 export function renderTraversal(response: unknown, maxChars?: number): string | undefined {
   const directSteps = Array.isArray(response) ? response : undefined;
   const payload = obj(response);
   if (!payload && !directSteps) return undefined;
   const body = payload ?? {};
+  if (body.mode === "epistemic_support") {
+    const state: RenderState = { bounded: false, omitted: 0 };
+    const status = str(body.survival_status) || "unknown";
+    const broken = Boolean(body.has_broken_dependency);
+    const semantics = str(body.score_semantics) || "ranking_triage_not_bayesian_posterior";
+    const rawChains = Array.isArray(body.chains) ? body.chains : [];
+    const items = rawChains
+      .map((raw) => obj(raw))
+      .filter((chain): chain is Rec => Boolean(chain))
+      .map((chain, index) => {
+        const uids = Array.isArray(chain.node_uids) ? chain.node_uids.map(String) : [];
+        const labels = Array.isArray(chain.labels) ? chain.labels.map(String) : [];
+        const route = labels.length > 0 ? labels.join(" → ") : uids.join(" → ") || "(chain)";
+        const derived = num(chain.derived_confidence);
+        const cost = num(chain.support_cost);
+        const hops = num(chain.hop_count);
+        const meta = [
+          derived !== undefined ? `score ${derived.toFixed(3)}` : undefined,
+          cost !== undefined ? `cost ${cost.toFixed(3)}` : undefined,
+          hops !== undefined ? `${hops} ${hops === 1 ? "hop" : "hops"}` : undefined,
+        ].filter(Boolean);
+        const head = `${index + 1}. ${route}${meta.length > 0 ? ` (${meta.join(", ")})` : ""}`;
+        return labels.length > 0 && uids.length > 0
+          ? `${head}\n   uids: ${uids.join(" → ")}`
+          : head;
+      });
+    const headerLines = [
+      `- survival_status: ${status}`,
+      `- has_broken_dependency: ${broken}`,
+      `- score_semantics: ${semantics} (ranking/triage only, not a calibrated Bayesian posterior)`,
+    ];
+    const sections: Section[] = [
+      { heading: "## Epistemic Support Summary", items: headerLines },
+      {
+        heading: "## Support Chains",
+        items: items.length > 0 ? items : ["(no surviving support chains)"],
+      },
+    ];
+    return assemble("# Graph traversal (epistemic_support)", sections, state, maxChars);
+  }
   const container = obj(body.graph) ?? body;
   const rawNodes = Array.isArray(container.nodes) ? container.nodes : [];
   const nodes = rawNodes.filter(isNodeShaped);
