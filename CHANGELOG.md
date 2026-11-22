@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.32.0 (2026-11-22)
+
+Adds weighted epistemic support chain traversal (`action: "epistemic_support"`) to `mindgraph_retrieve` (EA7 Use 2) with explicit non-Bayesian score disclosure, and depends on `mindgraph` `^0.20.0`.
+
+### Added
+
+- **Weighted epistemic support chains (`#88`).** Added `action: "epistemic_support"` on `mindgraph_retrieve` (`node_uid`, optional `k`, `max_hops`) with summary and proof-chain rendering in `renderTraversal`, explicit non-Bayesian triage score disclosure, and updated `stdio-tools-list.json` schema fixture.
+
+### Changed
+
+- **SDK dependency.** Update `mindgraph` dependency pin from `^0.19.0` to `^0.20.0`.
+
 ## 0.31.0 (2026-11-22)
 
 Adds read-only Document Readiness Lifecycle (`document-status.v1`, RL4 & RL5) inspection and bounded waiting via `mindgraph_ingest` (`action: "document_status"`), updates README contract examples, and depends on `mindgraph` `^0.19.0`.
