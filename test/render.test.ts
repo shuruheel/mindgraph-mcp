@@ -504,6 +504,45 @@ describe("review regressions — real wire shapes", () => {
     expect(text).toContain("2. Start → End (cost 2.1)");
   });
 
+  it("renders epistemic_support survival status, non-Bayesian disclosure, and ranked chains", () => {
+    const text = renderTraversal({
+      mode: "epistemic_support",
+      start_uid: "c1",
+      k: 3,
+      max_hops: 6,
+      has_broken_dependency: true,
+      survival_status: "partially_invalidated",
+      score_semantics: "ranking_triage_not_bayesian_posterior",
+      chains: [
+        {
+          node_uids: ["c1", "p1", "e1"],
+          labels: ["Conclusion", "Premise 1", "Evidence 1"],
+          support_cost: 0.316,
+          derived_confidence: 0.729,
+          hop_count: 2,
+        },
+      ],
+    })!;
+    expect(text).toContain("survival_status: partially_invalidated");
+    expect(text).toContain("has_broken_dependency: true");
+    expect(text).toContain("ranking_triage_not_bayesian_posterior");
+    expect(text).toContain("1. Conclusion → Premise 1 → Evidence 1 (score 0.729, cost 0.316, 2 hops)");
+    expect(text).toContain("uids: c1 → p1 → e1");
+
+    const emptyText = renderTraversal({
+      mode: "epistemic_support",
+      start_uid: "c2",
+      k: 3,
+      max_hops: 6,
+      has_broken_dependency: true,
+      survival_status: "unsupported_invalidated",
+      score_semantics: "ranking_triage_not_bayesian_posterior",
+      chains: [],
+    })!;
+    expect(emptyText).toContain("survival_status: unsupported_invalidated");
+    expect(emptyText).toContain("(no surviving support chains)");
+  });
+
   it("an oversized single-type section packs item-wise instead of blanking the output", () => {
     const nodes = Array.from({ length: 50 }, (_, index) => ({
       uid: `node-${index}`,
