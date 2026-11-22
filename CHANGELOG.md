@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Document Readiness Lifecycle (`document-status.v1`, RL4).** Added read-only
+  `action: "document_status"` on `mindgraph_ingest` (`document_uid`, optional
+  `attempt_id`, `until` in `["lexical", "vector", "extraction"]`, and bounded
+  `wait_seconds` up to 50 s) with attempt pinning, `attempt_state`-only
+  active/terminal classification, transparent `409 status_changed` retry,
+  progress notifications, and structured error reporting (`document_superseded`,
+  `readiness_unknown`, `readiness_not_requested`, `document_incomplete`).
+
 ## 0.30.0 (2026-11-20)
 
 `mindgraph_retrieve` (`action: "context"`) adds `known_on` recorded-time reads with a

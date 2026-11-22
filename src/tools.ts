@@ -1,5 +1,14 @@
-import { clampWaitSeconds, waitForJob, type ToolRuntime } from "./job-wait.js";
-import { MindGraph } from "mindgraph";
+import {
+  clampWaitSeconds,
+  isDocumentStatusPayload,
+  waitForDocumentStatus,
+  waitForJob,
+  type DocumentStatusPayload,
+  type RawDocumentStatusResponse,
+  type ReadinessDimension,
+  type ToolRuntime,
+} from "./job-wait.js";
+import { MindGraph, MindGraphError } from "mindgraph";
 import { createHash } from "node:crypto";
 import { toolError } from "./error-detail.js";
 import type { Tool } from "@modelcontextprotocol/server";
@@ -956,13 +965,13 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_ingest",
     description:
-      "Ingest long-form content (articles, transcripts, documents, meeting notes) into the knowledge graph. The pipeline automatically chunks the text, extracts entities/claims/relationships via LLM, and deduplicates against existing nodes. Use 'chunk' for a single passage (synchronous), 'document' for full documents (async — returns a job ID), 'session' for conversation transcripts. Use 'job_status' to check progress. For short individual facts, use the specific cognitive tools instead.",
+      "Ingest long-form content (articles, transcripts, documents, meeting notes) into the knowledge graph. The pipeline automatically chunks the text, extracts entities/claims/relationships via LLM, and deduplicates against existing nodes. Use 'chunk' for a single passage (synchronous), 'document' for full documents (async — returns a job ID and document_uid), 'session' for conversation transcripts. Use 'document_status' for read-only authoritative document readiness (lexical, vector, extraction) by document_uid, or 'job_status' for in-memory job progress. For short individual facts, use the specific cognitive tools instead.",
     inputSchema: {
       type: "object" as const,
       properties: {
         action: {
           type: "string",
-          enum: ["chunk", "document", "session", "job_status"],
+          enum: ["chunk", "document", "session", "job_status", "document_status"],
           description: "Ingestion action",
         },
         content: {
@@ -1034,7 +1043,7 @@ export const TOOLS: Tool[] = [
         document_uid: {
           type: "string",
           description:
-            "chunk action: the parent Document uid, so this chunk joins that document's provenance chain.",
+            "chunk action: the parent Document uid, so this chunk joins that document's provenance chain. document_status action: the Document uid to inspect (read-only).",
         },
         chunk_index: {
           type: "number",
@@ -1060,12 +1069,23 @@ export const TOOLS: Tool[] = [
           type: "string",
           description: "Job ID to check status (for job_status action)",
         },
+        attempt_id: {
+          type: "string",
+          description:
+            "document_status with wait_seconds: optional attempt_id from the ingest receipt to pin; stops with document_superseded if a newer attempt replaces it.",
+        },
+        until: {
+          type: "string",
+          enum: ["lexical", "vector", "extraction"],
+          description:
+            "document_status with wait_seconds: target readiness dimension to wait for (default: 'extraction').",
+        },
         wait_seconds: {
           type: "number",
           minimum: 0,
           maximum: 50,
           description:
-            "job_status with job_id: wait up to this many seconds (max 50) for the job to finish, reporting progress, instead of returning at once. A job still running at the end comes back with still_running: true; call again to keep waiting.",
+            "job_status with job_id, or document_status with document_uid: wait up to this many seconds (max 50) reporting progress instead of returning at once. If still running at the end, returns still_running: true; call again to keep waiting.",
         },
         format: {
           type: "string",
@@ -2931,6 +2951,198 @@ async function jobStatus(
   });
 }
 
+/** Read-only `document_status` (`document-status.v1`): immediate read, or a
+ * bounded wait with progress and attempt pinning when `wait_seconds` is given. */
+async function documentStatus(
+  client: MindGraph,
+  documentUid: string,
+  args: { attempt_id?: unknown; until?: unknown; wait_seconds?: unknown },
+  runtime: ToolRuntime,
+): Promise<ToolResult> {
+  if (
+    args.until !== undefined &&
+    args.until !== "lexical" &&
+    args.until !== "vector" &&
+    args.until !== "extraction"
+  ) {
+    return err("until must be one of 'lexical', 'vector', or 'extraction'");
+  }
+  if (args.attempt_id !== undefined && (typeof args.attempt_id !== "string" || !args.attempt_id)) {
+    return err("attempt_id must be a non-empty string when provided");
+  }
+
+  const statusClient = client as unknown as {
+    baseUrl?: unknown;
+    headers?: unknown;
+    telemetrySurface?: unknown;
+    getDocumentStatus?: (
+      uid: string,
+      opts?: { signal?: AbortSignal },
+    ) => Promise<DocumentStatusPayload>;
+    request?: <T>(method: string, path: string) => Promise<T>;
+  };
+
+  const hasDirectTransport =
+    typeof statusClient.baseUrl === "string" &&
+    !!statusClient.headers &&
+    typeof statusClient.headers === "object" &&
+    !Array.isArray(statusClient.headers) &&
+    !Object.prototype.hasOwnProperty.call(client, "getDocumentStatus");
+
+  const statusPath = `/ingest/document/${encodeURIComponent(documentUid)}/status`;
+
+  const fetchStatusRawOnce = async (
+    remainingMs: number,
+    signal?: AbortSignal,
+  ): Promise<RawDocumentStatusResponse> => {
+    const baseUrl = (statusClient.baseUrl as string).replace(/\/$/, "");
+    const headers: Record<string, string> = {
+      ...(statusClient.headers as Record<string, string>),
+      ...(typeof statusClient.telemetrySurface === "string"
+        ? { "X-MindGraph-Surface": statusClient.telemetrySurface }
+        : {}),
+    };
+    const controller = new AbortController();
+    let timedOut = false;
+    const onCallerAbort = () => controller.abort(signal?.reason);
+    if (signal) {
+      if (signal.aborted) {
+        controller.abort(signal.reason);
+      } else {
+        signal.addEventListener("abort", onCallerAbort, { once: true });
+      }
+    }
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, remainingMs);
+    try {
+      const res = await fetch(`${baseUrl}${statusPath}`, {
+        method: "GET",
+        headers,
+        signal: controller.signal,
+      });
+      const text = await res.text();
+      let parsed: unknown;
+      try {
+        parsed = text ? JSON.parse(text) : undefined;
+      } catch {
+        parsed = text;
+      }
+      return {
+        status: res.status,
+        body: parsed,
+        retryAfter: res.headers.get("retry-after"),
+      };
+    } catch (error) {
+      if (timedOut && !signal?.aborted) {
+        throw new MindGraphError(`GET ${statusPath} timed out after ${remainingMs}ms`, 0, {
+          code: "timeout",
+          retriable: false,
+        });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onCallerAbort);
+    }
+  };
+
+  const fetchStatus = async (
+    remainingMs: number,
+    signal?: AbortSignal,
+  ): Promise<RawDocumentStatusResponse | DocumentStatusPayload> => {
+    if (hasDirectTransport) {
+      return fetchStatusRawOnce(remainingMs, signal);
+    }
+    let raw: unknown;
+    if (typeof statusClient.getDocumentStatus === "function") {
+      raw = await statusClient.getDocumentStatus(documentUid, { signal });
+    } else if (typeof statusClient.request === "function") {
+      // Compatibility bridge while npm still resolves mindgraph ^0.18.0.
+      raw = await statusClient.request("GET", statusPath);
+    } else {
+      throw new Error("Document status inspection requires mindgraph SDK >= 0.19.0");
+    }
+    if (!isDocumentStatusPayload(raw)) {
+      throw new MindGraphError("Incompatible document status response", 200, {
+        code: "incompatible_response",
+        retriable: false,
+      });
+    }
+    return raw;
+  };
+
+  const wait = clampWaitSeconds(args.wait_seconds, runtime.maxWaitSeconds);
+  if (wait === 0) {
+    if (hasDirectTransport) {
+      const res = await fetchStatusRawOnce(30_000, runtime.signal);
+      if (res.status !== 200) {
+        throw new MindGraphError(
+          `GET ${statusPath} failed: ${res.status}`,
+          res.status,
+          res.body,
+        );
+      }
+      if (!isDocumentStatusPayload(res.body)) {
+        throw new MindGraphError("Incompatible document status response", 200, {
+          code: "incompatible_response",
+          retriable: false,
+        });
+      }
+      return ok(res.body);
+    }
+    return ok(await fetchStatus(30_000, runtime.signal));
+  }
+
+  const outcome = await waitForDocumentStatus(
+    documentUid,
+    fetchStatus,
+    wait,
+    {
+      attemptId: args.attempt_id as string | undefined,
+      until: args.until as ReadinessDimension | undefined,
+    },
+    runtime,
+  );
+
+  if (outcome.kind === "ready") {
+    return ok({
+      ...outcome.status,
+      waited_seconds: outcome.waited_seconds,
+    });
+  }
+  if (outcome.kind === "still_running") {
+    return ok({
+      ...outcome.status,
+      waited_seconds: outcome.waited_seconds,
+      still_running: true,
+      next: "The document is still processing. Call document_status again with document_uid, attempt_id, and wait_seconds to keep waiting.",
+    });
+  }
+
+  const payload = {
+    error: outcome.message,
+    code: outcome.code,
+    document_uid: outcome.document_uid,
+    ...(outcome.expected_attempt_id !== undefined
+      ? { expected_attempt_id: outcome.expected_attempt_id }
+      : {}),
+    ...(outcome.observed_attempt_id !== undefined
+      ? { observed_attempt_id: outcome.observed_attempt_id }
+      : {}),
+    ...(outcome.dimension !== undefined ? { dimension: outcome.dimension } : {}),
+    last_status: outcome.last_status,
+    waited_seconds: outcome.waited_seconds,
+    retriable: false,
+  };
+  return {
+    content: [{ type: "text", text: JSON.stringify(payload) }],
+    structuredContent: payload,
+    isError: true,
+  };
+}
+
 async function handleIngest(
   client: MindGraph,
   args: Record<string, unknown>,
@@ -3071,6 +3283,21 @@ async function handleIngest(
       // The bare list was unbounded raw JSON of every job ever; render it
       // newest-first and capped (format:"json" returns the full raw list).
       return renderedResult(format, await client.listJobs(), renderJobs);
+
+    case "document_status":
+      if (!document_uid) {
+        return err("document_uid is required for action='document_status'");
+      }
+      return documentStatus(
+        client,
+        document_uid,
+        {
+          attempt_id: args.attempt_id,
+          until: args.until,
+          wait_seconds: args.wait_seconds,
+        },
+        runtime,
+      );
 
     default:
       return err(`Unknown ingest action: ${action}`);
