@@ -312,4 +312,59 @@ describe("over MCP", () => {
     expect(((context.structuredContent as Rec).working_set as Rec).token_held).toBe(true);
     await mcp.close();
   });
+
+  it("check and linked-count results (A2b) pass the client's output-schema check", async () => {
+    const checkResponse: Rec = {
+      move: "check",
+      from: ["n:fix"],
+      state: "found",
+      shown: 1,
+      items: [
+        {
+          handle: "n:fix",
+          uid: "fix",
+          title: "Ship 2.4.1",
+          support: {
+            verdict: "stands",
+            text: "stands",
+            chains: [["n:fix", "n:cause"]],
+            hop_limit_reached: false,
+            more_chains: false,
+            max_hops: 12,
+          },
+          head: { state: "current", text: "current", heads: [] },
+        },
+      ],
+      bad_handles: [],
+      bad_handle_message: null,
+      next: [],
+      used_tokens: 45,
+      text: "check [n:fix]  ·  1 items checked\n\n[n:fix] Ship 2.4.1\n  support: stands\n  standing: current\n",
+    };
+    const listingWithLinked = listing({
+      items: [
+        {
+          ...(listing().items as Rec[])[0],
+          linked: 2,
+        },
+      ],
+    });
+    const { client } = postClient(listingWithLinked, checkResponse);
+    const mcp = await connect(client);
+    await mcp.listTools();
+    const searched = await mcp.callTool({
+      name: "mindgraph_navigate",
+      arguments: { move: "search", query: "rollback" },
+    });
+    expect(searched.isError).toBeFalsy();
+    expect(((searched.structuredContent as Rec).items as Rec[])[0].linked).toBe(2);
+    const checked = await mcp.callTool({
+      name: "mindgraph_navigate",
+      arguments: { move: "check", handles: ["n:fix"] },
+    });
+    expect(checked.isError).toBeFalsy();
+    expect((checked.structuredContent as Rec).move).toBe("check");
+    expect((checked.content as Array<{ text: string }>)[0].text).toContain("support: stands");
+    await mcp.close();
+  });
 });
