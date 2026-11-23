@@ -29,6 +29,7 @@ type ToolResult = {
 const READ_TOOLS = new Set([
   "mindgraph_retrieve",
   "mindgraph_memory",
+  "mindgraph_navigate",
   "mindgraph_series_query",
   "search",
   "fetch",
@@ -274,7 +275,7 @@ export function hostedInstructions(): string {
 - Conversation start: the \`brief\` call above, once. Use it silently to shape your answer; mention an item only when it bears on what the member asked. Do not repeat the call later in the same conversation.
 - Quick lookups: \`search\` (hybrid, 10 results) then \`fetch\` by id for the full node and its sources; \`whoami\` tells you who you act as.
 - Resuming work or asking what was in progress: \`mindgraph_memory\` action \`context\`, mode \`resume\` or \`continuity\`.
-- Topics that may depend on prior knowledge: \`mindgraph_memory\` action \`context\`, mode \`topic\`, with 1–3 discriminating keywords; escalate to \`mindgraph_retrieve\` (\`context\` → \`semantic\` → \`hybrid\`, or \`neighborhood\`/\`path\` for graph exploration) when the bounded result is insufficient.
+- Topics that may depend on prior knowledge: \`mindgraph_memory\` action \`context\`, mode \`topic\`, with 1–3 discriminating keywords; escalate to \`mindgraph_retrieve\` (\`context\` → \`semantic\` → \`hybrid\`) when the bounded result is insufficient. To follow evidence step by step, use \`mindgraph_navigate\`: \`search\`, then \`walk\`, \`follow\` or \`around\` from the handles you choose, \`open\` to read in full; the \`mindgraph_retrieve\` graph actions (\`neighborhood\`, \`path\`) still work.
 - Answer from the bounded result. Treat superseded, refuted or out-of-validity items as warnings, not current facts. An isError result is a failed operation, not evidence of no matches; respect its retry guidance.
 - Preserve selectively after a material durable change: entities, observations, journal notes and lessons → \`mindgraph_capture\`; claims and open questions → \`mindgraph_reason\`; goals, projects and decisions → \`mindgraph_commit\`; cross-session work → \`mindgraph_plan\`; free-form memories → \`mindgraph_remember\`; long-form content → \`mindgraph_ingest\`. Do not write ephemeral conversation, routine mechanics or unsupported guesses.
 - If a write returns \`near_duplicate\`, choose \`reuse_uid\` or \`supersedes_uid\`; use \`confirm_new\` only for genuinely distinct facts.
