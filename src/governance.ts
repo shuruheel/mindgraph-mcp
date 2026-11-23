@@ -121,6 +121,8 @@ export function toolMutability(
 ): ToolMutability {
   if (toolName === "mindgraph_memory") return "read";
   if (toolName === "mindgraph_retrieve") return "read";
+  // Every navigation move is a read (recursive-navigation D8).
+  if (toolName === "mindgraph_navigate") return "read";
   // Hosted-mode search/fetch (D5) are graph reads.
   if (toolName === "search" || toolName === "fetch") return "read";
   // Both actions mutate: remember writes/upserts, forget tombstones.

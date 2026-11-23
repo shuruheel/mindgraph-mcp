@@ -24,6 +24,11 @@ import { refusalResult } from "./consent-refusal.js";
 import { withRepositorySpace } from "./repository-space.js";
 import { handleSyncTool, SYNC_TOOL } from "./sync-tool.js";
 import {
+  handleNavigateTool,
+  NAVIGATE_TOOL,
+  PROCESS_NAVIGATION_TOKENS,
+} from "./navigate-tool.js";
+import {
   handleMemoryTool,
   MEMORY_TOOL,
   type MemoryRuntimeConfig,
@@ -732,7 +737,7 @@ export const TOOLS: Tool[] = [
   {
     name: "mindgraph_retrieve",
     description:
-      "Search and explore the knowledge graph. NOT for work state: for 'what was I working on' or resuming work, use mindgraph_plan action resume_work (structural, deterministic) — this tool is semantic/keyword recall over ALL knowledge. Use 'context' (default) for BM25 keyword retrieval plus bounded cheapest-first graph expansion — returns graph nodes (labels, summaries, types, confidence), plus source text when the server includes it by default; include_chunks=true forces source text, false excludes it. Pass 1-3 discriminating keywords, not sentences. GOOD: 'Kissinger NATO'. BAD: 'What is Kissinger\\'s view on NATO?'. Use 'document_index' to list all ingested documents (titles, dates, UIDs) for orientation. Use 'semantic' when keywords return nothing — conceptual/fuzzy queries. Use 'hybrid' for keyword + semantic. Use 'text' for fast keyword-only. Use 'neighborhood'/'chain'/'path'/'subgraph' for graph traversal — traversal steps carry the cheapest witness path_cost (lower = stronger connection; sum of -ln(edge weight)), path_confidence, and witness depth. Use 'preferences' for advice or recommendation requests ('suggest a hotel', 'what should I read?') — it returns the user's stated/learned preferences relevant to the query (pass the topic as 'query'), so your answer reflects what they actually like instead of being generic. Other structured actions ('active_goals', 'open_questions', etc.) only when the user explicitly asks.",
+      "Search and explore the knowledge graph. NOT for work state: for 'what was I working on' or resuming work, use mindgraph_plan action resume_work (structural, deterministic) — this tool is semantic/keyword recall over ALL knowledge. Use 'context' (default) for BM25 keyword retrieval plus bounded cheapest-first graph expansion — returns graph nodes (labels, summaries, types, confidence), plus source text when the server includes it by default; include_chunks=true forces source text, false excludes it. Pass 1-3 discriminating keywords, not sentences. GOOD: 'Kissinger NATO'. BAD: 'What is Kissinger\\'s view on NATO?'. Use 'document_index' to list all ingested documents (titles, dates, UIDs) for orientation. Use 'semantic' when keywords return nothing — conceptual/fuzzy queries. Use 'hybrid' for keyword + semantic. Use 'text' for fast keyword-only. Use 'neighborhood'/'chain'/'path'/'subgraph' for graph traversal (to explore step by step from chosen items, mindgraph_navigate is usually better) — traversal steps carry the cheapest witness path_cost (lower = stronger connection; sum of -ln(edge weight)), path_confidence, and witness depth. Use 'preferences' for advice or recommendation requests ('suggest a hotel', 'what should I read?') — it returns the user's stated/learned preferences relevant to the query (pass the topic as 'query'), so your answer reflects what they actually like instead of being generic. Other structured actions ('active_goals', 'open_questions', etc.) only when the user explicitly asks.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -1371,6 +1376,7 @@ export const TOOLS: Tool[] = [
     },
   },
   MEMORY_TOOL,
+  NAVIGATE_TOOL,
   SYNC_TOOL,
   CODE_TOOL,
 ];
@@ -1569,6 +1575,13 @@ export async function handleTool(
         break;
       case "mindgraph_retrieve":
         result = await handleRetrieve(client, args, memoryConfig.profile);
+        break;
+      case "mindgraph_navigate":
+        // Hosted: one process serves many members and conversations, so no
+        // token is held there (navigate-tool.ts).
+        result = await handleNavigateTool(client, args, {
+          tokens: runtime.hosted ? undefined : PROCESS_NAVIGATION_TOKENS,
+        });
         break;
       case "mindgraph_memory":
         result = await handleMemoryTool(client, args, runtime.consent && !runtime.hosted ? { ...memoryConfig, consent: runtime.consent } : memoryConfig);

@@ -395,7 +395,7 @@ and never block the coding session.
 
 ## What You Get
 
-**11 tools** covering the full knowledge-graph workflow (**13** in the coding
+**12 tools** covering the full knowledge-graph workflow (**14** in the coding
 profile):
 
 | Tool | Purpose |
@@ -406,6 +406,7 @@ profile):
 | `mindgraph_plan` | Plans, tasks, procedures, governance policies, risk assessments, executions |
 | `mindgraph_retrieve` | Context retrieval with bounded graph expansion, search, min-cost traversal, document index. Read results return as compact rendered text (labels, uids, summaries, epistemic status tags, relationships, traversal depth/cost); set `max_output_chars` for a hard whole-item character budget, or pass `format: "json"` for the raw server response |
 | `mindgraph_memory` | Read-only M0 memory workflow: inspect honest integration status, retrieve bounded topic context, recover authoritative task-first resume/continuity context, or read a conversation-start `brief` (work in progress, active goals, open decisions, preferences). Returns model-ready text plus a structured envelope with scope, hashes, trace, budget, freshness, and warnings |
+| `mindgraph_navigate` | An agent's read of the graph one `move` at a time, by handles (`n:`, `c:`, `e:`, `d:` plus the full uid): `search`, `walk` from chosen items, `follow` links, `around` a passage, `open` in full or by character range, `lookup` a name, `more` to continue the last move, and `context` for the session's working set (what entered, stayed and left). Returns the server's rendered text plus its JSON as `structuredContent`. The local server keeps the working-set token and the last continuation per harness session, so the model does not carry them; hosted mode keeps nothing and shows the token. Needs a server with `POST /navigate`; `check` answers that it is not built until the server has it |
 | `mindgraph_remember` | Small-text fast path: `remember` stores one fact/preference/decision synchronously and it is BM25- and vector-searchable on return; a stable `custom_id` makes re-sends an upsert of the same memory. `forget` reversibly removes by uid or custom_id in two calls (the first returns a preview and removes nothing; repeat with `confirm: true` to remove), with `dry_run` previewing the affected edge uids; `restore` undoes a forget from the uid and edge uids it returned |
 | `mindgraph_series_query` | Bounded, read-only dense-measurement queries: list an entity's Series, inspect latest values, page a time window, or calculate calendar aggregates |
 | `mindgraph_ingest` | Chunk / document / session ingestion with LLM-powered extraction. `document_status` performs read-only authoritative readiness inspection (`document-status.v1`: `lexical`, `vector`, `extraction`) by `document_uid`, with optional `attempt_id` pinning, `until`, and bounded `wait_seconds` (up to 50 s locally, 25 s hosted). `job_status` without an id renders the 20 most recent jobs (`format: "json"` for the full list); with `job_id` and `wait_seconds` it waits for an in-memory job and reports progress |
