@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.34.0 (2026-11-24)
+
+Adds the opt-in, consented, shadow-first per-turn Session Curator hook (`POST /curator/turn`) on Claude Code `Stop`, `PreCompact`, and `SessionEnd` hooks, with coding-session write throttling. Requires a server with `/curator/turn` (`mindgraph-rs` #280, `mindgraph-cloud` #357).
+
+### Added
+
+- **Consented per-turn Session Curator hook (`#93`).** Off by default (`curatorMode: "off"` in `~/.mindgraph/hooks.json`). Opt in with `install-hooks --curator` / `--curator-shadow` (shadow mode, `dry_run: true`), `--curator-live` (writes curated memories), or turn off with `--no-curator`. Runtime kill-switch `MINDGRAPH_HOOK_CURATOR=off` overrides stored mode and can never enable curation on its own.
+- **Consent card & `PreCompact` registration (`#93`).** The consent card explicitly distinguishes shadow (`dry_run=true`) vs live mode. `install-hooks` registers `PreCompact` whenever `capture` or `curatorMode` is enabled and removes MindGraph-owned `PreCompact` entries when both are off.
+- **Fail-closed scoping, redaction, offsets, deadline, & coding-session throttle (`#93`).** Refuses dispatch when consented `space_uid` is absent or empty (never writes to an unscoped default space); redacts secrets and strips tool blocks; skips trivial coding acknowledgements while admitting durable-intent turns and throttling dense coding sessions to `<= 60/100` writes; enforces a shared cumulative dispatch deadline (`Stop`: 2.5 s / max 2 turns; `PreCompact`/`SessionEnd`: 3.0 s / max 4 turns) with fail-open timeout handling; tracks exact per-turn line-end byte offsets so tool-only blocks advance with zero requests and partial-batch failures commit prior succeeded turns without re-sending on retry.
+
 ## 0.33.0 (2026-11-24)
 
 Adds `mindgraph_navigate`, one read tool for the `POST /navigate` moves (recursive navigation, batch A4), and depends on `mindgraph` `^0.21.0`. Needs a server with `/navigate` (mindgraph-rs #266, #271, #273).

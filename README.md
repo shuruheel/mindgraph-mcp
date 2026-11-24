@@ -165,6 +165,17 @@ sends nothing. `install-hooks --no-capture` (or
 `MINDGRAPH_HOOK_CAPTURE=off`) turns it off. Both choices persist in
 `~/.mindgraph/hooks.json`, so automatic hook refreshes keep them.
 
+**Session curator (off by default).** `install-hooks --curator` (or
+`--curator-shadow`) enables the per-turn session curator in **shadow mode**
+(`dry_run: true`) on `Stop`, `PreCompact`, and `SessionEnd` hooks;
+`--curator-live` writes curated memories to the consented repository's Space
+via `POST /curator/turn`. Only redacted user/assistant text turns leave the
+machine (tool blocks are stripped, trivial coding acknowledgements are skipped,
+dense coding sessions are throttled to `<= 60/100` writes, and dispatch fails
+closed if the consented `space_uid` is absent). `install-hooks --no-curator`
+(or `MINDGRAPH_HOOK_CURATOR=off`) turns it off. Requires MindGraph Cloud or a
+`mindgraph-server` build with `/curator/turn`.
+
 **Updates are hands-free.** The MCP registration floats on `npx @latest`,
 and at startup the server self-heals the pinned hook runner from its own
 bundle — upgrade-only (never a downgrade from a stale npx cache), atomic,
@@ -493,6 +504,7 @@ teammates one logical agent, which claims each other's work).
 | `MINDGRAPH_HOOK_AUTOUPDATE` | *(on)* | `off` disables the server's startup self-heal of the pinned hook runner; the version-skew note then signals drift instead |
 | `MINDGRAPH_HOOK_PROMPT_RECALL` | *(on when opted in)* | `off` disables the Claude `UserPromptSubmit` recall at runtime; the hook is installed only with `--prompt-recall` |
 | `MINDGRAPH_HOOK_CAPTURE` | *(stored choice; off)* | `off` turns Claude transcript capture off at runtime. It cannot turn capture on: only `install-hooks --capture` does, because a project's settings file can set hook environment variables |
+| `MINDGRAPH_HOOK_CURATOR` | *(stored choice; off)* | `off` turns the per-turn session curator hook off at runtime. It cannot turn curation on: only `install-hooks --curator` / `--curator-live` does |
 | `MINDGRAPH_SKIP_MCP_REGISTRATION_CHECK` | *(unset)* | `1` silences the SessionStart warning for hooks running without a registered MindGraph MCP server (exotic registration layouts) |
 
 ## Usage in Claude
