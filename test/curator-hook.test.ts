@@ -6,6 +6,7 @@ import { parseArgs } from "../src/cli-args.js";
 import { cardBody } from "../src/consent-cli.js";
 import { runClaudeHook, type HookClient } from "../src/claude-hooks.js";
 import { loadHookEnv, resolvedHookFeatures, saveHookEnv } from "../src/hook-env.js";
+import { installClaudeHooks } from "../src/hook-installer.js";
 import {
   buildCuratorTurnRequests,
   hasDurableIntentSignal,
@@ -221,5 +222,165 @@ describe("Step S5 per-turn session curator hook", () => {
     );
     expect(out).toEqual({});
     expect(pairTranscriptTurns([{ role: "user", text: "hi" }])).toHaveLength(1);
+  });
+
+  it("fails closed when consented space_uid is null/empty so curator never writes to unscoped default space", async () => {
+    const transcript = path.join(dir, "unscoped.jsonl");
+    const runtimeDir = path.join(dir, "runtime");
+    writeTranscript(transcript, [
+      { type: "user", message: { content: "We decided to move auth to OAuth2." } },
+      { type: "assistant", message: { content: "Noted." } },
+    ]);
+
+    const nullSpaceConsent = {
+      state: "on" as const,
+      root: dir,
+      space_uid: null,
+      inRepository: true,
+      storeAcknowledged: true,
+    };
+
+    const client = mockClient();
+    await runClaudeHook(
+      { session_id: "s-null-space", cwd: dir, hook_event_name: "Stop", transcript_path: transcript },
+      client,
+      { runtimeDir, consent: nullSpaceConsent, curatorMode: "live" },
+    );
+    expect(client.curatorTurn).not.toHaveBeenCalled();
+
+    // Direct request builder also refuses empty spaceUid.
+    expect(() =>
+      buildCuratorTurnRequests(transcript, "s-empty-space", 0, {
+        spaceUid: "   ",
+        dryRun: true,
+      }),
+    ).toThrow(/non-empty spaceUid/);
+  });
+
+  it("registers PreCompact in Claude settings when curatorMode is shadow/live even with capture=false, and strips it when off", () => {
+    const resShadow = installClaudeHooks("project", dir, {
+      capture: false,
+      curatorMode: "shadow",
+    });
+    const settingsShadow = JSON.parse(fs.readFileSync(resShadow.path, "utf8")) as {
+      hooks: Record<string, unknown>;
+    };
+    expect(settingsShadow.hooks.PreCompact).toBeDefined();
+
+    const resOff = installClaudeHooks("project", dir, {
+      capture: false,
+      curatorMode: "off",
+    });
+    const settingsOff = JSON.parse(fs.readFileSync(resOff.path, "utf8")) as {
+      hooks: Record<string, unknown>;
+    };
+    expect(settingsOff.hooks.PreCompact).toBeUndefined();
+    expect(resOff.removedEvents).toContain("PreCompact");
+  });
+
+  it("advances curatorOffset past tool-only lines without calling /curator/turn, commits partial-batch progress, and enforces total dispatch deadline", async () => {
+    const transcript = path.join(dir, "partial.jsonl");
+    const runtimeDir = path.join(dir, "runtime");
+    const onConsent = {
+      state: "on" as const,
+      root: dir,
+      space_uid: "space-partial-1",
+      inRepository: true,
+      storeAcknowledged: true,
+    };
+
+    // 1. Tool-only JSONL lines advance curatorOffset with zero curator calls.
+    writeTranscript(transcript, [
+      {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: { path: "a.ts" } }] },
+      },
+      {
+        type: "user",
+        message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
+      },
+    ]);
+    const cToolOnly = mockClient();
+    await runClaudeHook(
+      { session_id: "s-tool", cwd: dir, hook_event_name: "Stop", transcript_path: transcript },
+      cToolOnly,
+      { runtimeDir, consent: onConsent, curatorMode: "shadow" },
+    );
+    expect(cToolOnly.curatorTurn).not.toHaveBeenCalled();
+
+    // Appending a real turn after the tool-only block processes only the new turn cleanly.
+    fs.appendFileSync(
+      transcript,
+      `${JSON.stringify({ type: "user", message: { content: "We decided to enforce strict CSP headers." } })}\n` +
+        `${JSON.stringify({ type: "assistant", message: { content: "Recorded strict CSP rule." } })}\n`,
+      "utf8",
+    );
+    await runClaudeHook(
+      { session_id: "s-tool", cwd: dir, hook_event_name: "Stop", transcript_path: transcript },
+      cToolOnly,
+      { runtimeDir, consent: onConsent, curatorMode: "shadow" },
+    );
+    expect(cToolOnly.curatorTurn).toHaveBeenCalledTimes(1);
+
+    // 2. Partial-batch failure: turn 1 succeeds, turn 2 fails -> offset commits past turn 1 so retry sends ONLY turn 2.
+    const batchFile = path.join(dir, "batch.jsonl");
+    writeTranscript(batchFile, [
+      { type: "user", message: { content: "We decided to require TLS 1.3 for all services." } },
+      { type: "assistant", message: { content: "Noted TLS 1.3 requirement." } },
+      { type: "user", message: { content: "We decided to sunset v1 webhooks next quarter." } },
+      { type: "assistant", message: { content: "Noted v1 webhook sunset." } },
+    ]);
+    let attempt = 0;
+    const seenKeys: string[] = [];
+    const cPartial = mockClient({
+      curatorTurn: vi.fn(async (body: Record<string, unknown>) => {
+        attempt += 1;
+        seenKeys.push(String(body.idempotency_key));
+        if (attempt === 2) throw new Error("transient network reset");
+        return { turn_id: `t-${attempt}`, accepted_ops: [], refused_ops: [] };
+      }),
+    });
+    await runClaudeHook(
+      { session_id: "s-batch", cwd: dir, hook_event_name: "Stop", transcript_path: batchFile },
+      cPartial,
+      { runtimeDir, consent: onConsent, curatorMode: "shadow" },
+    );
+    expect(seenKeys).toEqual(["mcp-curator:s-batch:1", "mcp-curator:s-batch:2"]);
+
+    // Retry must NOT re-send turn 1 (no shadow re-billing / no duplicate dispatch); only turn 2 fires.
+    await runClaudeHook(
+      { session_id: "s-batch", cwd: dir, hook_event_name: "Stop", transcript_path: batchFile },
+      cPartial,
+      { runtimeDir, consent: onConsent, curatorMode: "shadow" },
+    );
+    expect(seenKeys).toEqual([
+      "mcp-curator:s-batch:1",
+      "mcp-curator:s-batch:2",
+      "mcp-curator:s-batch:2",
+    ]);
+
+    // 3. Total dispatch deadline stops remaining turns once cumulative budget is exhausted.
+    const burstFile = path.join(dir, "burst.jsonl");
+    writeTranscript(burstFile, [
+      { type: "user", message: { content: "We decided to adopt Biome for linting." } },
+      { type: "assistant", message: { content: "Recorded Biome." } },
+      { type: "user", message: { content: "We decided to adopt Vitest for unit tests." } },
+      { type: "assistant", message: { content: "Recorded Vitest." } },
+    ]);
+    const cDeadline = mockClient({
+      curatorTurn: vi.fn(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(() => resolve({ turn_id: "t-slow", accepted_ops: [], refused_ops: [] }), 60),
+          ),
+      ),
+    });
+    await runClaudeHook(
+      { session_id: "s-deadline", cwd: dir, hook_event_name: "Stop", transcript_path: burstFile },
+      cDeadline,
+      { runtimeDir, consent: onConsent, curatorMode: "shadow", curatorTimeoutMs: 70 },
+    );
+    // Turn 1 consumes ~60ms of the 70ms total budget; turn 2 must NOT run past the shared deadline.
+    expect(cDeadline.curatorTurn).toHaveBeenCalledTimes(1);
   });
 });

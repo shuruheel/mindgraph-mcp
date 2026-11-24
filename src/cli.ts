@@ -1158,11 +1158,12 @@ async function main(): Promise<void> {
           orgId: stored.orgId,
           maxRetries: 0,
           telemetrySurface: "mcp",
-          // Prompt recall must never hold the prompt: abort the request at
-          // the same 4s deadline the core races it against.
+          // Prompt recall and Stop curator must never hold the hook past its deadline.
           ...(input.hook_event_name === "UserPromptSubmit"
             ? { timeoutMs: 4_000 }
-            : {}),
+            : input.hook_event_name === "Stop"
+              ? { timeoutMs: 3_000 }
+              : {}),
         });
         const features = resolvedHookFeatures(stored);
         const hookOptions = {
@@ -1194,7 +1195,9 @@ async function main(): Promise<void> {
           if (
             input.hook_event_name === "UserPromptSubmit" ||
             input.hook_event_name === "SessionStart" ||
-            input.hook_event_name === "Stop"
+            input.hook_event_name === "Stop" ||
+            (features.curatorMode !== "off" &&
+              (input.hook_event_name === "PreCompact" || input.hook_event_name === "SessionEnd"))
           ) {
             process.exit(0);
           }

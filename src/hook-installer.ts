@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { evalMode, evalUserScopeRefusal } from "./eval-guard.js";
-import { loadHookEnv, mindgraphConfigDir, mindgraphDataDir } from "./hook-env.js";
+import { loadHookEnv, mindgraphConfigDir, mindgraphDataDir, type CuratorMode } from "./hook-env.js";
 
 export type HookScope = "user" | "project";
 export type HookHarness = "claude-code" | "codex";
@@ -17,15 +17,17 @@ export interface ClaudeHookFeatures {
   promptRecall?: boolean;
   /** PreCompact transcript capture (+ at SessionEnd). Default OFF. */
   capture?: boolean;
+  /** Per-turn session curator hook mode (Stop/PreCompact/SessionEnd). Default OFF. */
+  curatorMode?: CuratorMode;
 }
 
 function storedFeatures(homeDir?: string): ClaudeHookFeatures {
   // Without an explicit home, read the same hooks.json the installer writes
   // (the account's MindGraph directory), not one under $HOME.
-  const { promptRecall, capture } = loadHookEnv(
+  const { promptRecall, capture, curatorMode } = loadHookEnv(
     homeDir ? path.join(homeDir, ".mindgraph") : undefined,
   );
-  return { promptRecall, capture };
+  return { promptRecall, capture, curatorMode };
 }
 
 const OWNER_MARKER = "--owner mindgraph";
@@ -585,8 +587,9 @@ function desiredEntries(
     ...(features.promptRecall === true
       ? { UserPromptSubmit: [{ hooks: [ownedHook(harness, 5)] }] }
       : {}),
-    // Opt-in transcript capture before compaction (cold-tenant ingest).
-    ...(features.capture === true
+    // Opt-in transcript capture or session curator before compaction.
+    ...(features.capture === true ||
+    (features.curatorMode !== undefined && features.curatorMode !== "off")
       ? { PreCompact: [{ hooks: [ownedHook(harness, 30)] }] }
       : {}),
   };

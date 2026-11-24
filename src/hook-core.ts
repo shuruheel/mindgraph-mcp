@@ -1907,6 +1907,8 @@ async function captureTranscript(
 }
 
 const DEFAULT_CURATOR_TIMEOUT_MS = 3_000;
+const STOP_CURATOR_TIMEOUT_MS = 2_500;
+const STOP_CURATOR_MAX_TURNS = 2;
 
 function curatorPosterOf(
   client: HookClient,
@@ -1922,9 +1924,12 @@ function curatorPosterOf(
 }
 
 /** Consented, fail-open per-turn session curator hook (Step S5).
- * Runs ONLY when repo/workspace consent is on AND the user's stored choice
- * enabled `curatorMode` ("shadow" -> dry_run=true, or "live" -> dry_run=false).
- * Project settings may only disable it (`MINDGRAPH_HOOK_CURATOR=off`). */
+ * Runs ONLY when repo/workspace consent is on with a resolved `space_uid`
+ * AND the user's stored choice enabled `curatorMode` ("shadow" -> dry_run=true,
+ * or "live" -> dry_run=false). Project settings may only disable it
+ * (`MINDGRAPH_HOOK_CURATOR=off`). Enforces a total dispatch deadline and
+ * commits byte offsets per succeeded turn so retries never double-bill shadow
+ * turns or stall on tool-only transcript appends. */
 async function curateTurns(
   input: HookInput,
   client: HookClient,
@@ -1935,13 +1940,22 @@ async function curateTurns(
       ? options.curatorMode
       : "off";
   if (mode === "off" || process.env.MINDGRAPH_HOOK_CURATOR === "off") return;
+  // Fail closed when the consented place has no assigned space yet: never
+  // fall back to ORG_SPACE_UID.
+  const spaceUid = options.decision.space_uid?.trim();
+  if (!spaceUid) return;
   if (!input.transcript_path) return;
   const postCurator = curatorPosterOf(client);
   if (!postCurator) return;
 
-  const timeoutMs = options.curatorTimeoutMs ?? DEFAULT_CURATOR_TIMEOUT_MS;
+  const isStop = input.hook_event_name === "Stop";
+  const totalBudgetMs =
+    options.curatorTimeoutMs ?? (isStop ? STOP_CURATOR_TIMEOUT_MS : DEFAULT_CURATOR_TIMEOUT_MS);
+  const deadlineAt = Date.now() + totalBudgetMs;
+
   try {
     const ledger = readLedger(input.session_id, options);
+    const prevOffset = ledger.curatorOffset ?? 0;
     const prevStats = ledger.curatorStats ?? {
       mode,
       turnsEvaluated: 0,
@@ -1954,9 +1968,9 @@ async function curateTurns(
     const prepared = buildCuratorTurnRequests(
       input.transcript_path,
       input.session_id,
-      ledger.curatorOffset ?? 0,
+      prevOffset,
       {
-        spaceUid: options.decision.space_uid ?? undefined,
+        spaceUid,
         sessionUid: ledger.sessionUid,
         dryRun: mode === "shadow",
         startSeq: ledger.curatorTurnSeq ?? 0,
@@ -1965,67 +1979,91 @@ async function curateTurns(
           turnsEvaluated: prevStats.turnsEvaluated,
           acceptedOps: prevStats.acceptedOps,
         },
-        nowIso: new Date((options.now ? options.now() : Date.now())).toISOString().replace(/\.\d{3}Z$/, "Z"),
+        maxTurnsPerDispatch: isStop ? STOP_CURATOR_MAX_TURNS : undefined,
+        nowIso: new Date(options.now ? options.now() : Date.now()).toISOString().replace(/\.\d{3}Z$/, "Z"),
       },
     );
-    if (prepared.evaluated === 0) return;
+    if (prepared.evaluated === 0) {
+      // Advance past tool-only / meta JSONL lines so subsequent hooks do not re-read them forever.
+      if (prepared.nextOffset > prevOffset) {
+        withLedger(input.session_id, options, (current) => {
+          current.curatorOffset = Math.max(current.curatorOffset ?? 0, prepared.nextOffset);
+          return undefined;
+        });
+      }
+      return;
+    }
 
     let sent = 0;
     let accepted = 0;
     let refused = 0;
     let errors = 0;
+    let lastSucceeded: (typeof prepared.requests)[number] | undefined;
+    let abortedEarly = false;
 
     for (const req of prepared.requests) {
+      const remainingMs = deadlineAt - Date.now();
+      if (remainingMs < 50) {
+        abortedEarly = true;
+        break;
+      }
       try {
-        const res = await withDeadline(postCurator(req.body), timeoutMs);
+        const res = await withDeadline(postCurator(req.body), remainingMs);
         sent += 1;
+        lastSucceeded = req;
         const obj = object(res);
         if (Array.isArray(obj?.accepted_ops)) accepted += obj.accepted_ops.length;
         if (Array.isArray(obj?.refused_ops)) refused += obj.refused_ops.length;
       } catch (err) {
         errors += 1;
+        abortedEarly = true;
         recordFailOpen(
           input.session_id,
           input.hook_event_name,
           `curator turn: ${(err as Error)?.message || "failed"}`,
           options,
         );
-        // Stop on timeout/network failure and preserve curatorOffset for retry at next boundary.
-        withLedger(input.session_id, options, (current) => {
-          const s = current.curatorStats ?? { ...prevStats };
-          current.curatorStats = {
-            ...s,
-            mode,
-            errors: s.errors + errors,
-          };
-          return undefined;
-        });
-        return;
+        break;
       }
     }
 
     withLedger(input.session_id, options, (current) => {
-      current.curatorOffset = Math.max(current.curatorOffset ?? 0, prepared.nextOffset);
-      current.curatorTurnSeq = Math.max(current.curatorTurnSeq ?? 0, prepared.nextSeq);
-      if (prepared.lastPair) current.curatorLastTurn = prepared.lastPair;
-      const s = current.curatorStats ?? {
-        mode,
-        turnsEvaluated: 0,
-        turnsSent: 0,
-        turnsThrottled: 0,
-        acceptedOps: 0,
-        refusedOps: 0,
-        errors: 0,
-      };
-      current.curatorStats = {
-        mode,
-        turnsEvaluated: s.turnsEvaluated + prepared.evaluated,
-        turnsSent: s.turnsSent + sent,
-        turnsThrottled: s.turnsThrottled + prepared.throttled,
-        acceptedOps: s.acceptedOps + accepted,
-        refusedOps: s.refusedOps + refused,
-        errors: s.errors + errors,
-      };
+      const s = current.curatorStats ?? { ...prevStats };
+      if (!abortedEarly) {
+        current.curatorOffset = Math.max(current.curatorOffset ?? 0, prepared.nextOffset);
+        current.curatorTurnSeq = Math.max(current.curatorTurnSeq ?? 0, prepared.nextSeq);
+        if (prepared.lastPair) current.curatorLastTurn = prepared.lastPair;
+        current.curatorStats = {
+          mode,
+          turnsEvaluated: s.turnsEvaluated + prepared.evaluated,
+          turnsSent: s.turnsSent + sent,
+          turnsThrottled: s.turnsThrottled + prepared.throttled,
+          acceptedOps: s.acceptedOps + accepted,
+          refusedOps: s.refusedOps + refused,
+          errors: s.errors + errors,
+        };
+      } else if (lastSucceeded) {
+        // Partial-batch progress: commit through the last succeeded turn so
+        // retries never re-send or double-bill already-processed turns.
+        current.curatorOffset = Math.max(current.curatorOffset ?? 0, lastSucceeded.endOffset);
+        current.curatorTurnSeq = Math.max(current.curatorTurnSeq ?? 0, lastSucceeded.seq);
+        current.curatorLastTurn = lastSucceeded.pair;
+        current.curatorStats = {
+          mode,
+          turnsEvaluated: s.turnsEvaluated + lastSucceeded.evaluatedThrough,
+          turnsSent: s.turnsSent + sent,
+          turnsThrottled: s.turnsThrottled + lastSucceeded.throttledThrough,
+          acceptedOps: s.acceptedOps + accepted,
+          refusedOps: s.refusedOps + refused,
+          errors: s.errors + errors,
+        };
+      } else {
+        current.curatorStats = {
+          ...s,
+          mode,
+          errors: s.errors + errors,
+        };
+      }
       return undefined;
     });
   } catch (error) {

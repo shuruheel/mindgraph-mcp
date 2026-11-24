@@ -419,6 +419,12 @@ export interface PreparedCuratorTurns {
     seq: number;
     pair: CuratorTurnPair;
     body: Record<string, unknown>;
+    /** Exact transcript byte offset after this turn pair (for safe partial-batch progress). */
+    endOffset: number;
+    /** Number of evaluated turns (including any skipped/throttled turns immediately preceding this one) covered up through `endOffset`. */
+    evaluatedThrough: number;
+    /** Number of throttled/skipped turns covered up through `endOffset`. */
+    throttledThrough: number;
   }>;
   nextOffset: number;
   evaluated: number;
@@ -427,15 +433,91 @@ export interface PreparedCuratorTurns {
   nextSeq: number;
 }
 
+interface OffsetTranscriptTurn extends TranscriptTurn {
+  endOffset: number;
+}
+
+/** Extract user/assistant text turns with exact ending byte offsets inside the transcript file. */
+function extractTranscriptTurnsWithOffsets(
+  file: string,
+  offset = 0,
+): { turns: OffsetTranscriptTurn[]; nextOffset: number } {
+  const buffer = fs.readFileSync(file);
+  const start = offset > buffer.length ? 0 : offset;
+  const lastNewline = buffer.lastIndexOf(0x0a);
+  if (lastNewline < start) return { turns: [], nextOffset: start };
+
+  const turns: OffsetTranscriptTurn[] = [];
+  let pos = start;
+  while (pos <= lastNewline) {
+    const nl = buffer.indexOf(0x0a, pos);
+    if (nl < 0 || nl > lastNewline) break;
+    const lineEnd = nl + 1;
+    const line = buffer.subarray(pos, nl).toString("utf8");
+    pos = lineEnd;
+    if (!line.trim()) continue;
+    let entry: Rec | undefined;
+    try {
+      entry = rec(JSON.parse(line));
+    } catch {
+      continue;
+    }
+    if (!entry || (entry.type !== "user" && entry.type !== "assistant")) continue;
+    if (entry.isMeta === true || entry.isSidechain === true || entry.isCompactSummary === true) continue;
+    const message = rec(entry.message);
+    const raw = messageText(message?.content);
+    if (!raw) continue;
+    const text = stripHarnessNoise(raw);
+    if (!text) continue;
+    turns.push({ role: entry.type, text, endOffset: lineEnd });
+  }
+  return { turns, nextOffset: lastNewline + 1 };
+}
+
+function pairOffsetTranscriptTurns(
+  turns: OffsetTranscriptTurn[],
+  maxChars = CURATOR_MAX_TURN_CHARS,
+): Array<{ pair: CuratorTurnPair; endOffset: number }> {
+  const pairs: Array<{ pair: CuratorTurnPair; endOffset: number }> = [];
+  let curUser: string | undefined;
+  let curEndOffset = 0;
+  let asstParts: string[] = [];
+
+  const flush = (): void => {
+    if (curUser !== undefined) {
+      const user = clipCuratorText(curUser, maxChars);
+      const assistant = clipCuratorText(asstParts.join("\n"), maxChars);
+      if (user) pairs.push({ pair: { user, assistant }, endOffset: curEndOffset });
+    }
+    curUser = undefined;
+    curEndOffset = 0;
+    asstParts = [];
+  };
+
+  for (const turn of turns) {
+    if (turn.role === "user") {
+      flush();
+      curUser = turn.text;
+      curEndOffset = turn.endOffset;
+    } else if (curUser !== undefined) {
+      asstParts.push(turn.text);
+      curEndOffset = turn.endOffset;
+    }
+  }
+  flush();
+  return pairs;
+}
+
 /** Build bounded `POST /curator/turn` payloads from transcript bytes appended
  * since `offset`, applying secret redaction, coding-session write throttling,
- * and shadow (`dry_run: true`) vs live (`dry_run: false`) mode. */
+ * fail-closed space scoping (`spaceUid` required), and shadow (`dry_run: true`)
+ * vs live (`dry_run: false`) mode. */
 export function buildCuratorTurnRequests(
   transcriptPath: string,
   sessionId: string,
   offset: number,
   opts: {
-    spaceUid?: string;
+    spaceUid: string;
     sessionUid?: string;
     dryRun: boolean;
     promptVersion?: string;
@@ -446,8 +528,12 @@ export function buildCuratorTurnRequests(
     nowIso?: string;
   },
 ): PreparedCuratorTurns {
-  const { text, nextOffset } = readTranscriptSince(transcriptPath, offset);
-  const pairs = pairTranscriptTurns(extractTranscriptTurns(text));
+  const spaceUid = opts.spaceUid.trim();
+  if (!spaceUid) {
+    throw new Error("buildCuratorTurnRequests requires a non-empty spaceUid");
+  }
+  const { turns, nextOffset } = extractTranscriptTurnsWithOffsets(transcriptPath, offset);
+  const offsetPairs = pairOffsetTranscriptTurns(turns);
   const maxTurns = opts.maxTurnsPerDispatch ?? CURATOR_DEFAULT_MAX_TURNS_PER_DISPATCH;
   const startSeq = opts.startSeq ?? 0;
   const nowIso = opts.nowIso ?? new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -459,12 +545,14 @@ export function buildCuratorTurnRequests(
 
   let prev = opts.prevTurn;
   let seq = startSeq;
+  let evaluated = 0;
   let throttled = 0;
   const requests: PreparedCuratorTurns["requests"] = [];
 
-  for (const pair of pairs) {
+  for (const { pair, endOffset } of offsetPairs) {
     const verdict = shouldCurateTurn(pair, throttle);
     throttle.turnsEvaluated += 1;
+    evaluated += 1;
     seq += 1;
     if (!verdict.send) {
       throttled += 1;
@@ -472,7 +560,7 @@ export function buildCuratorTurnRequests(
       continue;
     }
     const body: Record<string, unknown> = {
-      ...(opts.spaceUid ? { space_uid: opts.spaceUid } : {}),
+      space_uid: spaceUid,
       session_uid: opts.sessionUid || `claude-code:${sessionId}`,
       idempotency_key: `mcp-curator:${sessionId}:${seq}`,
       occurred_at: nowIso,
@@ -481,19 +569,30 @@ export function buildCuratorTurnRequests(
       prompt_version: promptVersion,
       dry_run: opts.dryRun,
     };
-    requests.push({ seq, pair, body });
+    requests.push({
+      seq,
+      pair,
+      body,
+      endOffset,
+      evaluatedThrough: evaluated,
+      throttledThrough: throttled,
+    });
     prev = pair;
   }
 
   // Bound per-hook dispatch to the most recent `maxTurns` selected turns so
   // hooks remain fast and non-blocking even after long uninterrupted bursts.
-  const bounded = requests.length > maxTurns ? requests.slice(requests.length - maxTurns) : requests;
-  throttled += requests.length - bounded.length;
+  const dropped = Math.max(0, requests.length - maxTurns);
+  const bounded = dropped > 0 ? requests.slice(dropped) : requests;
+  if (dropped > 0) {
+    for (const r of bounded) r.throttledThrough += dropped;
+    throttled += dropped;
+  }
 
   return {
     requests: bounded,
     nextOffset,
-    evaluated: pairs.length,
+    evaluated,
     throttled,
     lastPair: prev,
     nextSeq: seq,
