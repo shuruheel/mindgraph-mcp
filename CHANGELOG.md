@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.33.0 (2026-11-24)
+
+Adds `mindgraph_navigate`, one read tool for the `POST /navigate` moves (recursive navigation, batch A4), and depends on `mindgraph` `^0.21.0`. Needs a server with `/navigate` (mindgraph-rs #266, #271, #273).
+
+### Added
+
+- **`mindgraph_navigate` (`#90`, `#91`).** One `move` argument: `search`,
+  `open`, `around`, `follow`, `walk`, `lookup`, `context`, `more` or `check`,
+  with that move's arguments. The server's rendered `text` is the content and
+  its JSON is `structuredContent`, declared by an `outputSchema` (verified for
+  `check` results and `linked` counts). For `context`, the text opens with the
+  change list (entered, kept, left, changed) above the server's context.
+- **Tokens held by the door.** In local mode the server keeps, per harness
+  session (`harnessSessionId` from the hooks, otherwise the process; 64
+  sessions), the working-set token for the next `context` call and the last
+  move's continuation, so `more` needs no token and the model carries neither.
+  `new_session` starts a working set over; a held token the server cannot read
+  is dropped and the turn starts again. In hosted mode nothing is held: the
+  token is written into the text and the model passes it back.
+- A read tool (`graph:read`, governance mutability `read`). The general, coding
+  and hosted instructions and the `mindgraph_retrieve` description point to it;
+  the retrieve graph actions still work.
+
+### Changed
+
+- **SDK dependency.** Update `mindgraph` dependency pin from `^0.20.0` to `^0.21.0`.
+
 ## 0.32.0 (2026-11-22)
 
 Adds weighted epistemic support chain traversal (`action: "epistemic_support"`) to `mindgraph_retrieve` (EA7 Use 2) with explicit non-Bayesian score disclosure, and depends on `mindgraph` `^0.20.0`.
