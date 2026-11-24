@@ -402,22 +402,35 @@ function withHooksFlag(): boolean {
  * injected were relevant, so a plain install or re-install leaves it off and
  * removes an entry an earlier default added. --no-prompt-recall is still
  * accepted; it only clears a stored opt-in. */
-function claudeHookFeatures(): { promptRecall: boolean; capture: boolean } {
+function claudeHookFeatures(): {
+  promptRecall: boolean;
+  capture: boolean;
+  curatorMode: "off" | "shadow" | "live";
+} {
   const flags = parseArgs(process.argv);
   const stored = loadHookEnv();
   return {
     promptRecall: flags.promptRecall ?? stored.promptRecall ?? false,
     capture: flags.capture ?? stored.capture ?? false,
+    curatorMode: flags.curatorMode ?? stored.curatorMode ?? "off",
   };
 }
 
 function printClaudeHookFeatures(features: {
   promptRecall: boolean;
   capture: boolean;
+  curatorMode: "off" | "shadow" | "live";
 }): void {
+  const curatorDesc =
+    features.curatorMode === "shadow"
+      ? "SHADOW (dry_run=true — redacted turns sent to /curator/turn for telemetry only, no graph writes; promote with --curator-live)"
+      : features.curatorMode === "live"
+        ? "LIVE — redacted turns sent to /curator/turn with coding-session write throttling"
+        : "off (enable shadow-first with --curator)";
   console.log(
     `Prompt recall (UserPromptSubmit): ${features.promptRecall ? "on" : "off (opt in with --prompt-recall)"}; ` +
-      `transcript capture (PreCompact/SessionEnd): ${features.capture ? "ON — user and assistant text (never tool calls or tool output), secrets redacted, is sent to MindGraph /ingest/session" : "off (enable with --capture)"}`
+      `transcript capture (PreCompact/SessionEnd): ${features.capture ? "ON — user and assistant text (never tool calls or tool output), secrets redacted, is sent to MindGraph /ingest/session" : "off (enable with --capture)"}; ` +
+      `session curator (Stop/PreCompact/SessionEnd): ${curatorDesc}`
   );
 }
 
@@ -1158,6 +1171,7 @@ async function main(): Promise<void> {
           // left in a settings file no install has refreshed does nothing.
           promptRecall: features.promptRecall,
           capture: features.capture,
+          curatorMode: features.curatorMode,
           // No harness-name fallback here: hook-core derives a stable
           // per-user default shared by both harnesses, which is what lets a
           // task claimed under Codex rebind under Claude Code.
@@ -1177,7 +1191,11 @@ async function main(): Promise<void> {
           // the process alive past the 5s hook budget; the answer is already
           // written, so exit instead of waiting for it.
           // The same holds for the session block's bounded memory read.
-          if (input.hook_event_name === "UserPromptSubmit" || input.hook_event_name === "SessionStart") {
+          if (
+            input.hook_event_name === "UserPromptSubmit" ||
+            input.hook_event_name === "SessionStart" ||
+            input.hook_event_name === "Stop"
+          ) {
             process.exit(0);
           }
         });

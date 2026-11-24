@@ -18,12 +18,14 @@ import {
 import { recordPendingCall } from "./call-ledger.js";
 import { conflictState } from "./error-detail.js";
 import { evalMode } from "./eval-guard.js";
-import { mindgraphRuntimeDir, stableAgentId } from "./hook-env.js";
+import { mindgraphRuntimeDir, stableAgentId, type CuratorMode } from "./hook-env.js";
 import {
   buildCaptureRequest,
+  buildCuratorTurnRequests,
   promptRecallQuery,
   promptRecallRequest,
   renderPromptRecall,
+  type CuratorTurnPair,
 } from "./hook-memory.js";
 import { nodeGit } from "./consent-plan.js";
 import {
@@ -80,6 +82,8 @@ export interface HookClient {
   entity?(request: Record<string, unknown>): Promise<unknown>;
   retrieveContext?(request: Record<string, unknown>): Promise<unknown>;
   ingestSession?(request: Record<string, unknown>): Promise<unknown>;
+  /** `POST /curator/turn`; falls back to SDK `client.post("/curator/turn", ...)` when absent. */
+  curatorTurn?(request: Record<string, unknown>): Promise<unknown>;
   /** `POST /memory/v1/list`; the SDK client is read through its request
    * helper when this is absent. */
   memoryList?(request: Record<string, unknown>): Promise<unknown>;
@@ -113,6 +117,22 @@ interface RuntimeLedger {
   lastRecallHash?: string;
   /** Byte offset in the transcript up to which turns were captured. */
   captureOffset?: number;
+  /** Byte offset in the transcript up to which turns were evaluated by the session curator. */
+  curatorOffset?: number;
+  /** Monotonic turn counter for deterministic per-session curator idempotency keys. */
+  curatorTurnSeq?: number;
+  /** Last evaluated turn pair (sent as prev_turn context to /curator/turn). */
+  curatorLastTurn?: CuratorTurnPair;
+  /** Shadow / live telemetry for the per-turn session curator hook. */
+  curatorStats?: {
+    mode: CuratorMode;
+    turnsEvaluated: number;
+    turnsSent: number;
+    turnsThrottled: number;
+    acceptedOps: number;
+    refusedOps: number;
+    errors: number;
+  };
   /** Per-event cost of the hooks in this session (roadmap H8): how often each
    * fired, time spent inside the hook, and characters injected into context. */
   hookStats?: Record<string, HookEventStats>;
@@ -168,6 +188,10 @@ export interface HookRuntimeOptions {
   promptRecall?: boolean;
   /** PreCompact/SessionEnd transcript capture; default OFF. */
   capture?: boolean;
+  /** Per-turn session curator hook mode (default "off"; shadow-first via "shadow"). */
+  curatorMode?: CuratorMode;
+  /** Per-turn curator request deadline (default 3s; fail open). */
+  curatorTimeoutMs?: number;
   /** UserPromptSubmit recall deadline (default 4s; fail open). */
   promptRecallTimeoutMs?: number;
   /** Tokens per context for injected memory (default 2,000). */
@@ -1686,7 +1710,7 @@ function stop(
 async function sessionEnd(
   input: HookInput,
   client: HookClient,
-  options: CoreHookRuntimeOptions,
+  options: GatedHookRuntimeOptions,
 ): Promise<HookCoreOutput> {
   const harnessLabel = options.harness === "claude-code" ? "Claude Code" : "Codex";
   // The anchor table lives only as long as the session.
@@ -1699,6 +1723,7 @@ async function sessionEnd(
   // SessionEnd at 3s, which the abandon/close calls already need).
   if (options.harness === "claude-code") {
     await captureTranscript(input, client, options);
+    await curateTurns(input, client, options);
   }
   const ledger = readLedger(input.session_id, options);
   if (
@@ -1881,6 +1906,136 @@ async function captureTranscript(
   }
 }
 
+const DEFAULT_CURATOR_TIMEOUT_MS = 3_000;
+
+function curatorPosterOf(
+  client: HookClient,
+): ((body: Record<string, unknown>) => Promise<unknown>) | undefined {
+  if (typeof client.curatorTurn === "function") {
+    return (body) => client.curatorTurn!(body);
+  }
+  const post = (client as unknown as { post?: (p: string, b: unknown) => Promise<unknown> }).post;
+  if (typeof post === "function") {
+    return (body) => post.call(client, "/curator/turn", body);
+  }
+  return undefined;
+}
+
+/** Consented, fail-open per-turn session curator hook (Step S5).
+ * Runs ONLY when repo/workspace consent is on AND the user's stored choice
+ * enabled `curatorMode` ("shadow" -> dry_run=true, or "live" -> dry_run=false).
+ * Project settings may only disable it (`MINDGRAPH_HOOK_CURATOR=off`). */
+async function curateTurns(
+  input: HookInput,
+  client: HookClient,
+  options: GatedHookRuntimeOptions,
+): Promise<void> {
+  const mode: CuratorMode =
+    options.curatorMode === "shadow" || options.curatorMode === "live"
+      ? options.curatorMode
+      : "off";
+  if (mode === "off" || process.env.MINDGRAPH_HOOK_CURATOR === "off") return;
+  if (!input.transcript_path) return;
+  const postCurator = curatorPosterOf(client);
+  if (!postCurator) return;
+
+  const timeoutMs = options.curatorTimeoutMs ?? DEFAULT_CURATOR_TIMEOUT_MS;
+  try {
+    const ledger = readLedger(input.session_id, options);
+    const prevStats = ledger.curatorStats ?? {
+      mode,
+      turnsEvaluated: 0,
+      turnsSent: 0,
+      turnsThrottled: 0,
+      acceptedOps: 0,
+      refusedOps: 0,
+      errors: 0,
+    };
+    const prepared = buildCuratorTurnRequests(
+      input.transcript_path,
+      input.session_id,
+      ledger.curatorOffset ?? 0,
+      {
+        spaceUid: options.decision.space_uid ?? undefined,
+        sessionUid: ledger.sessionUid,
+        dryRun: mode === "shadow",
+        startSeq: ledger.curatorTurnSeq ?? 0,
+        prevTurn: ledger.curatorLastTurn,
+        throttleState: {
+          turnsEvaluated: prevStats.turnsEvaluated,
+          acceptedOps: prevStats.acceptedOps,
+        },
+        nowIso: new Date((options.now ? options.now() : Date.now())).toISOString().replace(/\.\d{3}Z$/, "Z"),
+      },
+    );
+    if (prepared.evaluated === 0) return;
+
+    let sent = 0;
+    let accepted = 0;
+    let refused = 0;
+    let errors = 0;
+
+    for (const req of prepared.requests) {
+      try {
+        const res = await withDeadline(postCurator(req.body), timeoutMs);
+        sent += 1;
+        const obj = object(res);
+        if (Array.isArray(obj?.accepted_ops)) accepted += obj.accepted_ops.length;
+        if (Array.isArray(obj?.refused_ops)) refused += obj.refused_ops.length;
+      } catch (err) {
+        errors += 1;
+        recordFailOpen(
+          input.session_id,
+          input.hook_event_name,
+          `curator turn: ${(err as Error)?.message || "failed"}`,
+          options,
+        );
+        // Stop on timeout/network failure and preserve curatorOffset for retry at next boundary.
+        withLedger(input.session_id, options, (current) => {
+          const s = current.curatorStats ?? { ...prevStats };
+          current.curatorStats = {
+            ...s,
+            mode,
+            errors: s.errors + errors,
+          };
+          return undefined;
+        });
+        return;
+      }
+    }
+
+    withLedger(input.session_id, options, (current) => {
+      current.curatorOffset = Math.max(current.curatorOffset ?? 0, prepared.nextOffset);
+      current.curatorTurnSeq = Math.max(current.curatorTurnSeq ?? 0, prepared.nextSeq);
+      if (prepared.lastPair) current.curatorLastTurn = prepared.lastPair;
+      const s = current.curatorStats ?? {
+        mode,
+        turnsEvaluated: 0,
+        turnsSent: 0,
+        turnsThrottled: 0,
+        acceptedOps: 0,
+        refusedOps: 0,
+        errors: 0,
+      };
+      current.curatorStats = {
+        mode,
+        turnsEvaluated: s.turnsEvaluated + prepared.evaluated,
+        turnsSent: s.turnsSent + sent,
+        turnsThrottled: s.turnsThrottled + prepared.throttled,
+        acceptedOps: s.acceptedOps + accepted,
+        refusedOps: s.refusedOps + refused,
+        errors: s.errors + errors,
+      };
+      return undefined;
+    });
+  } catch (error) {
+    recordFailOpen(input.session_id, input.hook_event_name, "curator turn", options);
+    console.error(
+      `mindgraph-hook: session curator failed open (${(error as Error)?.message || "unknown error"})`,
+    );
+  }
+}
+
 const TURN_ON_COMMAND = "npx -y mindgraph-mcp@latest on";
 
 /**
@@ -2008,14 +2163,19 @@ async function dispatchHook(
         return undefined;
       });
       return NOOP;
-    case "Stop":
+    case "Stop": {
+      if (options.harness === "claude-code") {
+        await curateTurns(input, client, options);
+      }
       return stop(input, options);
+    }
     case "SessionEnd":
       return sessionEnd(input, client, options);
     case "UserPromptSubmit":
       return promptRecall(input, client, options);
     case "PreCompact":
       await captureTranscript(input, client, options);
+      await curateTurns(input, client, options);
       return NOOP;
     default:
       return NOOP;

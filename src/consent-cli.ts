@@ -196,6 +196,17 @@ export function cardBody(
       "  assistant text (secrets removed) is sent to MindGraph.",
     );
   }
+  if (features.curatorMode === "shadow") {
+    lines.push(
+      "  Session curator is in shadow mode: redacted user and assistant turns are sent to",
+      "  MindGraph /curator/turn with dry_run=true (telemetry only, no graph writes).",
+    );
+  } else if (features.curatorMode === "live") {
+    lines.push(
+      "  Session curator is on: redacted user and assistant turns are sent to MindGraph",
+      "  /curator/turn to maintain durable memory items in this place's space.",
+    );
+  }
   lines.push("  The model can save notes, lessons and work through the MindGraph tools.");
   const baseUrl = (stored.baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, "");
   const org = stored.orgId ? `organization ${stored.orgId}` : "the API key's default organization";
@@ -204,7 +215,7 @@ export function cardBody(
     `  To ${baseUrl}, ${org}:`,
     `  a session record (date, model, harness) and ${subject.what}'s name and remote${subject.remote ? ` (${subject.remote})` : ""},`,
     "  plus whatever the model chooses to save.",
-    features.capture
+    features.capture || features.curatorMode !== "off"
       ? "  Never: file contents or command output (tool calls and tool output are not sent)."
       : features.promptRecall
         ? "  Never: file contents or command output."

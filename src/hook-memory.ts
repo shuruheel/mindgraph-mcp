@@ -317,3 +317,185 @@ export function buildCaptureRequest(
     turns: turns.length,
   };
 }
+
+// ---- Per-turn session curator hook helpers (Step S5) -------------------------
+
+export const CURATOR_MAX_TURN_CHARS = 3_000;
+export const CURATOR_DEFAULT_MAX_TURNS_PER_DISPATCH = 4;
+export const CURATOR_TARGET_WRITE_RATE = 0.55;
+export const CURATOR_THROTTLE_WARMUP_TURNS = 8;
+
+export interface CuratorTurnPair {
+  user: string;
+  assistant: string;
+}
+
+export interface CuratorThrottleState {
+  turnsEvaluated: number;
+  acceptedOps: number;
+}
+
+const ACK_PHRASE =
+  "(?:yes|yeah|yep|yup|no|nope|ok|okay|sure|thanks|thank you|got it|sounds good|looks good|lgtm|continue|proceed|go ahead|do it|run it|ship it|next|done|approved|merge|stop|cancel|please|let'?s go|let'?s start)";
+const TRIVIAL_CODING_ACK = new RegExp(`^${ACK_PHRASE}(?:[,;\\s]+${ACK_PHRASE})*[.!?, ]*$`, "i");
+
+const DURABLE_INTENT_SIGNAL =
+  /\b(?:decid(?:e|ed|ing|ion)|prefer(?:s|red|ence)?|constraint|standing rule|always|never|must not|do not|don'?t|forget|retract|remove|delete|instead|switch(?:ed|ing)? to|replac(?:e|ed|ing)|chang(?:e|ed|ing) to|no longer|deprecated|requirement|policy|architecture|freeze|frozen|pin(?:ned)?|agreed|lesson|invariant|budget|cap|deadline|target|rollout|shadow|consent)\b/i;
+
+function clipCuratorText(text: string, maxChars: number): string {
+  const scrubbed = redactSecrets(text).trim();
+  if (scrubbed.length <= maxChars) return scrubbed;
+  return `${scrubbed.slice(0, maxChars)}\n...[truncated]`;
+}
+
+/** Pair user/assistant text turns into curator turn pairs with secret redaction
+ * and per-side length caps. Tool calls/output are already excluded by
+ * `extractTranscriptTurns`. */
+export function pairTranscriptTurns(
+  turns: TranscriptTurn[],
+  maxChars = CURATOR_MAX_TURN_CHARS,
+): CuratorTurnPair[] {
+  const pairs: CuratorTurnPair[] = [];
+  let curUser: string | undefined;
+  let asstParts: string[] = [];
+
+  const flush = (): void => {
+    if (curUser !== undefined) {
+      const user = clipCuratorText(curUser, maxChars);
+      const assistant = clipCuratorText(asstParts.join("\n"), maxChars);
+      if (user) pairs.push({ user, assistant });
+    }
+    curUser = undefined;
+    asstParts = [];
+  };
+
+  for (const turn of turns) {
+    if (turn.role === "user") {
+      flush();
+      curUser = turn.text;
+    } else if (curUser !== undefined) {
+      asstParts.push(turn.text);
+    }
+  }
+  flush();
+  return pairs;
+}
+
+export function isTrivialCodingAck(userText: string): boolean {
+  const trimmed = userText.trim();
+  return trimmed.length === 0 || (trimmed.length <= 28 && TRIVIAL_CODING_ACK.test(trimmed));
+}
+
+export function hasDurableIntentSignal(pair: CuratorTurnPair): boolean {
+  return DURABLE_INTENT_SIGNAL.test(pair.user);
+}
+
+/** Decide whether a coding-session turn should be sent to `POST /curator/turn`.
+ * Always skips empty turns and trivial acknowledgements, always admits turns
+ * with explicit durable/update/retraction user cues, and throttles routine
+ * engineering turns once session write rate reaches `CURATOR_TARGET_WRITE_RATE`
+ * (keeping coding-session writes <= 60/100 turns). */
+export function shouldCurateTurn(
+  pair: CuratorTurnPair,
+  state: CuratorThrottleState,
+): { send: boolean; reason: "trivial_ack" | "durable_signal" | "write_rate_throttle" | "eligible" } {
+  if (isTrivialCodingAck(pair.user)) {
+    return { send: false, reason: "trivial_ack" };
+  }
+  if (hasDurableIntentSignal(pair)) {
+    return { send: true, reason: "durable_signal" };
+  }
+  if (
+    state.turnsEvaluated >= CURATOR_THROTTLE_WARMUP_TURNS &&
+    state.acceptedOps / Math.max(1, state.turnsEvaluated) >= CURATOR_TARGET_WRITE_RATE
+  ) {
+    return { send: false, reason: "write_rate_throttle" };
+  }
+  return { send: true, reason: "eligible" };
+}
+
+export interface PreparedCuratorTurns {
+  requests: Array<{
+    seq: number;
+    pair: CuratorTurnPair;
+    body: Record<string, unknown>;
+  }>;
+  nextOffset: number;
+  evaluated: number;
+  throttled: number;
+  lastPair?: CuratorTurnPair;
+  nextSeq: number;
+}
+
+/** Build bounded `POST /curator/turn` payloads from transcript bytes appended
+ * since `offset`, applying secret redaction, coding-session write throttling,
+ * and shadow (`dry_run: true`) vs live (`dry_run: false`) mode. */
+export function buildCuratorTurnRequests(
+  transcriptPath: string,
+  sessionId: string,
+  offset: number,
+  opts: {
+    spaceUid?: string;
+    sessionUid?: string;
+    dryRun: boolean;
+    promptVersion?: string;
+    startSeq?: number;
+    prevTurn?: CuratorTurnPair;
+    throttleState?: CuratorThrottleState;
+    maxTurnsPerDispatch?: number;
+    nowIso?: string;
+  },
+): PreparedCuratorTurns {
+  const { text, nextOffset } = readTranscriptSince(transcriptPath, offset);
+  const pairs = pairTranscriptTurns(extractTranscriptTurns(text));
+  const maxTurns = opts.maxTurnsPerDispatch ?? CURATOR_DEFAULT_MAX_TURNS_PER_DISPATCH;
+  const startSeq = opts.startSeq ?? 0;
+  const nowIso = opts.nowIso ?? new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const promptVersion = opts.promptVersion ?? "v3";
+  const throttle = {
+    turnsEvaluated: opts.throttleState?.turnsEvaluated ?? 0,
+    acceptedOps: opts.throttleState?.acceptedOps ?? 0,
+  };
+
+  let prev = opts.prevTurn;
+  let seq = startSeq;
+  let throttled = 0;
+  const requests: PreparedCuratorTurns["requests"] = [];
+
+  for (const pair of pairs) {
+    const verdict = shouldCurateTurn(pair, throttle);
+    throttle.turnsEvaluated += 1;
+    seq += 1;
+    if (!verdict.send) {
+      throttled += 1;
+      prev = pair;
+      continue;
+    }
+    const body: Record<string, unknown> = {
+      ...(opts.spaceUid ? { space_uid: opts.spaceUid } : {}),
+      session_uid: opts.sessionUid || `claude-code:${sessionId}`,
+      idempotency_key: `mcp-curator:${sessionId}:${seq}`,
+      occurred_at: nowIso,
+      ...(prev ? { prev_turn: { user: prev.user, assistant: prev.assistant, occurred_at: nowIso } } : {}),
+      turn: { user: pair.user, assistant: pair.assistant },
+      prompt_version: promptVersion,
+      dry_run: opts.dryRun,
+    };
+    requests.push({ seq, pair, body });
+    prev = pair;
+  }
+
+  // Bound per-hook dispatch to the most recent `maxTurns` selected turns so
+  // hooks remain fast and non-blocking even after long uninterrupted bursts.
+  const bounded = requests.length > maxTurns ? requests.slice(requests.length - maxTurns) : requests;
+  throttled += requests.length - bounded.length;
+
+  return {
+    requests: bounded,
+    nextOffset,
+    evaluated: pairs.length,
+    throttled,
+    lastPair: prev,
+    nextSeq: seq,
+  };
+}
