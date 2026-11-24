@@ -1,4 +1,5 @@
 import type { HookScope } from "./hook-installer.js";
+import type { CuratorMode } from "./hook-env.js";
 
 /**
  * argv parsing for the mindgraph-mcp CLI. Lives in its own module so tests
@@ -20,6 +21,8 @@ export function parseArgs(argv: string[]): {
   promptRecall?: boolean;
   /** --capture / --no-capture; undefined = keep stored choice. */
   capture?: boolean;
+  /** --curator / --curator-shadow / --curator-live / --no-curator; undefined = keep stored choice. */
+  curatorMode?: CuratorMode;
   sessionId?: string;
 } {
   const args = argv.slice(2);
@@ -35,6 +38,7 @@ export function parseArgs(argv: string[]): {
   let dir: string | undefined;
   let promptRecall: boolean | undefined;
   let capture: boolean | undefined;
+  let curatorMode: CuratorMode | undefined;
   let sessionId: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
@@ -81,6 +85,16 @@ export function parseArgs(argv: string[]): {
       case "--no-capture":
         capture = false;
         break;
+      case "--curator":
+      case "--curator-shadow":
+        curatorMode = "shadow";
+        break;
+      case "--curator-live":
+        curatorMode = "live";
+        break;
+      case "--no-curator":
+        curatorMode = "off";
+        break;
       case "--session-id":
         sessionId = args[++i];
         break;
@@ -122,6 +136,7 @@ export function parseArgs(argv: string[]): {
     dir,
     promptRecall,
     capture,
+    curatorMode,
     sessionId,
   };
 }

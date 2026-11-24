@@ -17,6 +17,8 @@ import path from "node:path";
  * organization from this file only, so a project's settings cannot redirect
  * hook traffic; the agent id may still come from MINDGRAPH_AGENT_ID.
  */
+export type CuratorMode = "off" | "shadow" | "live";
+
 export interface HookEnv {
   baseUrl?: string;
   apiKey?: string;
@@ -37,6 +39,8 @@ export interface HookEnv {
   promptRecall?: boolean;
   /** Claude PreCompact/SessionEnd transcript capture (default off). */
   capture?: boolean;
+  /** Per-turn session curator hook mode (default off; shadow-first via --curator). */
+  curatorMode?: CuratorMode;
 }
 
 /**
@@ -196,6 +200,10 @@ export function hookEnvPath(dir?: string, env?: NodeJS.ProcessEnv): string {
  * the old default-on flag: it records the old default, not a choice. */
 export const RETIRED_KEYS = ["promptRecall"] as const;
 
+function parseCuratorMode(value: unknown): CuratorMode | undefined {
+  return value === "off" || value === "shadow" || value === "live" ? value : undefined;
+}
+
 function hookEnvFromRecord(parsed: Record<string, unknown>): HookEnv {
   return {
     baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : undefined,
@@ -207,6 +215,7 @@ function hookEnvFromRecord(parsed: Record<string, unknown>): HookEnv {
         ? parsed.promptRecallOptIn
         : undefined,
     capture: typeof parsed.capture === "boolean" ? parsed.capture : undefined,
+    curatorMode: parseCuratorMode(parsed.curatorMode),
   };
 }
 
@@ -230,10 +239,12 @@ export function loadHookEnv(dir?: string): HookEnv {
 export function resolvedHookFeatures(stored: HookEnv): {
   promptRecall: boolean;
   capture: boolean;
+  curatorMode: CuratorMode;
 } {
   return {
     promptRecall: stored.promptRecall === true,
     capture: stored.capture === true,
+    curatorMode: stored.curatorMode ?? "off",
   };
 }
 
@@ -377,6 +388,7 @@ export function saveHookEnv(
         orgId: env.orgId === null ? undefined : (env.orgId ?? existing.orgId),
         promptRecall: env.promptRecall ?? existing.promptRecall,
         capture: env.capture ?? existing.capture,
+        curatorMode: env.curatorMode ?? existing.curatorMode,
       };
       // The opt-in is written under its own key; the legacy `promptRecall` key
       // is dropped on every write (RETIRED_KEYS). Every other key, the consent

@@ -350,14 +350,20 @@ describe("writing hooks.json", () => {
 
 describe("resolvedHookFeatures", () => {
   it("runs only the features the user opted into", () => {
-    expect(resolvedHookFeatures({})).toEqual({ promptRecall: false, capture: false });
-    expect(resolvedHookFeatures({ promptRecall: true, capture: true })).toEqual({
+    expect(resolvedHookFeatures({})).toEqual({
+      promptRecall: false,
+      capture: false,
+      curatorMode: "off",
+    });
+    expect(resolvedHookFeatures({ promptRecall: true, capture: true, curatorMode: "shadow" })).toEqual({
       promptRecall: true,
       capture: true,
+      curatorMode: "shadow",
     });
     const dir = home();
     // The legacy default-on flag is not an opt-in.
     writeRaw(dir, JSON.stringify({ promptRecall: true }));
     expect(resolvedHookFeatures(loadHookEnv(dir)).promptRecall).toBe(false);
+    expect(resolvedHookFeatures(loadHookEnv(dir)).curatorMode).toBe("off");
   });
 });
