@@ -22,7 +22,7 @@ export default defineConfig([
     // and must run with no adjacent node_modules — tsup externalizes
     // `dependencies` by default, which left a bare require("mindgraph") in
     // the copy (SessionStart "cjs/loader" crash, 2026-07-29, bug #7).
-    noExternal: ["mindgraph"],
+    noExternal: ["mindgraph", "jsonc-parser"],
   },
   {
     entry: { index: "src/index.ts" },

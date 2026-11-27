@@ -65,6 +65,43 @@ Or drop this into your Claude Desktop config by hand (`~/Library/Application Sup
 }
 ```
 
+## Omarchy desktop
+
+Open **MindGraph** from the Omarchy menu to save an excerpt, search project memory, or resume work in the default coding agent. Each action opens a terminal project picker. The picker uses the same enabled repositories and saved connection as the coding hooks.
+
+From a checkout containing the desktop commands, build and install the CLI with Node.js 20 or later. Use a user-writable npm prefix on your desktop PATH.
+
+```bash
+npm ci
+npm run build
+npm install --global "$(npm pack --silent)"
+mindgraph-mcp desktop install-menu
+```
+
+If you already use the coding hooks, the desktop picks up their API key, server URL, and organization from your MindGraph settings. For a new Claude Code setup, set `MINDGRAPH_API_KEY` in your terminal and run `mindgraph-mcp install-code --hooks`. For a local server set `MINDGRAPH_BASE_URL` during setup. A loopback server that accepts unauthenticated requests also works with `mindgraph-mcp install-hooks --harness codex --scope user --base-url http://127.0.0.1:18790`. For agent handoff, register MindGraph in the chosen agent against the same server and organization. See the Codex setup below if you use Codex. Choose the agent in Omarchy under **Setup → Defaults → Agent**.
+
+From a standalone repository, run the following once with the Space you want to use. An existing workspace can use the `space_uid` on each repository in its `.mindgraph/workspace.json` and the usual workspace-root `mindgraph-mcp on` flow.
+
+```bash
+mindgraph-mcp on --space space:project:display
+```
+
+| Menu action | What you can do |
+| --- | --- |
+| Remember this | Type a note, enter `:selection` for the Wayland primary selection, or `:clipboard` for copied text. Add a source URL or file path, review the text and destination, and press **y** to save. The note and source together can be up to 8 KiB. |
+| Recall | Search the selected Space. The results include recorded sources when available. Capture and recall use the scoped `memory.v1` API. |
+| Resume project | Read the selected repository's task, next steps, blockers, and related memory. Open a linked file in the local checkout or hand the task UID to the default agent. The receiving agent needs the MindGraph coding tools to read the task. An empty project shows an empty brief. |
+
+For example, save the reason for pinning a display driver and its config path. In a MindGraph-enabled Claude Code session, record a task to verify the external monitor after suspend, scoped to the repository. Select Codex as your Omarchy default agent, open **Resume project**, and choose **Continue in default agent** to have Codex read the same task.
+
+The integration targets the Omarchy Quickshell menu that reads `~/.config/omarchy/extensions/omarchy-menu.jsonc`. Omarchy watches this file. Remove the entries with `mindgraph-mcp desktop uninstall-menu`. You can also run `mindgraph-mcp desktop remember`, `recall`, or `resume` in a terminal. For a shortcut, put a binding with an unused key combination in `~/.config/hypr/bindings.lua`, for example:
+
+```lua
+o.bind("SUPER + ALT + SHIFT + R", "Resume MindGraph project", "omarchy-launch-tui mindgraph-mcp desktop resume --from-menu")
+```
+
+[Omarchy menu and keybinding reference](https://omarchy.org/manual/dotfiles/) · [Omarchy agent setup](https://omarchy.org/manual/ai/)
+
 ### Cursor (local server)
 
 ```bash

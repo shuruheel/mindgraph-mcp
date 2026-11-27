@@ -22,6 +22,8 @@ import {
   runOn,
 } from "./consent-cli.js";
 import { runOffAll } from "./consent-residue.js";
+import { printable } from "./consent-plan.js";
+import { desktopTerminal, runDesktop } from "./desktop.js";
 import { runImportNotes } from "./import-notes.js";
 import {
   EVAL_REQUIRES_HOME,
@@ -557,7 +559,12 @@ USAGE:
                                  after the session replaced it; exits 1 if
                                  not (prompt-recall items whose space the
                                  server did not report count as unchecked).
-  mindgraph-mcp on [path]        Turn MindGraph on for a repository or workspace
+  mindgraph-mcp desktop remember|recall|resume
+                                 Open the desktop project picker
+  mindgraph-mcp desktop install-menu|uninstall-menu
+                                 Manage Omarchy menu entries for this user
+  mindgraph-mcp on [path] [--space <uid>]
+                                 Turn MindGraph on. --space pins a standalone repository
                                  (asks first; run it in your own terminal)
   mindgraph-mcp off [path]       Turn MindGraph off for a repository or workspace
   mindgraph-mcp off --all [--dry-run]
@@ -812,10 +819,28 @@ async function main(): Promise<void> {
     hooks,
     agentId,
     positionals,
+    spaceUid,
     dir,
   } = parseArgs(process.argv);
 
+  if (spaceUid && command !== "on") throw new Error("--space is supported by on only.");
   switch (command) {
+    case "desktop": {
+      const io = desktopTerminal();
+      const args = process.argv.slice(3);
+      const fromMenu = args.at(-1) === "--from-menu";
+      if (fromMenu) args.pop();
+      try {
+        await runDesktop(args, io);
+      } catch (error) {
+        if (!fromMenu) throw error;
+        console.error(printable(error instanceof Error ? error.message : String(error)));
+        process.exitCode = 1;
+      } finally {
+        if (fromMenu && io.stdin.isTTY) await io.ask("Press Enter to close. ");
+      }
+      break;
+    }
     case "skills": {
       if (!apiKey) {
         console.error(
@@ -1297,7 +1322,7 @@ async function main(): Promise<void> {
       try {
         code =
           command === "on"
-            ? await runOn(positionals[0], io)
+            ? await runOn(positionals[0], io, spaceUid)
             : all
               ? await runOffAll(io, { dryRun })
               : await runOff(positionals[0], io);

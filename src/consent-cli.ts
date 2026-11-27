@@ -345,7 +345,7 @@ async function chooseMain(io: ConsentIo, max: number, notNow: number, preview: n
 }
 
 /** `on [path]`. Returns the exit code. */
-export async function runOn(target: string | undefined, io: ConsentIo): Promise<number> {
+export async function runOn(target: string | undefined, io: ConsentIo, spaceUid?: string): Promise<number> {
   const terminal = requireHumanTerminal(io);
   if (!terminal.ok) {
     io.err(terminal.message);
@@ -376,11 +376,16 @@ export async function runOn(target: string | undefined, io: ConsentIo): Promise<
     throw error;
   }
 
+  if (spaceUid && plan.kind === "workspace") {
+    io.err("Set space_uid on the repository in .mindgraph/workspace.json and run on at the workspace root.");
+    return 1;
+  }
   const current = resolveConsent(plan.target, loaded, { env: resolutionEnv(io.env) });
   if (
     current.state === "on" &&
     current.root === plan.root &&
-    (plan.kind === "repo" || current.repo !== undefined)
+    (plan.kind === "repo" || current.repo !== undefined) &&
+    (!spaceUid || spaceUid === current.space_uid)
   ) {
     io.out(
       `MindGraph is already on in ${displayPath(current.repo?.root ?? current.root)}. Check: ${COMMAND} status`,
@@ -394,6 +399,7 @@ export async function runOn(target: string | undefined, io: ConsentIo): Promise<
   let entry: ConsentRoot;
   let summary: string;
   if (plan.kind === "repo") {
+    if (spaceUid) out(`Repository memory will use ${spaceUid}.`);
     for (const line of repoCard(plan, stored, remoteRepositoryId(plan.root, git))) out(line);
     const choice = await chooseMain(io, 3, 2, 3);
     if (choice !== 1) {
@@ -403,7 +409,7 @@ export async function runOn(target: string | undefined, io: ConsentIo): Promise<
     const repository: PinnedRepository = {
       root: plan.root,
       repo_id: resolveRepositoryId(plan.root, undefined, git),
-      space_uid: null,
+      space_uid: spaceUid ?? null,
     };
     entry = {
       root: plan.root,
