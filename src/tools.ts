@@ -1637,7 +1637,13 @@ export async function handleTool(
     return await attachCodeRefsToToolResult(client, result, args, undefined, runtime);
   } catch (e: unknown) {
     if (e instanceof NotOptedInRepositoryError) return refusalResult(e.payload);
-    return toolError(e);
+    const cardUid =
+      name === "mindgraph_plan"
+        ? (["task_uid", "target_uid", "plan_uid", "step_uid"]
+            .map((key) => args[key])
+            .find((val): val is string => typeof val === "string" && val.length > 0))
+        : undefined;
+    return toolError(e, undefined, cardUid ? { cardUid } : undefined);
   }
 }
 

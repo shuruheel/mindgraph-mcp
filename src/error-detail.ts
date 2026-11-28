@@ -1,4 +1,5 @@
 import { MindGraphError } from "mindgraph";
+import { BOARD_MANAGED_CARD_ERROR_CODE, boardManagedWriteRefusal } from "./story-contract.js";
 
 /** Server typed-error bodies must reach the model — it can only self-correct
  * on errors it can see (30 burned turns in the first live dogfood). */
@@ -37,9 +38,35 @@ export function conflictState(e: unknown): Record<string, unknown> {
 }
 
 /** Works with older SDKs too: inspect the preserved body, not new SDK getters. */
-export function toolError(e: unknown, fallbackCode?: string) {
+export function toolError(
+  e: unknown,
+  fallbackCode?: string,
+  context?: { cardUid?: string },
+) {
   const body = e instanceof MindGraphError && e.body && typeof e.body === "object" && !Array.isArray(e.body)
     ? e.body as Record<string, unknown> : {};
+  const rawCode = typeof body.code === "string" ? body.code : typeof body.error === "string" ? body.error : undefined;
+  if (e instanceof MindGraphError && rawCode === BOARD_MANAGED_CARD_ERROR_CODE) {
+    const cardUid =
+      (typeof body.card_uid === "string" && body.card_uid) ||
+      (typeof body.task_uid === "string" && body.task_uid) ||
+      (typeof body.uid === "string" && body.uid) ||
+      context?.cardUid ||
+      "unknown";
+    const refusal = boardManagedWriteRefusal(cardUid);
+    const payload = {
+      ...refusal,
+      ...conflictState(e),
+      code: BOARD_MANAGED_CARD_ERROR_CODE,
+      status: e.status,
+      retriable: false,
+    };
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(payload) }],
+      structuredContent: payload,
+      isError: true as const,
+    };
+  }
   const code = typeof body.code === "string" ? body.code : fallbackCode;
   const payload = {
     error: errorDetail(e),
