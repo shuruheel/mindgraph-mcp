@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MindGraph · Work dashboard wireframes</title>
+<style>
+:root{--ink:#222925;--muted:#515c53;--rule:#b9c1b8;--paper:#f6f6f1;--accent:#245345}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.45 "Source Sans 3",system-ui,sans-serif}main,header{max-width:1080px;margin:auto;padding:1rem clamp(1rem,4vw,3rem)}header{display:flex;align-items:center;justify-content:space-between;gap:.7rem;flex-wrap:wrap;border-bottom:1px solid var(--rule)}header strong{font:600 1.5rem Georgia,serif}nav,.actions{display:flex;gap:.45rem;flex-wrap:wrap;align-items:center}nav a{padding:.4rem .65rem;text-decoration:none}nav a[aria-current]{background:var(--ink);color:white}h1,h2,h3,p{margin:.3rem 0 .75rem}h1{font:2.2rem Georgia,serif}h2{font-size:1.24rem}h3{font-size:1.04rem}a{color:var(--accent)}a,button,textarea,select{font:inherit}button,.button{display:inline-block;border:1px solid var(--accent);background:white;color:var(--accent);border-radius:3px;padding:.42rem .7rem;cursor:pointer;text-decoration:none}button.primary,.primary.button{background:var(--accent);color:white}button:disabled{opacity:.5;cursor:default}a:focus-visible,button:focus-visible,textarea:focus-visible,select:focus-visible{outline:3px solid #a35924;outline-offset:2px}.filter{margin:.8rem 0}.filter [aria-pressed=true]{background:var(--ink);color:white}hr{border:0;border-top:1px solid var(--rule);margin:1rem 0}.grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(13rem,1fr);gap:1rem}.box,article{padding:1rem;border:1px solid var(--rule);background:white;margin-bottom:.8rem}.rail{align-self:start}.small,small{color:var(--muted);font-size:.9rem}.item+.item{border-top:1px solid var(--rule);margin-top:1rem;padding-top:1rem}.lane{border-left:4px solid var(--accent)}.lane.paused{border-left-color:var(--rule)}textarea,select{width:100%;padding:.5rem;margin:.3rem 0 .7rem}textarea{min-height:4rem}.well{padding:.7rem;background:var(--paper);margin:.65rem 0}.target{border-left:2px solid var(--ink);padding-left:.7rem}.flow{display:flex;align-items:center;flex-wrap:wrap;gap:.35rem;margin:.5rem 0 1rem}.step{border:1px solid var(--rule);background:white;padding:.4rem .55rem}.overlay{max-width:27rem}.overlay a,.overlay button{margin:0 .3rem .4rem 0}details{margin:.6rem 0}summary{cursor:pointer;color:var(--accent)}[hidden]{display:none!important}section:focus{outline:none}footer{max-width:1080px;margin:auto;padding:.7rem 3rem;color:var(--muted);font-size:.84rem}@media(max-width:720px){.grid{grid-template-columns:minmax(0,1fr)}header{display:block}nav{margin-top:.6rem}h1{font-size:1.85rem}}
+.widgetOptions,.widgetGrid{display:flex;flex-wrap:wrap;gap:.6rem 1rem;margin:.6rem 0}.widgetGrid>div{flex:1 1 13rem}.widgetOptions{border:1px solid var(--rule)}#pluginPanel .actions{margin-top:.7rem}</style>
+<header><strong>MindGraph</strong><nav aria-label="Wireframe views"><a href="#feed">Activity</a><a href="#objective">Objective</a><a href="#desktop">Omarchy</a><a href="#map">Flow diagrams</a></nav></header>
+<main>
+<section id="feed" tabindex="-1"><h1>Agent activity</h1><div class="actions filter" aria-label="Activity filters"><button id="all" aria-pressed="true">All updates</button><button id="needs" aria-pressed="false">Needs you · 2</button></div>
+<div class="grid"><article aria-label="Recent agent updates"><div id="arrivals" class="well" hidden><button id="reveal">Show 1 new update</button></div>
+<div class="item" id="newEvent" hidden><small>10:48 · Evidence ready · Import reliability</small><h2>The import audit passed its three checks</h2><p>A separate, completed audit now has an evidence summary. The renamed-file story still has its own blocker.</p><details><summary>View audit results</summary><p>Three fixture imports preserved their revision metadata. The result applies to the import audit only.</p></details></div>
+<div class="item" id="blockedItem"><small id="blockedMeta">10:43 · Blocker · Memory quality</small><h2>Which renamed-file example should we test?</h2><p id="blockedDesc">The citation worker has stopped. It needs your fixture before it can test renamed paths.</p><a class="primary button" id="answerLink" href="#question">Answer question</a></div>
+<div class="item progress"><small>10:38 · Progress · Memory quality</small><h2>Citations now retain their source revision</h2><p>The change was merged. This lets the next story open the passage as it was when the decision was recorded.</p><details><summary>View evidence</summary><p>Both sample citations retained the original commit after a later edit. Measured on two fixtures.</p></details></div>
+<div class="item" id="approvalItem"><small>10:24 · Approval requested · Memory quality</small><h2>What should happen if a cited revision is missing?</h2><p>Review the proposed fallback before the agent starts work on citation recovery.</p><a class="button" href="story-review.html">Review story specification</a></div>
+</article><aside class="box rail"><h2>Current objective</h2><p>Make recalled decisions trustworthy</p><a href="#objective">See progress across lanes →</a><hr><label><input type="checkbox" id="preview"> Preview an incoming milestone</label></aside></div></section>
+
+<section id="question" hidden tabindex="-1"><a href="#feed">← Activity</a><h1>Which renamed-file example should we test?</h1><article><small>Make recalled decisions trustworthy / Memory quality</small><p>The citation worker needs one known rename with a verifiable source passage. Which fixture should the worker use?</p>
+<form id="answerForm"><label for="answer">Answer the worker</label><textarea id="answer" required placeholder="Name the fixture and the expected passage"></textarea><button class="primary">Send answer</button></form>
+<p id="answerReceipt" role="status"></p><a href="#feed">Return to activity</a></article></section>
+
+<section id="objective" hidden tabindex="-1"><a href="#feed">← Activity</a><h1>Make recalled decisions trustworthy</h1><div class="grid"><div>
+<article class="lane" id="memoryLaneCard"><small>Lane</small><h2 id="memory-lane">Memory quality</h2><p data-memory>Active · Citation worker running</p><p id="fixtureStatus"><strong>Blocked</strong> · The renamed-file case needs a fixture.</p><a id="fixtureLink" href="#question">Answer the fixture question →</a><p><strong>Awaiting approval</strong> · Open the exact source behind a decision.</p><p class="small">Latest delivery · Citations retain their revision.</p><a href="story-review.html">Review citation behavior →</a></article>
+<article class="lane paused" id="importLaneCard"><small>Lane</small><h2>Import reliability</h2><p data-import>Suspended · 1 approved story ready</p><p>Next story · Check revision metadata after import.</p></article></div>
+<aside class="box rail"><h2>Discuss this objective</h2><p class="small">Try the prepared instruction in this wireframe.</p><p class="well">Pause Memory quality and start Import reliability.</p>
+<div class="actions"><button id="switch" class="primary">Send instruction</button><button id="undoSwitch" hidden>Reverse change</button></div>
+<p id="receipt" role="status"></p><details><summary>What can run?</summary><p>Starting a lane makes approved, unblocked stories eligible. A worker already running in a paused lane saves its checkpoint and holds future tool actions.</p></details></aside></div></section>
+
+<section id="desktop" hidden tabindex="-1"><h1>Omarchy launcher</h1><p class="small">Preview the launcher in either connection state.</p><label for="auth">Connection state</label><select id="auth" class="overlay"><option value="off">Signed out</option><option value="on">Connected</option></select>
+<div class="box overlay"><h2>MindGraph</h2><div id="signedOut"><button id="connect">Connect</button></div><div id="signedIn" hidden><a class="button" href="#feed">Dashboard</a><a class="button" href="#resume">Resume work</a><button id="disconnect">Disconnect</button></div></div>
+<article id="pluginPanel" hidden><h2>Desktop widgets</h2>
+<fieldset class="widgetOptions"><legend>Show on this desktop</legend>
+<label><input type="checkbox" value="blockers" checked> Blockers</label>
+<label><input type="checkbox" value="objectives"> Objectives</label>
+<label><input type="checkbox" value="decisions"> Decisions</label>
+<label><input type="checkbox" value="updates"> Updates</label>
+<label><input type="checkbox" value="tasks"> Tasks</label>
+<label><input type="checkbox" value="lanes"> Lanes</label></fieldset>
+<div class="widgetGrid">
+<div class="well" data-widget="blockers"><h3>Blockers</h3><p id="widgetBlocker">One worker needs your renamed-file fixture.</p><a id="widgetQuestion" href="#question">Open question</a></div>
+<div class="well" data-widget="objectives" hidden><h3>Objectives</h3><p>Make recalled decisions trustworthy</p><a href="#objective">View objective</a></div>
+<div class="well" data-widget="decisions" hidden><h3>Decisions</h3><p>Approve the fallback for a missing citation.</p><a href="story-review.html">Review specification</a></div>
+<div class="well" data-widget="updates" hidden><h3>Updates</h3><p id="widgetUpdate">Merged · Citations retain their source revision.</p><a href="#feed">Open activity</a></div>
+<div class="well" data-widget="tasks" hidden><h3>Tasks</h3><p>Inspect the citation fixture · local checkout</p><a href="#resume">Resume local task</a></div>
+<div class="well" data-widget="lanes" hidden><h3>Lanes</h3><p>Memory quality · <span id="widgetLane">Active</span></p><a href="#objective">View lane in objective</a></div>
+</div>
+<h3>Blocker interruptions</h3><label><input type="checkbox" id="notifyBlocker" checked> Notify me when a worker is waiting for my answer</label>
+<div class="actions"><button id="tryBlocker">Preview blocker event</button><button id="tryProgress">Preview progress event</button></div>
+<p id="delivery" role="status"></p>
+<div class="box overlay" id="alertPreview" hidden><small>Desktop notification preview · Memory quality</small><h3>Citation checks are stopped</h3><p>Which renamed-file example should the worker use?</p><a class="button" href="#question">Answer question</a><button id="dismissBlocker">Dismiss</button></div></article></section>
+
+<section id="resume" hidden tabindex="-1"><a href="#desktop">← MindGraph launcher</a><h1>Resume work</h1><article><small>Recent repository · mindgraph-mcp</small><h2>Memory quality</h2><p>Open the exact source behind a recalled decision.</p><a class="button" href="story-review.html">Review story in browser</a></article><article><small>Local task · mindgraph-mcp</small><h2>Inspect the citation fixture</h2><p>This task has a checkout on this device.</p><button id="openApp">Open in Codex</button><p role="status" id="handoff"></p></article></section>
+
+<section id="map" hidden tabindex="-1"><h1>Flow diagrams</h1><article><h2>Where a decision takes place</h2><div class="flow"><span class="step">Desktop menu or optional widget</span> → <a class="step" href="#feed">Activity feed</a> → <a class="step" href="story-review.html">Review story</a> → <span class="step">Approve one revision</span></div><div class="flow"><span class="step">Desktop menu</span> → <a class="step" href="#resume">Resume work</a> → <span class="step">Story in browser or task in local app</span></div></article>
+<article><h2>What approval authorizes</h2><div class="flow"><span class="step">Draft</span> → <span class="step">Human review</span> → <span class="step">Approved revision</span> → <span class="step">Worker executes</span></div><p class="target">Requested change → revised proposal → review the changed element.</p><div class="flow"><span class="step">Measured result</span> → <span class="step">Review evidence &amp; draft PR</span> → <span class="step">Human merge</span> → <span class="step">Done</span></div><p class="target">Failed acceptance case → inspect evidence → revise the story or implementation.</p></article></section>
+</main><footer>Design wireframes · simulated activity · changes last until reload</footer>
+<script>
+const el=id=>document.getElementById(id);
+function route(){
+  const id=location.hash.slice(1)||'feed';
+  const view=document.querySelector('main > section[id="'+(['feed','objective','question','desktop','resume','map'].includes(id)?id:'feed')+'"]');
+  for(const section of document.querySelectorAll('main > section'))section.hidden=section!==view;
+  for(const item of document.querySelectorAll('nav a')){
+    if(item.hash==='#'+view.id)item.setAttribute('aria-current','page');else item.removeAttribute('aria-current');
+  }
+  document.title=view.querySelector('h1').textContent+' · MindGraph wireframes';
+  if(location.hash)view.focus();
+}
+window.addEventListener('hashchange',route);route();
+let answered=false, needsOnly=false, incoming=false, revealed=false, memoryPaused=false;
+function activeNeedsCount(){
+  const blockerActionable = !answered && !memoryPaused;
+  return 1 + (blockerActionable ? 1 : 0);
+}
+function renderBlockerState(){
+  if(answered){
+    el('blockedMeta').textContent='10:43 thread · Answer sent · Memory quality';
+    el('blockedItem').querySelector('h2').textContent='Fixture answer sent to the worker';
+    el('blockedDesc').textContent='Waiting for acknowledgement. Your answer stays with the original question.';
+    el('answerLink').textContent='View thread';
+    el('widgetBlocker').textContent='Answer sent · Waiting for the worker to acknowledge.';
+    el('widgetQuestion').textContent='View thread';
+    el('fixtureStatus').textContent='Answered · Waiting for the worker to acknowledge the fixture.';
+    el('fixtureLink').textContent='View answer →';
+  }else if(memoryPaused){
+    el('blockedMeta').textContent='10:43 · Blocker · Paused lane · Memory quality';
+    el('blockedItem').querySelector('h2').textContent='Which renamed-file example should we test?';
+    el('blockedDesc').textContent='Lane is suspended. The question remains open and will block the story when Memory quality resumes.';
+    el('answerLink').textContent='View question';
+    el('widgetBlocker').textContent='Memory quality is paused · 1 question saved for resume.';
+    el('widgetQuestion').textContent='View question';
+    el('fixtureStatus').innerHTML='<strong>Paused blocker</strong> · The renamed-file case still needs a fixture when resumed.';
+    el('fixtureLink').textContent='View the fixture question →';
+  }else{
+    el('blockedMeta').textContent='10:43 · Blocker · Memory quality';
+    el('blockedItem').querySelector('h2').textContent='Which renamed-file example should we test?';
+    el('blockedDesc').textContent='The citation worker has stopped. It needs your fixture before it can test renamed paths.';
+    el('answerLink').textContent='Answer question';
+    el('widgetBlocker').textContent='One worker needs your renamed-file fixture.';
+    el('widgetQuestion').textContent='Open question';
+    el('fixtureStatus').innerHTML='<strong>Blocked</strong> · The renamed-file case needs a fixture.';
+    el('fixtureLink').textContent='Answer the fixture question →';
+  }
+}
+function filterFeed(){
+  el('all').setAttribute('aria-pressed',String(!needsOnly));
+  el('needs').setAttribute('aria-pressed',String(needsOnly));
+  el('needs').textContent='Needs you · '+activeNeedsCount();
+  document.querySelector('.progress').hidden=needsOnly;
+  el('blockedItem').hidden=needsOnly && (answered || memoryPaused);
+  el('newEvent').hidden=needsOnly || !revealed;
+  el('arrivals').hidden=needsOnly || !incoming || revealed;
+}
+el('all').onclick=()=>{needsOnly=false;filterFeed();};
+el('needs').onclick=()=>{needsOnly=true;filterFeed();};
+el('preview').onchange=()=>{incoming=el('preview').checked;filterFeed();};
+el('reveal').onclick=()=>{revealed=true;el('preview').disabled=true;filterFeed();el('newEvent').setAttribute('tabindex','-1');el('newEvent').focus();};
+el('answerForm').onsubmit=e=>{
+  e.preventDefault();const text=el('answer').value.trim();if(!text)return;
+  el('answerReceipt').textContent='Sent to the worker: “'+text+'” · Awaiting acknowledgement.';
+  el('answerForm').hidden=true;answered=true;
+  el('alertPreview').hidden=true;
+  renderBlockerState();
+  filterFeed();
+};
+function applyLaneState(paused, message){
+  memoryPaused=paused;
+  el('memoryLaneCard').classList.toggle('paused', paused);
+  el('importLaneCard').classList.toggle('paused', !paused);
+  document.querySelector('[data-memory]').textContent=paused ? 'Suspended · Pausing active worker (saving checkpoint)' : 'Active · Citation worker running';
+  document.querySelector('[data-import]').textContent=paused ? 'Active · 1 ready story eligible to start' : 'Suspended · 1 approved story ready';
+  el('receipt').textContent=message;
+  el('switch').disabled=paused;
+  el('undoSwitch').hidden=!paused;
+  el('widgetLane').textContent=paused ? 'Suspended' : 'Active';
+  if(paused) el('alertPreview').hidden=true;
+  renderBlockerState();
+  filterFeed();
+}
+el('switch').onclick=()=>{
+  applyLaneState(true, 'Memory quality suspended (active citation worker saving checkpoint). Import reliability started (1 approved story eligible). The citation worker’s fixture question stays with Memory quality.');
+  el('undoSwitch').focus();
+};
+el('undoSwitch').onclick=()=>{
+  applyLaneState(false, 'Reversed: Memory quality is active again and Import reliability is suspended.');
+  el('switch').focus();
+};
+function auth(connected){el('auth').value=connected?'on':'off';el('signedIn').hidden=!connected;el('signedOut').hidden=connected;
+  el('pluginPanel').hidden=!connected;
+  if(!connected){el('alertPreview').hidden=true;el('delivery').textContent='';}
+}
+el('auth').onchange=()=>auth(el('auth').value==='on');el('connect').onclick=()=>auth(true);el('disconnect').onclick=()=>auth(false);
+el('openApp').onclick=()=>{el('handoff').textContent='Handoff preview · Codex in mindgraph-mcp with task citation-fixture.';};
+let delivered=false;
+for(const input of document.querySelectorAll('.widgetOptions input')){
+  input.onchange=()=>{document.querySelector('[data-widget="'+input.value+'"]').hidden=!input.checked;};
+}
+el('tryBlocker').onclick=()=>{
+  if(answered || memoryPaused){
+    el('delivery').textContent='The worker is awaiting acknowledgement or its lane is suspended. No interruption is due.';
+  }else if(!el('notifyBlocker').checked){
+    el('delivery').textContent='Notifications paused. The blocker is available in Activity.';
+  }else if(delivered){
+    el('delivery').textContent='Already notified for this question. It remains in Activity until answered.';
+  }else{
+    delivered=true;
+    el('delivery').textContent='Worker stopped · Your answer is needed.';
+    el('alertPreview').hidden=false;
+  }
+};
+el('notifyBlocker').onchange=()=>{if(!el('notifyBlocker').checked)el('alertPreview').hidden=true;};
+el('dismissBlocker').onclick=()=>{el('alertPreview').hidden=true;el('delivery').textContent='Dismissed. The question remains open.';};
+el('tryProgress').onclick=()=>{
+  incoming=true;el('preview').checked=true;filterFeed();
+  el('widgetUpdate').textContent='Evidence ready · Import audit passed three fixture checks.';
+  el('delivery').textContent='Progress recorded in Updates and Activity.';
+};
+</script></html>

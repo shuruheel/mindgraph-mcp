@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Review a citation story · MindGraph</title>
+<style>
+:root{color-scheme:light;--ink:#172e32;--muted:#455f63;--line:#bbccc7;--paper:#f6f8f4;--green:#175b4e;--warn:#98631a;--fail:#8f2d2d}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 "Source Sans 3",system-ui,sans-serif}main{max-width:860px;margin:auto;padding:2rem clamp(1rem,5vw,3rem) 3rem}h1,h2,h3,p{margin:0 0 .65rem}h1{font:clamp(2rem,5vw,3rem)/1.1 Georgia,serif}h2{font-size:1.25rem}header{padding:1rem 0}small,.meta{color:var(--muted)}section,aside{border:1px solid var(--line);background:white;border-radius:8px;padding:1.15rem;margin:.85rem 0}button,textarea{font:inherit}button{padding:.45rem .8rem;border:1px solid var(--green);border-radius:5px;color:var(--green);background:white;cursor:pointer}button.primary{background:var(--green);color:white}button.subtle{font-size:.9rem;padding:.3rem .6rem;border-color:var(--line);color:var(--ink)}button:disabled{opacity:.5;cursor:default}button:focus-visible,summary:focus-visible,textarea:focus-visible{outline:3px solid var(--warn);outline-offset:3px}textarea{display:block;width:100%;margin:.4rem 0 .7rem;padding:.5rem;border:1px solid var(--line);border-radius:4px}.path{display:grid;grid-template-columns:minmax(0,1fr) 1.3rem minmax(0,1.9fr) auto;align-items:center;margin:.5rem 0;gap:.4rem}.node{background:#edf3ef;border:1px solid var(--line);padding:.55rem;border-radius:4px}.node.changed{border-color:var(--green);background:#e3f1ec}.bars{display:grid;grid-template-columns:6rem minmax(0,1fr) 3.5rem;gap:.45rem;align-items:center;max-width:34rem}.track{background:#edf2ef;height:.85rem;border-radius:2px;overflow:hidden}.fill{background:#388373;height:100%}.fill.target{background:#29444c}.fill.measured-pass{background:var(--green)}.fill.measured-fail{background:var(--fail)}details{margin:.7rem 0}summary{cursor:pointer;color:var(--green)}table{border-collapse:collapse;width:100%;margin-top:.5rem}th,td{text-align:left;padding:.35rem .5rem;border-bottom:1px solid var(--line)}caption{text-align:left;color:var(--muted);font-size:.9rem;margin-bottom:.35rem}[hidden]{display:none!important}#message{font-weight:600}#evidence{border-left:4px solid var(--green)}code{overflow-wrap:anywhere}.controls{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem}.receipt{margin-top:1rem}.thread-list{list-style:none;padding:0;margin:.7rem 0}.thread-list li{border-left:3px solid var(--line);padding:.35rem .65rem;margin:.4rem 0;background:var(--paper)}.diff-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:.6rem;margin-top:.5rem}.diff-card{border:1px solid var(--line);border-radius:4px;padding:.6rem;background:var(--paper)}.diff-card.new{background:#edf6f2;border-color:var(--green)}@media(max-width:600px){.path{grid-template-columns:minmax(0,1fr)}.path>span[aria-hidden]{display:none}}
+</style>
+<main>
+<p class="meta">MindGraph / Memory quality / Story review</p>
+<header><h1>Open the source behind a recalled decision</h1></header>
+<p>As a returning engineer, I want to see the source revision behind a decision so I can check what it actually said.</p>
+<p class="meta">Interactive design specimen · fictional repository and measurements · <strong id="rev">Revision 1</strong></p>
+
+<section aria-labelledby="interaction"><h2 id="interaction">What does the engineer see?</h2>
+<aside><strong>Decision</strong><p>Keep the original revision with each citation.</p><button id="citation" aria-expanded="false" aria-controls="passage">Open cited passage</button>
+<blockquote id="passage" hidden>“Record the commit alongside the file path.”<br><small>docs/decisions.md · revision a41c · lines 7–8</small></blockquote></aside></section>
+
+<section aria-labelledby="behavior"><h2 id="behavior">What happens when the source changes?</h2>
+<p class="meta">Select any branch to comment before requesting changes.</p>
+<div class="path" data-branch-row="available"><span class="node">Revision available</span><span aria-hidden="true">→</span><span class="node" id="branch-available">Open the cited passage.</span><button class="subtle comment-btn" data-branch="available" data-label="Revision available">Comment</button></div>
+<div class="path" data-branch-row="renamed"><span class="node">File renamed</span><span aria-hidden="true">→</span><span class="node" id="branch-renamed">Open the original path at the cited revision.</span><button class="subtle comment-btn" data-branch="renamed" data-label="File renamed">Comment</button></div>
+<div class="path" data-branch-row="unavailable"><span class="node">Revision unavailable</span><span aria-hidden="true">→</span><span class="node" id="branch-unavailable">Open the latest revision instead.</span><button class="subtle comment-btn" data-branch="unavailable" data-label="Revision unavailable">Comment</button></div>
+
+<div id="change-controls">
+<form id="annotation" hidden>
+<label for="comment" id="comment-label">Add a comment</label>
+<textarea id="comment" required rows="2" placeholder="Describe what should happen on this branch"></textarea>
+<div class="controls"><button type="submit">Add comment</button><button type="button" class="subtle" id="cancel-comment">Cancel</button></div>
+</form>
+</div>
+
+<ul id="thread" class="thread-list" hidden aria-label="Story revision comments"></ul>
+<div class="controls" id="review-actions" hidden>
+<button id="request-changes">Request changes</button>
+</div>
+<button id="revised" hidden>Review revised proposal</button>
+
+<details id="diff" hidden><summary>Compare revision 1 and revision 2</summary>
+<div class="diff-grid">
+<div class="diff-card"><small>Revision 1 · Unavailable branch</small><p id="prior-branch">Open the latest revision instead.</p></div>
+<div class="diff-card new"><small>Revision 2 · Unavailable branch</small><p id="next-branch"></p></div>
+</div>
+</details>
+</section>
+
+<section aria-labelledby="criteria"><h2 id="criteria">How will we know it works?</h2><p>Correct outcomes across three pinned cases. Each branch above contributes one case. <small>Fixture v1.0</small></p>
+<div class="bars" id="chart-bars">
+<span>Baseline</span><span class="track"><span class="fill" style="display:block;width:66.667%"></span></span><b>2/3</b>
+<span>Target</span><span class="track"><span class="fill target" style="display:block;width:100%"></span></span><b>3/3</b>
+<span id="measured-label" hidden>Measured</span><span class="track" id="measured-track" hidden><span class="fill" id="measured-fill" style="display:block;width:0%"></span></span><b id="measured-value" hidden></b>
+</div>
+<details id="cases-detail"><summary>Acceptance cases and underlying counts</summary>
+<table><caption>Illustrative fixture · v1.0</caption>
+<thead><tr><th>Case</th><th>Baseline</th><th>Target</th><th class="measured-col" hidden>Measured</th></tr></thead>
+<tbody>
+<tr><td>Available</td><td>Pass</td><td>Pass</td><td class="measured-col" id="case-available" hidden>—</td></tr>
+<tr><td>Renamed</td><td>Pass</td><td>Pass</td><td class="measured-col" id="case-renamed" hidden>—</td></tr>
+<tr><td>Unavailable</td><td>Fail</td><td>Pass</td><td class="measured-col" id="case-unavailable" hidden>—</td></tr>
+</tbody></table></details></section>
+
+<div class="controls"><button class="primary" id="approve">Approve revision 1</button><button id="run" hidden>Show simulated run evidence</button></div>
+<p class="receipt" id="message" role="status"></p><aside id="evidence" hidden></aside>
+</main>
+<script>
+const byId = id => document.getElementById(id);
+let revision = 1;
+let activeBranch = null;
+let activeLabel = '';
+let comments = [];
+let changesRequested = false;
+let approved;
+const originalUnavailable = 'Open the latest revision instead.';
+const revisedUnavailable = 'Keep the citation visible and explain that the cited revision is unavailable.';
+
+byId('citation').onclick = () => {
+  const nextHidden = !byId('passage').hidden;
+  byId('passage').hidden = nextHidden;
+  byId('citation').setAttribute('aria-expanded', String(!nextHidden));
+};
+
+function setCommentButtonsDisabled(disabled) {
+  for (const btn of document.querySelectorAll('.comment-btn')) btn.disabled = disabled;
+}
+
+for (const btn of document.querySelectorAll('.comment-btn')) {
+  btn.onclick = () => {
+    activeBranch = btn.dataset.branch;
+    activeLabel = btn.dataset.label;
+    byId('comment-label').textContent = 'Comment on ' + activeLabel + ' (Revision ' + revision + ')';
+    byId('annotation').hidden = false;
+    byId('comment').focus();
+  };
+}
+
+byId('cancel-comment').onclick = () => {
+  byId('annotation').hidden = true;
+  byId('comment').value = '';
+  activeBranch = null;
+};
+
+byId('annotation').onsubmit = event => {
+  event.preventDefault();
+  const text = byId('comment').value.trim();
+  if (!text || !activeBranch) return;
+  comments.push({ revision, branch: activeBranch, label: activeLabel, text });
+  const li = document.createElement('li');
+  li.textContent = 'Your comment on revision ' + revision + ' · ' + activeLabel + ' — ' + text;
+  byId('thread').appendChild(li);
+  byId('thread').hidden = false;
+  byId('annotation').hidden = true;
+  byId('comment').value = '';
+  if (!approved && !changesRequested) {
+    byId('review-actions').hidden = false;
+    byId('message').textContent = comments.length + (comments.length === 1 ? ' comment staged. Add more comments or request changes.' : ' comments staged. Add more comments or request changes.');
+    byId('request-changes').focus();
+  }
+};
+
+byId('request-changes').onclick = () => {
+  changesRequested = true;
+  byId('review-actions').hidden = true;
+  byId('annotation').hidden = true;
+  setCommentButtonsDisabled(true);
+  byId('approve').disabled = true;
+  const targetsUnavailable = comments.some(c => c.branch === 'unavailable');
+  if (targetsUnavailable) {
+    byId('revised').hidden = false;
+    byId('message').textContent = 'Changes requested. A prepared revision is available in this specimen.';
+    byId('revised').focus();
+  } else {
+    byId('message').textContent = 'Changes requested on another branch. In this specimen, revise the unavailable-revision branch to inspect revision 2.';
+    setCommentButtonsDisabled(false);
+    changesRequested = false;
+  }
+};
+
+byId('revised').onclick = () => {
+  revision = 2;
+  changesRequested = false;
+  byId('branch-unavailable').textContent = revisedUnavailable;
+  byId('branch-unavailable').classList.add('changed');
+  byId('branch-unavailable').setAttribute('tabindex', '-1');
+  byId('rev').textContent = 'Revision 2';
+  byId('prior-branch').textContent = originalUnavailable;
+  byId('next-branch').textContent = revisedUnavailable;
+  byId('diff').hidden = false;
+  byId('diff').open = true;
+  byId('revised').hidden = true;
+  setCommentButtonsDisabled(false);
+  byId('approve').disabled = false;
+  byId('approve').textContent = 'Approve revision 2';
+  byId('message').textContent = 'Revision 2 ready. The unavailable-revision branch was updated; your earlier comments remain anchored to revision 1.';
+  byId('branch-unavailable').focus();
+};
+
+byId('approve').onclick = () => {
+  approved = Object.freeze({
+    revision,
+    branch: byId('branch-unavailable').textContent,
+    target: 3,
+  });
+  byId('approve').disabled = true;
+  byId('review-actions').hidden = true;
+  byId('annotation').hidden = true;
+  setCommentButtonsDisabled(true);
+  byId('run').hidden = false;
+  byId('message').textContent = 'Approved story revision ' + approved.revision + '.';
+  byId('run').focus();
+};
+
+byId('run').onclick = () => {
+  const passed = approved.revision === 2 ? 3 : 2;
+  const pct = (passed / approved.target) * 100;
+  byId('measured-label').hidden = false;
+  byId('measured-track').hidden = false;
+  byId('measured-value').hidden = false;
+  byId('measured-value').textContent = passed + '/' + approved.target;
+  const fill = byId('measured-fill');
+  fill.style.width = pct + '%';
+  fill.className = 'fill ' + (passed === approved.target ? 'measured-pass' : 'measured-fail');
+  for (const cell of document.querySelectorAll('.measured-col')) cell.hidden = false;
+  byId('case-available').textContent = 'Pass';
+  byId('case-renamed').textContent = 'Pass';
+  byId('case-unavailable').textContent = approved.revision === 2 ? 'Pass' : 'Fail';
+  byId('cases-detail').open = true;
+  byId('evidence').textContent = 'Simulated run · approved revision ' + approved.revision + ' · ' + passed + '/3 cases passed against target ' + approved.target + '/3. Unavailable branch — ' + approved.branch;
+  byId('evidence').hidden = false;
+  byId('message').textContent = passed === approved.target ? 'Evidence ready for review. Draft PR can be opened for human merge.' : 'Target missed. Review the unavailable-source case.';
+};
+</script>
+</html>
