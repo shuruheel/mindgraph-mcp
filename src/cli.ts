@@ -1,3 +1,5 @@
+import { sessionConsent } from "./session-consent.js";
+import { browserSignIn } from "./browser-connect.js";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -12,16 +14,19 @@ import {
   saveHookEnv,
   stableAgentId,
 } from "./hook-env.js";
-import { consentFor, eventDirectory } from "./consent.js";
+import { loadConsentStore, eventDirectory } from "./consent.js";
 import {
   consentStatusLines,
   hookConfigFailure,
   INSTALL_CONSENT_LINE,
+  refreshRunnerForConsent,
   nodeConsentIo,
   runOff,
   runOn,
 } from "./consent-cli.js";
 import { runOffAll } from "./consent-residue.js";
+import { printable } from "./consent-plan.js";
+import { desktopTerminal, runDesktop } from "./desktop.js";
 import { runImportNotes } from "./import-notes.js";
 import {
   EVAL_REQUIRES_HOME,
@@ -30,6 +35,7 @@ import {
   evalBaseUrlRefusal,
   evalHomeRefusal,
   evalMode,
+  isLoopbackUrl,
   evalUserScopeRefusal,
 } from "./eval-guard.js";
 import {
@@ -557,7 +563,12 @@ USAGE:
                                  after the session replaced it; exits 1 if
                                  not (prompt-recall items whose space the
                                  server did not report count as unchecked).
-  mindgraph-mcp on [path]        Turn MindGraph on for a repository or workspace
+  mindgraph-mcp desktop setup|remember|recall|resume|disconnect|status|dashboard|widgets|shell-daemon
+                                 Desktop launcher, status, widgets, daemon, handoff, and disconnect
+  mindgraph-mcp desktop install-menu|uninstall-menu
+                                 Manage Omarchy menu entries for this user
+  mindgraph-mcp on [path] [--space <uid>]
+                                 Turn MindGraph on. --space pins a standalone repository
                                  (asks first; run it in your own terminal)
   mindgraph-mcp off [path]       Turn MindGraph off for a repository or workspace
   mindgraph-mcp off --all [--dry-run]
@@ -617,69 +628,6 @@ No install needed for chat apps: add the hosted connector https://mindgraph.clou
 }
 
 
-const DASHBOARD_URL =
-  process.env.MINDGRAPH_DASHBOARD_URL || "https://mindgraph.cloud";
-const POLL_INTERVAL = 2000; // 2 seconds
-const POLL_TIMEOUT = 10 * 60 * 1000; // 10 minutes
-
-function generateCode(): string {
-  return crypto.randomBytes(32).toString("hex");
-}
-
-function openBrowser(url: string): void {
-  // C44 (same class): the URL was interpolated into a shell string, and it
-  // derives from MINDGRAPH_DASHBOARD_URL. Lower severity than the API-key path
-  // since the operator sets their own env, but it is the same one-line fix, so
-  // there is no reason to leave a second shell-interpolation site behind.
-  try {
-    switch (process.platform) {
-      case "darwin":
-        execFileSync("open", [url]);
-        break;
-      case "win32":
-        // `start` is a cmd builtin, so cmd is unavoidable — but passing argv
-        // keeps the URL out of the command STRING. The empty argument is
-        // start's title placeholder.
-        execFileSync("cmd", ["/c", "start", "", url]);
-        break;
-      case "linux":
-        execFileSync("xdg-open", [url]);
-        break;
-    }
-  } catch {
-    // Silently fail — we'll show the URL for manual copy
-  }
-}
-
-async function pollForKey(code: string): Promise<string> {
-  const pollUrl = `${DASHBOARD_URL}/api/connect?code=${code}`;
-  const deadline = Date.now() + POLL_TIMEOUT;
-
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(pollUrl);
-      const data = await res.json();
-
-      if (data.status === "authorized" && data.api_key) {
-        return data.api_key;
-      }
-      if (data.status === "expired") {
-        throw new Error("Session expired. Please try again.");
-      }
-      if (data.status === "claimed") {
-        throw new Error("Session already used. Please try again.");
-      }
-    } catch (e: unknown) {
-      if (e instanceof Error && e.message.includes("Session")) throw e;
-      // Network error — keep polling
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
-  }
-
-  throw new Error("Timed out waiting for authorization.");
-}
-
 /** Print an evaluation-run refusal and exit 1; nothing when undefined. */
 function exitOnEvalRefusal(refusal: string | undefined): void {
   if (!refusal) return;
@@ -725,24 +673,8 @@ async function interactiveInit(baseUrl?: string): Promise<void> {
     }
   } else {
     // Browser auth flow. An evaluation run signs in nowhere but loopback.
-    const dashboardRefusal = evalBaseUrlRefusal(DASHBOARD_URL);
-    if (dashboardRefusal) {
-      console.error(`Error: ${dashboardRefusal}`);
-      rl.close();
-      process.exit(1);
-    }
-    const code = generateCode();
-    const authUrl = `${DASHBOARD_URL}/dashboard/connect?code=${code}`;
-
-    console.log("\nOpening browser to authorize...\n");
-    console.log(`  ${authUrl}\n`);
-    console.log("If the browser didn't open, copy the URL above and paste it in your browser.");
-    console.log("Waiting for authorization...\n");
-
-    openBrowser(authUrl);
-
     try {
-      apiKey = await pollForKey(code);
+      apiKey = await browserSignIn(console.log, process.env.MINDGRAPH_DASHBOARD_URL || "https://mindgraph.cloud", process.env);
       console.log("Authorization received!\n");
     } catch (e) {
       console.error(e instanceof Error ? e.message : "Authorization failed.");
@@ -812,10 +744,33 @@ async function main(): Promise<void> {
     hooks,
     agentId,
     positionals,
+    spaceUid,
     dir,
   } = parseArgs(process.argv);
 
+  if (spaceUid && command !== "on") throw new Error("--space is supported by on only.");
   switch (command) {
+    case "desktop": {
+      const io = desktopTerminal();
+      const args = process.argv.slice(3);
+      io.refreshRunner = () => refreshRunnerForConsent(__PACKAGE_VERSION__, __filename);
+      const fromMenu = args.at(-1) === "--from-menu";
+      if (fromMenu) args.pop();
+      try {
+        if (fromMenu && args.length === 1 && args[0] === "welcome") {
+          await runDesktop(["install-menu"], io);
+          args[0] = "setup";
+        }
+        await runDesktop(args, io);
+      } catch (error) {
+        if (!fromMenu) throw error;
+        console.error(printable(error instanceof Error ? error.message : String(error)));
+        process.exitCode = 1;
+      } finally {
+        if (fromMenu && io.stdin.isTTY) await io.ask("Press Enter to close. ");
+      }
+      break;
+    }
     case "skills": {
       if (!apiKey) {
         console.error(
@@ -1122,7 +1077,7 @@ async function main(): Promise<void> {
       }
       // MindGraph acts only in a directory the user turned it on for. Outside
       // one, the hook checks no key, writes no file and builds no client.
-      const decision = consentFor(eventDirectory(input));
+      const decision = sessionConsent(eventDirectory(input));
       if (decision.state !== "on") {
         process.stdout.write(`${JSON.stringify(wire(offOutput(input, decision)))}\n`);
         break;
@@ -1144,7 +1099,7 @@ async function main(): Promise<void> {
         process.stdout.write("{}\n");
         break;
       }
-      if (!hookApiKey) {
+      if (!hookApiKey && !isLoopbackUrl(hookBaseUrl)) {
         recordHookHealth(hookHarness, "no-api-key");
         process.stdout.write("{}\n");
         break;
@@ -1297,7 +1252,7 @@ async function main(): Promise<void> {
       try {
         code =
           command === "on"
-            ? await runOn(positionals[0], io)
+            ? await runOn(positionals[0], io, spaceUid)
             : all
               ? await runOffAll(io, { dryRun })
               : await runOff(positionals[0], io);
@@ -1331,6 +1286,23 @@ async function main(): Promise<void> {
       process.exit(code);
     }
 
+    case "desktop-agent": {
+      if (positionals.length !== 1 || !["claude-code", "codex"].includes(positionals[0])) throw new Error("Choose a supported desktop coding harness.");
+      exitOnEvalRefusal(evalHomeRefusal());
+      if (loadConsentStore().status !== "ok") throw new Error("Connect your desktop to MindGraph from the Omarchy menu first.");
+      const stored = loadHookEnv();
+      const url = stored.baseUrl || "https://api.mindgraph.cloud";
+      exitOnEvalRefusal(evalBaseUrlRefusal(url));
+      process.env.MINDGRAPH_BASE_URL = url;
+      process.env.MINDGRAPH_API_KEY = stored.apiKey || "";
+      process.env.MINDGRAPH_PROFILE = "coding";
+      process.env.MINDGRAPH_HARNESS = positionals[0];
+      process.env.MINDGRAPH_AGENT_ID = stored.agentId || stableAgentId();
+      if (stored.orgId) process.env.MINDGRAPH_ORG_ID = stored.orgId;
+      else delete process.env.MINDGRAPH_ORG_ID;
+      await import("./index.js");
+      break;
+    }
     case "serve": {
       // When run without a subcommand, start the MCP server
       // Import dynamically to avoid loading MCP SDK for CLI commands

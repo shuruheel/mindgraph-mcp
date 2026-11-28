@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=MindGraph
+Comment=Connect MindGraph and link a project
+Exec=omarchy-launch-tui /usr/bin/mindgraph-mcp desktop welcome --from-menu
+Icon=applications-development
+Categories=Development;
+Terminal=false

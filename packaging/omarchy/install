@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "$0")/../.." && pwd)
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+mkdir "$work/mindgraph"
+cp -r "$root"/{src,package.json,package-lock.json,tsconfig.json,tsup.config.ts,LICENSE} "$work/mindgraph/"
+cp "$root/packaging/omarchy/mindgraph.desktop" "$work/mindgraph/"
+cd "$work/mindgraph"
+npm ci --no-audit --no-fund
+npm run build
+npm prune --omit=dev --no-audit --no-fund
+cd "$work"
+tar -czf mindgraph-runtime.tar.gz mindgraph/{dist,package.json,node_modules,LICENSE,mindgraph.desktop}
+# The package contains exactly the locked runtime built above. npm can come
+# from Omarchy's mise install or the distribution's npm package.
+version=$(node -p "require('./mindgraph/package.json').version")
+sed "s/^pkgver=.*/pkgver=$version/" "$root/packaging/omarchy/PKGBUILD" > PKGBUILD
+makepkg --geninteg >> PKGBUILD
+if [[ ${1:-} == --build-only ]]; then
+  export PKGDEST="${PKGDEST:-$root/packaging/omarchy/out}"
+  mkdir -p "$PKGDEST"
+  makepkg --cleanbuild
+else
+  makepkg --syncdeps --install
+  /usr/bin/mindgraph-mcp desktop install-menu
+fi

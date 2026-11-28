@@ -1,0 +1,21 @@
+pkgname=mindgraph-mcp-omarchy
+pkgver=0.34.0
+pkgrel=1
+pkgdesc="MindGraph coding tools and project memory for the Omarchy desktop"
+arch=(any)
+url="https://github.com/shuruheel/mindgraph-mcp"
+license=(MIT)
+depends=('nodejs>=20' 'git' 'wl-clipboard' 'omarchy')
+provides=("mindgraph-mcp=$pkgver")
+conflicts=(mindgraph-mcp)
+source=("mindgraph-runtime.tar.gz")
+
+package() {
+  cd "$srcdir/mindgraph"
+  install -d "$pkgdir/usr/lib/mindgraph-mcp" "$pkgdir/usr/bin"
+  cp -r dist package.json node_modules "$pkgdir/usr/lib/mindgraph-mcp/"
+  chmod 755 "$pkgdir/usr/lib/mindgraph-mcp/dist/cli.js"
+  ln -s ../lib/mindgraph-mcp/dist/cli.js "$pkgdir/usr/bin/mindgraph-mcp"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 mindgraph.desktop "$pkgdir/usr/share/applications/mindgraph.desktop"
+}

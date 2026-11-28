@@ -1,0 +1,378 @@
+{
+  "contract_version": "story-revision.v1",
+  "canonicalization": "RFC 8785 (JCS) + SHA-256",
+  "card_uid": "citation-source",
+  "lane_id": "memory-quality",
+  "revisions": {
+    "r1": {
+      "revision_uid": "r1",
+      "parent_revision_uid": null,
+      "manifest_digest": "sha256:1c89cd8ecfd52d4c832c49715b945d384930b915ca1d801171f794d818a09425",
+      "fixture_digest": "sha256:45b214ee1e3bce3c18d2b2bbe3b58686b32c511f6564018e609e06a19fe250d4",
+      "manifest": {
+        "schema_version": 1,
+        "narrative_md": "As a returning engineer, I want to open the source revision behind a recalled decision and see clearly when the cited revision is unavailable.",
+        "acceptance_cases": [
+          {
+            "id": "available",
+            "label": "Cited revision is available",
+            "baseline": "pass",
+            "target": "pass"
+          },
+          {
+            "id": "renamed",
+            "label": "Cited file was renamed after the decision",
+            "baseline": "pass",
+            "target": "pass"
+          },
+          {
+            "id": "unavailable",
+            "label": "Cited revision is unavailable",
+            "baseline": "fail",
+            "target": "pass"
+          }
+        ],
+        "panels": [
+          {
+            "id": "citation-mockup",
+            "kind": "interaction_mockup",
+            "element_ids": [
+              "decision-card",
+              "citation-button",
+              "cited-passage"
+            ],
+            "accessible_text": "A recalled decision card with an Open cited passage button revealing docs/decisions.md at revision a41c lines 7-8.",
+            "content": {
+              "decision": "Keep the original revision with each citation.",
+              "citation_label": "Open cited passage",
+              "passage": "Record the commit alongside the file path.",
+              "source_path": "docs/decisions.md",
+              "revision": "a41c",
+              "lines": "7-8"
+            },
+            "assets": [
+              {
+                "path": "docs/decisions.md",
+                "sha256": "02f0d0bdaf1b0c5518c61797797e18fd3a44eac11e7d55a31528bc2e353cd9e1"
+              }
+            ]
+          },
+          {
+            "id": "source-behavior",
+            "kind": "behavior_diagram",
+            "element_ids": [
+              "available",
+              "renamed",
+              "unavailable"
+            ],
+            "accessible_text": "Three citation resolution branches: available opens the cited passage, renamed opens the original path at the cited revision, and unavailable applies the fallback rule.",
+            "content": {
+              "branches": [
+                {
+                  "id": "available",
+                  "condition": "Revision available",
+                  "outcome": "Open the cited passage."
+                },
+                {
+                  "id": "renamed",
+                  "condition": "File renamed",
+                  "outcome": "Open the original path at the cited revision."
+                },
+                {
+                  "id": "unavailable",
+                  "condition": "Revision unavailable",
+                  "outcome": "Open the latest revision instead."
+                }
+              ]
+            },
+            "assets": []
+          },
+          {
+            "id": "citation-criteria",
+            "kind": "acceptance_chart",
+            "element_ids": [
+              "baseline-bar",
+              "target-bar",
+              "measured-bar"
+            ],
+            "accessible_text": "Baseline 2 of 3 cases pass (available, renamed); target is 3 of 3 cases passing on fixture v1.0.0.",
+            "content": {
+              "denominator": 3,
+              "baseline_passed": 2,
+              "target_passed": 3,
+              "fixture_version": "1.0.0",
+              "case_ids": [
+                "available",
+                "renamed",
+                "unavailable"
+              ]
+            },
+            "assets": [
+              {
+                "path": "fixtures/citation-source/cases-v1.json",
+                "sha256": "5007d96c46d346a22672c07c41bd60aa8f19b4274b54c61fc6baeba6e689915b"
+              }
+            ]
+          }
+        ],
+        "fixture_ref": {
+          "repo_ref": "refs/mindgraph/fixtures/citation-source-v1",
+          "fixture_version": "1.0.0",
+          "paths": [
+            {
+              "path": "fixtures/citation-source/cases-v1.json",
+              "sha256": "5007d96c46d346a22672c07c41bd60aa8f19b4274b54c61fc6baeba6e689915b"
+            }
+          ]
+        }
+      }
+    },
+    "r2": {
+      "revision_uid": "r2",
+      "parent_revision_uid": "r1",
+      "changed_panel_id": "source-behavior",
+      "changed_element_id": "unavailable",
+      "manifest_digest": "sha256:1027e3e1ad8beb91ecfb3665219978da49aa1fcde3342bd0203a6cc049c8c9b9",
+      "fixture_digest": "sha256:45b214ee1e3bce3c18d2b2bbe3b58686b32c511f6564018e609e06a19fe250d4",
+      "manifest": {
+        "schema_version": 1,
+        "narrative_md": "As a returning engineer, I want to open the source revision behind a recalled decision and see clearly when the cited revision is unavailable.",
+        "acceptance_cases": [
+          {
+            "id": "available",
+            "label": "Cited revision is available",
+            "baseline": "pass",
+            "target": "pass"
+          },
+          {
+            "id": "renamed",
+            "label": "Cited file was renamed after the decision",
+            "baseline": "pass",
+            "target": "pass"
+          },
+          {
+            "id": "unavailable",
+            "label": "Cited revision is unavailable",
+            "baseline": "fail",
+            "target": "pass"
+          }
+        ],
+        "panels": [
+          {
+            "id": "citation-mockup",
+            "kind": "interaction_mockup",
+            "element_ids": [
+              "decision-card",
+              "citation-button",
+              "cited-passage"
+            ],
+            "accessible_text": "A recalled decision card with an Open cited passage button revealing docs/decisions.md at revision a41c lines 7-8.",
+            "content": {
+              "decision": "Keep the original revision with each citation.",
+              "citation_label": "Open cited passage",
+              "passage": "Record the commit alongside the file path.",
+              "source_path": "docs/decisions.md",
+              "revision": "a41c",
+              "lines": "7-8"
+            },
+            "assets": [
+              {
+                "path": "docs/decisions.md",
+                "sha256": "02f0d0bdaf1b0c5518c61797797e18fd3a44eac11e7d55a31528bc2e353cd9e1"
+              }
+            ]
+          },
+          {
+            "id": "source-behavior",
+            "kind": "behavior_diagram",
+            "element_ids": [
+              "available",
+              "renamed",
+              "unavailable"
+            ],
+            "accessible_text": "Three citation resolution branches: available opens the cited passage, renamed opens the original path at the cited revision, and unavailable applies the fallback rule.",
+            "content": {
+              "branches": [
+                {
+                  "id": "available",
+                  "condition": "Revision available",
+                  "outcome": "Open the cited passage."
+                },
+                {
+                  "id": "renamed",
+                  "condition": "File renamed",
+                  "outcome": "Open the original path at the cited revision."
+                },
+                {
+                  "id": "unavailable",
+                  "condition": "Revision unavailable",
+                  "outcome": "Keep the citation visible and explain that the cited revision is unavailable."
+                }
+              ]
+            },
+            "assets": []
+          },
+          {
+            "id": "citation-criteria",
+            "kind": "acceptance_chart",
+            "element_ids": [
+              "baseline-bar",
+              "target-bar",
+              "measured-bar"
+            ],
+            "accessible_text": "Baseline 2 of 3 cases pass (available, renamed); target is 3 of 3 cases passing on fixture v1.0.0.",
+            "content": {
+              "denominator": 3,
+              "baseline_passed": 2,
+              "target_passed": 3,
+              "fixture_version": "1.0.0",
+              "case_ids": [
+                "available",
+                "renamed",
+                "unavailable"
+              ]
+            },
+            "assets": [
+              {
+                "path": "fixtures/citation-source/cases-v1.json",
+                "sha256": "5007d96c46d346a22672c07c41bd60aa8f19b4274b54c61fc6baeba6e689915b"
+              }
+            ]
+          }
+        ],
+        "fixture_ref": {
+          "repo_ref": "refs/mindgraph/fixtures/citation-source-v1",
+          "fixture_version": "1.0.0",
+          "paths": [
+            {
+              "path": "fixtures/citation-source/cases-v1.json",
+              "sha256": "5007d96c46d346a22672c07c41bd60aa8f19b4274b54c61fc6baeba6e689915b"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "approval_request_r2": {
+    "card_uid": "citation-source",
+    "revision_uid": "r2",
+    "manifest_digest": "sha256:1027e3e1ad8beb91ecfb3665219978da49aa1fcde3342bd0203a6cc049c8c9b9",
+    "expected_version": 2,
+    "request_key": "req-approve-citation-source-r2-001"
+  },
+  "claim_response_r2": {
+    "run_uid": "run-citation-source-r2-001",
+    "card_uid": "citation-source",
+    "revision_uid": "r2",
+    "manifest_digest": "sha256:1027e3e1ad8beb91ecfb3665219978da49aa1fcde3342bd0203a6cc049c8c9b9",
+    "manifest_ref": "manifests/citation-source/r2.json",
+    "tested_base_commit": "a41c9e0b12f44709e128a5f3b0d9a1c42e8877aa",
+    "fixture_ref": {
+      "repo_ref": "refs/mindgraph/fixtures/citation-source-v1",
+      "fixture_version": "1.0.0",
+      "paths": [
+        {
+          "path": "fixtures/citation-source/cases-v1.json",
+          "sha256": "5007d96c46d346a22672c07c41bd60aa8f19b4274b54c61fc6baeba6e689915b"
+        }
+      ]
+    }
+  },
+  "evaluation_evidence": {
+    "r1_failed": {
+      "run_uid": "run-citation-source-r1-001",
+      "revision_uid": "r1",
+      "manifest_digest": "sha256:1c89cd8ecfd52d4c832c49715b945d384930b915ca1d801171f794d818a09425",
+      "tested_tree_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "fixture_digest": "sha256:45b214ee1e3bce3c18d2b2bbe3b58686b32c511f6564018e609e06a19fe250d4",
+      "evaluator_version": "eval-citation-v1.0.0",
+      "case_results": [
+        {
+          "case_id": "available",
+          "outcome": "pass"
+        },
+        {
+          "case_id": "renamed",
+          "outcome": "pass"
+        },
+        {
+          "case_id": "unavailable",
+          "outcome": "fail",
+          "detail": "Opened latest revision instead of reporting unavailable citation."
+        }
+      ]
+    },
+    "r2_passed": {
+      "run_uid": "run-citation-source-r2-001",
+      "revision_uid": "r2",
+      "manifest_digest": "sha256:1027e3e1ad8beb91ecfb3665219978da49aa1fcde3342bd0203a6cc049c8c9b9",
+      "tested_tree_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "fixture_digest": "sha256:45b214ee1e3bce3c18d2b2bbe3b58686b32c511f6564018e609e06a19fe250d4",
+      "evaluator_version": "eval-citation-v1.0.0",
+      "case_results": [
+        {
+          "case_id": "available",
+          "outcome": "pass"
+        },
+        {
+          "case_id": "renamed",
+          "outcome": "pass"
+        },
+        {
+          "case_id": "unavailable",
+          "outcome": "pass"
+        }
+      ]
+    }
+  },
+  "lane_command_example": {
+    "request": {
+      "command_batch_id": "cmd-chat-20261127-001",
+      "source": "chat",
+      "operations": [
+        {
+          "lane_id": "memory-quality",
+          "action": "suspend"
+        },
+        {
+          "lane_id": "import-reliability",
+          "action": "start"
+        }
+      ]
+    },
+    "receipt": {
+      "command_batch_id": "cmd-chat-20261127-001",
+      "board_version": 14,
+      "affected_lanes": [
+        {
+          "lane_id": "memory-quality",
+          "state": "suspended",
+          "worker_status": "pausing_checkpoint",
+          "eligible_ready_stories": 0,
+          "open_blockers": 1
+        },
+        {
+          "lane_id": "import-reliability",
+          "state": "active",
+          "worker_status": "idle",
+          "eligible_ready_stories": 1,
+          "open_blockers": 0
+        }
+      ],
+      "reverse_command": {
+        "command_batch_id": "cmd-chat-20261127-001-undo",
+        "source": "board",
+        "operations": [
+          {
+            "lane_id": "memory-quality",
+            "action": "resume"
+          },
+          {
+            "lane_id": "import-reliability",
+            "action": "suspend"
+          }
+        ]
+      }
+    }
+  }
+}

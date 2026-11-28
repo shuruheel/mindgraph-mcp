@@ -1,3 +1,4 @@
+import { sessionConsent } from "./session-consent.js";
 import { resolvePendingCall } from "./call-ledger.js";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { MindGraph } from "mindgraph";
@@ -14,15 +15,15 @@ import {
   runnerRefreshScopes,
   versionSkewNote,
 } from "./hook-installer.js";
-import { consentFor, type ConsentDecision } from "./consent.js";
+import { type ConsentDecision } from "./consent.js";
 import { notOptedIn, otherRoot, type ConsentCheck } from "./consent-refusal.js";
-import { evalBaseUrlRefusal, evalHomeRefusal, evalMode } from "./eval-guard.js";
+import { evalBaseUrlRefusal, evalHomeRefusal, evalMode, isLoopbackUrl } from "./eval-guard.js";
 
 declare const __PACKAGE_VERSION__: string;
 
 // ── Configuration ─────────────────────────────────────────────────────
 
-const API_KEY = process.env.MINDGRAPH_API_KEY;
+const API_KEY = process.env.MINDGRAPH_API_KEY || "";
 const BASE_URL =
   process.env.MINDGRAPH_BASE_URL || "https://api.mindgraph.cloud";
 
@@ -49,7 +50,7 @@ const HARNESS = process.env.MINDGRAPH_HARNESS || "generic";
 // is not gated.
 const GATED = PROFILE === "coding";
 
-if (!API_KEY) {
+if (!API_KEY && !(GATED && isLoopbackUrl(BASE_URL))) {
   console.error(
     "Error: MINDGRAPH_API_KEY environment variable is required.\n" +
       "Get your API key at https://mindgraph.cloud/dashboard/settings/api-keys\n" +
@@ -78,7 +79,7 @@ const client = new MindGraph({
 let INSTRUCTIONS = buildInstructions(PROFILE, HARNESS);
 
 // The session directory is where the host started this server.
-const sessionDecision = (): ConsentDecision => consentFor(process.cwd());
+const sessionDecision = (): ConsentDecision => sessionConsent(process.cwd());
 const START_DECISION = GATED ? sessionDecision() : undefined;
 if (GATED && START_DECISION?.state !== "on") {
   INSTRUCTIONS += `\n\n${CONSENT_OFF_INSTRUCTION}`;
@@ -92,7 +93,7 @@ const consentGate = GATED
         return { allowed: false, payload: notOptedIn(session, process.cwd()) };
       }
       if (callCwd === undefined) return { allowed: true, decision: session };
-      const call = consentFor(callCwd);
+      const call = sessionConsent(callCwd);
       if (call.state !== "on") {
         // A call's directory that did not resolve is never echoed back.
         return { allowed: false, payload: notOptedIn(call) };

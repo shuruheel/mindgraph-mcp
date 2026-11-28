@@ -468,6 +468,8 @@ export async function runOffAll(io: ConsentIo, options: ResidueOptions = {}): Pr
     writeConsent(
       (store) => {
         store.roots = [];
+        delete store.reconnectSiblings;
+        delete store.reconnectExcluded;
       },
       { env: io.env, now: io.now },
     );

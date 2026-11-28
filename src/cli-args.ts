@@ -17,6 +17,7 @@ export function parseArgs(argv: string[]): {
   agentId?: string;
   positionals: string[];
   dir?: string;
+  spaceUid?: string;
   /** --prompt-recall / --no-prompt-recall; undefined = keep stored choice. */
   promptRecall?: boolean;
   /** --capture / --no-capture; undefined = keep stored choice. */
@@ -36,6 +37,7 @@ export function parseArgs(argv: string[]): {
   let agentId: string | undefined = process.env.MINDGRAPH_AGENT_ID;
   const positionals: string[] = [];
   let dir: string | undefined;
+  let spaceUid: string | undefined;
   let promptRecall: boolean | undefined;
   let capture: boolean | undefined;
   let curatorMode: CuratorMode | undefined;
@@ -60,6 +62,12 @@ export function parseArgs(argv: string[]): {
       }
       case "--project-dir":
         projectDir = args[++i];
+        break;
+      case "--space":
+        spaceUid = args[++i];
+        if (!spaceUid || !/^space:[A-Za-z0-9_.:-]+$/.test(spaceUid) || spaceUid.length > 512) {
+          throw new Error("--space requires a Space UID such as space:project:display");
+        }
         break;
       case "--dir":
         dir = args[++i];
@@ -134,6 +142,7 @@ export function parseArgs(argv: string[]): {
     agentId,
     positionals,
     dir,
+    spaceUid,
     promptRecall,
     capture,
     curatorMode,

@@ -1,10 +1,10 @@
+import { sessionConsent } from "./session-consent.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import {
-  consentFor,
   eventDirectory,
   type ConsentDecision,
   type OffDecision,
@@ -2096,6 +2096,9 @@ export function offOutput(
       message: `MindGraph is paused in ${decision.root}: .mindgraph/workspace.json changed since you turned it on. Review: ${TURN_ON_COMMAND} ${decision.root}`,
     };
   }
+  if (decision.offerDesktopLink) {
+    return { kind: "notice", message: "New repository. To enable MindGraph here, open Super + Space → MindGraph → Set up MindGraph and link this checkout." };
+  }
   // Until the user has run on or off once, sessions in a repository or a
   // workspace say why MindGraph went quiet after the upgrade.
   if (
@@ -2126,7 +2129,7 @@ function decide(
   consent: HookRuntimeOptions["consent"],
 ): ConsentDecision {
   const directory = eventDirectory(input);
-  if (consent === undefined) return consentFor(directory);
+  if (consent === undefined) return sessionConsent(directory);
   return typeof consent === "function" ? consent(directory) : consent;
 }
 
