@@ -5,6 +5,7 @@ import {
   clearShellRuntimeState,
   dismissBlockerAlert,
   evaluateBlockerInterruptions,
+  formatBarStatus,
   loadShellRuntimeState,
   loadWidgetPreferences,
   saveShellRuntimeState,
@@ -141,5 +142,31 @@ describe("Omarchy shell widgets & blocker interruption engine", () => {
     clearShellRuntimeState(env);
     expect(loadShellRuntimeState(env).notifiedEpisodes).toEqual([]);
     expect(loadShellRuntimeState(env).dismissedEpisodes).toEqual([]);
+  });
+
+  it("formatBarStatus produces Waybar/omarchy-shell payloads without inflating paused-lane blockers", () => {
+    expect(formatBarStatus({ connected: false }).class).toBe("signed-out");
+
+    const pausedOnly = formatBarStatus({
+      connected: true,
+      blockers: [
+        makeBlocker({ lane_state: "suspended", work_state: "stopped" }),
+      ],
+      decisionsCount: 0,
+      lanesCount: 2,
+    });
+    expect(pausedOnly.class).toBe("idle");
+    expect(pausedOnly.activeBlockers).toBe(0);
+    expect(pausedOnly.pausedBlockers).toBe(1);
+
+    const active = formatBarStatus({
+      connected: true,
+      blockers: [makeBlocker({ lane_state: "active", work_state: "stopped" })],
+      decisionsCount: 2,
+    });
+    expect(active.class).toBe("blocker");
+    expect(active.text).toBe("MindGraph · 1 blocked");
+    expect(active.activeBlockers).toBe(1);
+    expect(active.pendingDecisions).toBe(2);
   });
 });

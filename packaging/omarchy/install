@@ -6,12 +6,13 @@ trap 'rm -rf -- "$work"' EXIT
 mkdir "$work/mindgraph"
 cp -r "$root"/{src,package.json,package-lock.json,tsconfig.json,tsup.config.ts,LICENSE} "$work/mindgraph/"
 cp "$root/packaging/omarchy/mindgraph.desktop" "$work/mindgraph/"
+cp "$root/packaging/omarchy/mindgraph-shell.service" "$work/mindgraph/"
 cd "$work/mindgraph"
 npm ci --no-audit --no-fund
 npm run build
 npm prune --omit=dev --no-audit --no-fund
 cd "$work"
-tar -czf mindgraph-runtime.tar.gz mindgraph/{dist,package.json,node_modules,LICENSE,mindgraph.desktop}
+tar -czf mindgraph-runtime.tar.gz mindgraph/{dist,package.json,node_modules,LICENSE,mindgraph.desktop,mindgraph-shell.service}
 # The package contains exactly the locked runtime built above. npm can come
 # from Omarchy's mise install or the distribution's npm package.
 version=$(node -p "require('./mindgraph/package.json').version")
