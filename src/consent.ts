@@ -44,6 +44,8 @@ export interface ConsentRoot {
 export interface ConsentStore {
   v: 1;
   acknowledged_at?: string;
+  reconnectSiblings?: boolean;
+  reconnectExcluded?: string[];
   roots: ConsentRoot[];
 }
 
@@ -65,6 +67,7 @@ export interface LoadedConsentStore {
 
 export type ConsentReason =
   | "consented"
+  | "reconnected"
   | "consented_worktree"
   | "store_missing"
   | "store_unreadable"
@@ -82,7 +85,7 @@ export type ConsentReason =
 
 export interface OnDecision {
   state: "on";
-  reason: "consented" | "consented_worktree";
+  reason: "consented" | "consented_worktree" | "reconnected";
   /** Real path of the event's directory. */
   directory: string;
   /** The consented root this directory resolved to. */
@@ -105,6 +108,7 @@ export interface OffDecision {
   /** Whether a `.git` was found at or above the directory (computed only when
    * no consented root contains it). */
   inRepository?: boolean;
+  offerDesktopLink?: boolean;
 }
 
 export type ConsentDecision = OnDecision | OffDecision;
@@ -349,6 +353,8 @@ export function parseConsentStore(raw: unknown): ConsentStore | undefined {
       ? { acknowledged_at: raw.acknowledged_at }
       : {}),
     roots,
+    ...(raw.reconnectSiblings === true ? { reconnectSiblings: true } : {}),
+    ...(Array.isArray(raw.reconnectExcluded) ? { reconnectExcluded: raw.reconnectExcluded.filter((p): p is string => validStoredPath(p, home)) } : {}),
   };
 }
 

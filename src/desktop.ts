@@ -4,22 +4,35 @@ import { createInterface } from "node:readline";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { MindGraph } from "mindgraph";
-import { repositoryIdentityKey } from "./codegraph.js";
-import { consentFor, loadConsentStore, pathContains, resolveConsent, type PinnedRepository } from "./consent.js";
-import { displayPath, type ConsentIo } from "./consent-cli.js";
+import { openBrowser } from "./browser-connect.js";
+import { configureAgent, configureSelectedAgents } from "./desktop-agent.js";
+import { CLOUD_API, checkConnection, connection, graphClient, humanSetup, linkProject, pick, projectIdentity, reconnectPreference, record, setupConnection, type DesktopIo } from "./desktop-setup.js";
+import { desktopConnectionStatus, revokeDeviceAuth } from "./device-auth.js";
+import { mindgraphConfigDir, mindgraphRuntimeDir, updateHookConfig } from "./hook-env.js";
+import { clearShellRuntimeState, loadWidgetPreferences, saveWidgetPreferences, WIDGET_KINDS, type WidgetKind } from "./shell-widgets.js";
+import { createShellDaemon, queryShellDaemon, shellSocketPath } from "./shell-daemon.js";
+import { sessionConsent } from "./session-consent.js";
+import { loadConsentStore, pathContains, resolveConsent, type PinnedRepository } from "./consent.js";
+import { displayPath } from "./consent-cli.js";
 import { printable } from "./consent-plan.js";
-import { assertEvalBaseUrl, evalAppConfigRefusal, evalHomeRefusal, isLoopbackUrl } from "./eval-guard.js";
-import { loadHookEnv, mindgraphConfigDir, stableAgentId } from "./hook-env.js";
+import { evalAppConfigRefusal, evalHomeRefusal, isLoopbackUrl } from "./eval-guard.js";
+import { Writable } from "node:stream";
 import { updateMenu } from "./omarchy-menu.js";
 import { renderContext, renderResumeContext } from "./render.js";
 
-type DesktopIo = Pick<ConsentIo, "stdin" | "stdout" | "env" | "out" | "ask">;
 // Give each prompt its own terminal reader. Closing it before a network request
 // or an agent handoff releases stdin and restores the terminal's input mode.
 export function desktopTerminal(): DesktopIo {
   return {
     stdin: process.stdin, stdout: process.stdout, env: process.env,
     out: line => console.log(line),
+    secret: question => new Promise(resolve => {
+      process.stdout.write(question);
+      const sink = new Writable({ write(_chunk, _encoding, done) { done(); } });
+      const reader = createInterface({ input: process.stdin, output: sink, terminal: true });
+      reader.once("close", () => { process.stdout.write("\n"); resolve(""); });
+      reader.question("", answer => { resolve(answer); reader.close(); });
+    }),
     ask: question => new Promise(resolve => {
       const reader = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
       reader.once("close", () => resolve(""));
@@ -31,33 +44,20 @@ export function desktopTerminal(): DesktopIo {
   };
 }
 
-type RecordValue = Record<string, unknown>;
 const NOTE_BYTES = 8192;
-
-function record(value: unknown): RecordValue {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : {};
-}
 
 // Keep line breaks, but render terminal controls from selections, paths and the API visibly.
 function display(text: string): string {
   return text.split("\n").map(printable).join("\n");
 }
 
-async function pick<T>(io: DesktopIo, items: T[], label: (item: T) => string, question: string): Promise<T | undefined> {
-  items.forEach((item, i) => io.out(`${i + 1}. ${printable(label(item))}`));
-  const answer = (await io.ask(`${question} (Enter to close): `)).trim();
-  if (!answer) return;
-  const item = /^[1-9]\d*$/.test(answer) ? items[Number(answer) - 1] : undefined;
-  if (!item) throw new Error("Select a number from the list.");
-  return item;
-}
-
 function checkProject(repo: PinnedRepository, io: DesktopIo): void {
-  const decision = consentFor(repo.root, { env: io.env });
+  const decision = sessionConsent(repo.root, io.env);
   if (decision.state !== "on" || decision.repo?.root !== repo.root ||
       decision.repo.repo_id !== repo.repo_id || decision.space_uid !== repo.space_uid) {
     throw new Error("Project settings changed. Reopen the project picker.");
   }
+  io.checkConnection?.();
 }
 
 function listProjects(io: DesktopIo): PinnedRepository[] {
@@ -136,17 +136,13 @@ async function openTarget(io: DesktopIo, client: MindGraph, repo: PinnedReposito
 }
 
 async function resume(io: DesktopIo, client: MindGraph, repo: PinnedRepository, agentId: string): Promise<void> {
-  const identity = record(await client.entity({
-    action: "resolve_identity", identity: { namespace: "external.code", key_version: 1,
-      key: repositoryIdentityKey({ repoId: repo.repo_id, repoRoot: repo.root }) }, agent_id: agentId,
-  }));
-  if (identity.status === "absent") { io.out("No durable work has been linked to this repository yet."); return; }
-  if (identity.status !== "existing" || typeof identity.uid !== "string" || !identity.uid) throw new Error("Could not resolve this repository's MindGraph identity.");
-  const brief = record(await client.plan({ action: "resume_work", scope_uids: [identity.uid], limit: 1, agent_id: agentId }));
+  const uidOfRepo = await projectIdentity(client, repo.root, repo.repo_id, agentId);
+  if (!uidOfRepo) { io.out("No durable work has been linked to this repository yet."); return; }
+  const brief = record(await client.plan({ action: "resume_work", scope_uids: [uidOfRepo], limit: 1, agent_id: agentId }));
   if (brief.status === "no_eligible_work") { io.out("No eligible work in this repository."); return; }
   const { uid, label } = record(brief.task);
   if (typeof uid !== "string" || !/^[A-Za-z0-9_.:-]+$/.test(uid) ||
-      !Array.isArray(brief.task_scope_uids) || !brief.task_scope_uids.includes(identity.uid)) {
+      !Array.isArray(brief.task_scope_uids) || !brief.task_scope_uids.includes(uidOfRepo)) {
     throw new Error("The server did not return a task verified for this repository.");
   }
   io.out(display(renderResumeContext(brief, 6000) ?? "No work brief available."));
@@ -172,7 +168,7 @@ async function resume(io: DesktopIo, client: MindGraph, repo: PinnedRepository, 
   checkProject(repo, io);
   if (action === "Open a referenced file") return openTarget(io, client, repo, targets);
   if (action === "Recall the project rationale") return recall(io, client, repo);
-  const prompt = `Use MindGraph to read task ${uid} in this repository. Summarize its next step, rationale, and blockers for me.`;
+  const prompt = `Use mindgraph_plan resume_work with scope_uids [${JSON.stringify(uidOfRepo)}] in this checkout. Verify the returned task UID is ${uid} before summarizing it. Summarize its next step, rationale, and blockers for me.`;
   execFileSync("omarchy", ["agent", "prompt", "--inline", prompt], { cwd: repo.root, stdio: "inherit" });
 }
 
@@ -185,10 +181,152 @@ async function recall(io: DesktopIo, client: MindGraph, repo: PinnedRepository):
   io.out(display(renderContext(result, 6000) ?? "No matching records in this Space."));
 }
 
+async function disconnectDesktop(io: DesktopIo): Promise<void> {
+  humanSetup(io);
+  const status = desktopConnectionStatus(io.env, CLOUD_API);
+  const saved = connection(io);
+  const hasSaved = status.connected || Boolean(saved.apiKey || saved.orgId || saved.baseUrl !== CLOUD_API);
+  if (!hasSaved) {
+    io.out("MindGraph is already disconnected on this desktop.");
+    return;
+  }
+  if ((await io.ask("Disconnect MindGraph on this desktop? Local repository exclusions will be preserved. [y/N] ")).trim().toLowerCase() !== "y") {
+    return;
+  }
+  checkConnection(io, saved);
+  const revoked = await revokeDeviceAuth(io.env);
+  const configDir = mindgraphConfigDir(io.env).dir;
+  updateHookConfig(raw => {
+    delete raw.apiKey;
+    delete raw.orgId;
+    delete raw.baseUrl;
+  }, { dir: configDir, env: io.env });
+  clearShellRuntimeState(io.env);
+  fs.rmSync(path.join(mindgraphRuntimeDir(io.env), "hook-health.json"), { force: true });
+  // Notify any running Omarchy shell daemon over its local Unix socket to wipe live widgets.
+  try {
+    await queryShellDaemon(shellSocketPath(io.env), { id: "disconnect", method: "disconnect" }, 1500);
+  } catch {
+    // Daemon not running — local disk caches are already cleared above.
+  }
+  if (revoked.remoteRevoked) {
+    io.out("Disconnected locally and revoked device access remotely. Subsequent desktop-managed requests are stopped.");
+  } else {
+    io.out("Disconnected locally. Subsequent desktop-managed requests are stopped. If a device grant is still active remotely, revoke it in Connected apps.");
+  }
+}
+
+async function runWidgets(rest: string[], io: DesktopIo): Promise<void> {
+  const refusal = evalHomeRefusal(io.env);
+  if (refusal) throw new Error(refusal);
+  let prefs = loadWidgetPreferences(io.env);
+  const validKinds = new Set<string>(WIDGET_KINDS);
+  if (rest.length > 0) {
+    let asJson = false;
+    let mutated = false;
+    const enabled = new Set<WidgetKind>(prefs.enabledWidgets);
+    let notify = prefs.notifyBlockers;
+    for (let i = 0; i < rest.length; i += 1) {
+      const flag = rest[i];
+      if (flag === "--json") {
+        asJson = true;
+      } else if (flag === "--notify") {
+        notify = true;
+        mutated = true;
+      } else if (flag === "--mute") {
+        notify = false;
+        mutated = true;
+      } else if (flag === "--enable" || flag === "--disable") {
+        const kind = rest[++i];
+        if (!kind || !validKinds.has(kind)) {
+          throw new Error(`Unknown widget "${kind ?? ""}". Choose from: ${WIDGET_KINDS.join(", ")}.`);
+        }
+        if (flag === "--enable") enabled.add(kind as WidgetKind);
+        else enabled.delete(kind as WidgetKind);
+        mutated = true;
+      } else {
+        throw new Error("Usage: mindgraph-mcp desktop widgets [--json] [--enable <kind>] [--disable <kind>] [--notify|--mute]");
+      }
+    }
+    if (mutated) {
+      prefs = saveWidgetPreferences({ enabledWidgets: [...enabled], notifyBlockers: notify }, io.env);
+    }
+    if (asJson) {
+      io.out(JSON.stringify(prefs));
+    } else {
+      io.out(`Widgets: ${prefs.enabledWidgets.length ? prefs.enabledWidgets.join(", ") : "none"} · Blocker alerts: ${prefs.notifyBlockers ? "on" : "muted"}`);
+    }
+    return;
+  }
+  if (!io.stdin.isTTY || !io.stdout.isTTY) {
+    io.out(JSON.stringify(prefs));
+    return;
+  }
+  humanSetup(io);
+  const options = [
+    ...WIDGET_KINDS.map(kind => `${prefs.enabledWidgets.includes(kind) ? "[x]" : "[ ]"} ${kind}`),
+    `${prefs.notifyBlockers ? "[x]" : "[ ]"} Blocker desktop notifications`,
+  ];
+  const chosen = await pick(io, options, s => s, "Toggle a desktop widget or interruption setting");
+  if (!chosen) return;
+  const idx = options.indexOf(chosen);
+  if (idx === WIDGET_KINDS.length) {
+    prefs = saveWidgetPreferences({ enabledWidgets: prefs.enabledWidgets, notifyBlockers: !prefs.notifyBlockers }, io.env);
+  } else {
+    const kind = WIDGET_KINDS[idx];
+    const next = prefs.enabledWidgets.includes(kind)
+      ? prefs.enabledWidgets.filter(k => k !== kind)
+      : [...prefs.enabledWidgets, kind];
+    prefs = saveWidgetPreferences({ enabledWidgets: next, notifyBlockers: prefs.notifyBlockers }, io.env);
+  }
+  io.out(`Saved widgets: ${prefs.enabledWidgets.length ? prefs.enabledWidgets.join(", ") : "none"} · Blocker alerts: ${prefs.notifyBlockers ? "on" : "muted"}`);
+}
+
 export async function runDesktop(args: string[], io: DesktopIo): Promise<void> {
-  const [action] = args;
-  if (args.length !== 1 || !["install-menu", "uninstall-menu", "remember", "recall", "resume"].includes(action)) {
-    throw new Error("Usage: mindgraph-mcp desktop install-menu|uninstall-menu|remember|recall|resume");
+  const [action, ...rest] = args;
+  const validActions = ["install-menu", "uninstall-menu", "setup", "remember", "recall", "resume", "disconnect", "status", "dashboard", "widgets", "shell-daemon"];
+  const validStatusArgs = action === "status" && (rest.length === 0 || (rest.length === 1 && rest[0] === "--json"));
+  const allowsRest = action === "status" || action === "widgets";
+  if (!validActions.includes(action) || (!allowsRest && rest.length !== 0) || (action === "status" && !validStatusArgs)) {
+    throw new Error("Usage: mindgraph-mcp desktop install-menu|uninstall-menu|setup|remember|recall|resume|disconnect|status [--json]|dashboard|widgets|shell-daemon");
+  }
+  if (action === "widgets") return runWidgets(rest, io);
+  if (action === "shell-daemon") {
+    const refusal = evalHomeRefusal(io.env);
+    if (refusal) throw new Error(refusal);
+    const daemon = createShellDaemon({ env: io.env });
+    await daemon.start();
+    io.out(`MindGraph shell daemon listening on ${daemon.socketPath}`);
+    await new Promise<void>(resolve => {
+      const stop = () => { void daemon.stop().finally(resolve); };
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+    });
+    return;
+  }
+  if (action === "status") {
+    const refusal = evalHomeRefusal(io.env);
+    if (refusal) throw new Error(refusal);
+    const status = desktopConnectionStatus(io.env, CLOUD_API);
+    if (rest[0] === "--json") {
+      io.out(JSON.stringify(status));
+    } else {
+      io.out(status.connected ? `connected (${status.authMode})` : "signed_out");
+    }
+    return;
+  }
+  if (action === "dashboard") {
+    const refusal = evalHomeRefusal(io.env);
+    if (refusal) throw new Error(refusal);
+    const status = desktopConnectionStatus(io.env, CLOUD_API);
+    if (!status.connected) {
+      io.out("MindGraph is signed out. Connect MindGraph from the Omarchy menu first.");
+      return;
+    }
+    const url = `${(status.dashboardUrl || "https://mindgraph.cloud").replace(/\/+$/, "")}/dashboard`;
+    openBrowser(url);
+    io.out(printable(url));
+    return;
   }
   if (action.endsWith("-menu")) {
     const refusal = evalAppConfigRefusal("Omarchy", io.env);
@@ -197,22 +335,56 @@ export async function runDesktop(args: string[], io: DesktopIo): Promise<void> {
     return;
   }
   if (!io.stdin.isTTY || !io.stdout.isTTY) throw new Error("Open a terminal for the desktop project picker.");
-  if (io.env.MINDGRAPH_HOOKS === "off") throw new Error("MindGraph is paused (MINDGRAPH_HOOKS=off).");
   const refusal = evalHomeRefusal(io.env);
   if (refusal) throw new Error(refusal);
+  if (action === "disconnect") return disconnectDesktop(io);
+  if (io.env.MINDGRAPH_HOOKS === "off") throw new Error("MindGraph is paused (MINDGRAPH_HOOKS=off).");
   const projects = listProjects(io);
-  if (!projects.length) throw new Error("No enabled repositories. Run mindgraph-mcp on --space space:project:NAME in your repository first.");
-  const repo = await pick(io, projects, r => displayPath(r.root), "Choose a project");
+  let saved = connection(io);
+  const firstRun = !projects.length || (!saved.apiKey && !isLoopbackUrl(saved.baseUrl));
+  if (firstRun || action === "setup") {
+    const next = await setupConnection(io, saved);
+    if (!next) return;
+    saved = next;
+  }
+  const initialIo = io;
+  io = { ...io, checkConnection: () => checkConnection(initialIo, saved) };
+  const client = graphClient(saved, io.env);
+  let repo: PinnedRepository | undefined;
+  if (action === "setup" && projects.length) {
+    const options = ["Link a project", "Configure coding applications", "Automatic reconnect", "Disconnect"];
+    const choice = await pick(io, options, s => s, "Desktop settings");
+    if (!choice) return;
+    if (choice === options[3]) return disconnectDesktop(io);
+    if (choice === options[2]) return reconnectPreference(io);
+    if (choice === options[1]) {
+      const project = await pick(io, projects, r => displayPath(r.root), "Use which checkout?");
+      if (project) await configureSelectedAgents(io, saved, project);
+      return;
+    }
+  }
+  if (!projects.length || action === "setup") {
+    repo = await linkProject(io, saved, client);
+  } else {
+    const current = sessionConsent(io.cwd || process.cwd(), io.env);
+    if (current.state === "on" && current.reason === "reconnected" && current.repo) projects.unshift(current.repo);
+    repo = await pick(io, projects, r => displayPath(r.root), "Choose a project");
+    if (repo && !repo.space_uid && action !== "resume") repo = await linkProject(io, saved, client, repo.root);
+  }
   if (!repo) return;
   checkProject(repo, io);
-  const stored = loadHookEnv(mindgraphConfigDir(io.env).dir);
-  const baseUrl = assertEvalBaseUrl(stored.baseUrl || "https://api.mindgraph.cloud", io.env);
-  if (!stored.apiKey && !isLoopbackUrl(baseUrl)) throw new Error("Save your connection with mindgraph-mcp install-hooks first.");
-  io.out(printable(`${repo.repo_id} · ${baseUrl} · ${stored.orgId || "default organization"}${repo.space_uid ? " · " + repo.space_uid : ""}`));
-  const client = new MindGraph({ baseUrl, apiKey: stored.apiKey, orgId: stored.orgId, maxRetries: 0, timeoutMs: 15000 });
+  if (firstRun || action === "setup") {
+    await reconnectPreference(io);
+    try {
+      await configureAgent(io, saved, repo);
+    } catch (error) {
+      io.out(printable(`Agent setup needs attention: ${error instanceof Error ? error.message : String(error)}`));
+    }
+  }
+  io.out(printable(`${repo.repo_id} · ${new URL(saved.baseUrl).host} · ${saved.orgId || "default organization"}${repo.space_uid ? " · " + repo.space_uid : ""}`));
   switch (action) {
     case "remember": return remember(io, client, repo);
     case "recall": return recall(io, client, repo);
-    case "resume": return resume(io, client, repo, io.env.MINDGRAPH_AGENT_ID || stored.agentId || stableAgentId());
+    case "resume": return resume(io, client, repo, saved.agentId);
   }
 }

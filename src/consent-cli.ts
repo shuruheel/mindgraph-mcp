@@ -1,8 +1,9 @@
+import { sessionConsent } from "./session-consent.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { requireHumanTerminal } from "./agent-shell.js";
-import { evalHomeRefusal, evalMode } from "./eval-guard.js";
+import { evalHomeRefusal, evalMode, isLoopbackUrl } from "./eval-guard.js";
 import {
   loadConsentStore,
   nodeConsentFs,
@@ -65,6 +66,8 @@ export interface ConsentIo {
   /** Called between the plan and the write, after the person confirmed.
    * Tests use it to change files while "the person is reading". */
   beforeWrite?: () => void;
+  /** Desktop provisioning after the human approves, before the local pin is saved. */
+  prepareRepository?: (repo: PinnedRepository) => Promise<void>;
   /** Refresh the hook runner and the user-scope hook entries before consent
    * is written; returns a line to print, if any. Unset in tests, so a test
    * never touches the real runner. */
@@ -221,7 +224,7 @@ export function cardBody(
         ? "  Never: file contents or command output."
         : "  Never: your prompts, file contents, or command output.",
   );
-  if (!stored.apiKey) {
+  if (!stored.apiKey && !isLoopbackUrl(baseUrl)) {
     lines.push(
       `  No API key is saved for the hooks yet, so they send nothing until you run ${COMMAND} install-hooks.`,
     );
@@ -382,6 +385,7 @@ export async function runOn(target: string | undefined, io: ConsentIo, spaceUid?
   }
   const current = resolveConsent(plan.target, loaded, { env: resolutionEnv(io.env) });
   if (
+    !io.prepareRepository &&
     current.state === "on" &&
     current.root === plan.root &&
     (plan.kind === "repo" || current.repo !== undefined) &&
@@ -411,6 +415,7 @@ export async function runOn(target: string | undefined, io: ConsentIo, spaceUid?
       repo_id: resolveRepositoryId(plan.root, undefined, git),
       space_uid: spaceUid ?? null,
     };
+    await io.prepareRepository?.(repository);
     entry = {
       root: plan.root,
       kind: "repo",
@@ -608,13 +613,16 @@ export async function runOff(target: string | undefined, io: ConsentIo): Promise
     return 1;
   }
   const directory = path.resolve(io.cwd, target ?? ".");
-  const decision = resolveConsent(directory, loaded, { env: resolutionEnv(io.env) });
+  const decision = sessionConsent(directory, resolutionEnv(io.env), loaded);
   const action = offTarget(directory, decision, loaded);
   const refreshed = io.refreshRunner?.();
   if (refreshed) io.out(refreshed);
   try {
     writeConsent(
       (store) => {
+        if (decision.state === "on" && store.reconnectSiblings && decision.kind === "repo") {
+          store.reconnectExcluded = [...new Set([...(store.reconnectExcluded ?? []), decision.root])];
+        }
         if (!action) return;
         if (action.unpin) {
           const entry = store.roots.find((r) => r.root === action.entry.root);
@@ -632,6 +640,10 @@ export async function runOff(target: string | undefined, io: ConsentIo): Promise
     return 1;
   }
   if (!action) {
+    if (decision.state === "on" && decision.reason === "reconnected") {
+      io.out("Automatic reconnect is off for this checkout.");
+      return 0;
+    }
     io.out("MindGraph is already off here.");
     if (decision.state === "off" && decision.root) {
       io.out(
@@ -666,7 +678,7 @@ const OFF_REASON: Partial<Record<string, string>> = {
 /** The consent block that `status` starts with. */
 export function consentStatusLines(cwd: string, env: NodeJS.ProcessEnv = process.env): string[] {
   const loaded = loadConsentStore(env);
-  const decision = resolveConsent(cwd, loaded, { env });
+  const decision = sessionConsent(cwd, env, loaded);
   const lines: string[] = [];
   const problem = storeProblem(loaded);
   if (problem) {
@@ -679,7 +691,7 @@ export function consentStatusLines(cwd: string, env: NodeJS.ProcessEnv = process
         ? `workspace ${entry?.workspace_id ?? path.basename(decision.root)} (${displayPath(decision.root)})${decision.repo ? `, repository ${path.basename(decision.repo.root)}` : ", the root itself"}`
         : `repository ${displayPath(decision.root)} (${decision.repo?.repo_id ?? "?"})`;
     lines.push(
-      `MindGraph is on in this directory: ${where}${decision.reason === "consented_worktree" ? ", through a worktree of it" : ""}, space ${decision.space_uid ?? "(none yet)"}.${when ? ` Turned on ${when}.` : ""}`,
+      `MindGraph is on in this directory: ${where}${decision.reason === "consented_worktree" ? ", through a worktree of it" : decision.reason === "reconnected" ? ", automatically reconnected by Git origin" : ""}, space ${decision.space_uid ?? "(none yet)"}.${when ? ` Turned on ${when}.` : ""}`,
     );
   } else if (decision.state === "needs_reapproval") {
     const root = decision.root ?? cwd;

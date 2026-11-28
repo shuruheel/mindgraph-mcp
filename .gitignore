@@ -6,3 +6,6 @@ dist/
 
 # CodeGraph index (local, per-machine)
 .codegraph/
+
+# Locally built Arch package
+/packaging/omarchy/out/

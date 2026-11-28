@@ -67,24 +67,26 @@ Or drop this into your Claude Desktop config by hand (`~/Library/Application Sup
 
 ## Omarchy desktop
 
-Open **MindGraph** from the Omarchy menu to save an excerpt, search project memory, or resume work in the default coding agent. Each action opens a terminal project picker. The picker uses the same enabled repositories and saved connection as the coding hooks.
+Open **Super + Space → MindGraph** to save an excerpt, search project memory, or resume work in your default coding agent. MindGraph Cloud is the default. The desktop needs no local HTTP service.
 
-From a checkout containing the desktop commands, build and install the CLI with Node.js 20 or later. Use a user-writable npm prefix on your desktop PATH.
+### Install on Omarchy
 
-```bash
-npm ci
-npm run build
-npm install --global "$(npm pack --silent)"
-mindgraph-mcp desktop install-menu
-```
-
-If you already use the coding hooks, the desktop picks up their API key, server URL, and organization from your MindGraph settings. For a new Claude Code setup, set `MINDGRAPH_API_KEY` in your terminal and run `mindgraph-mcp install-code --hooks`. For a local server set `MINDGRAPH_BASE_URL` during setup. A loopback server that accepts unauthenticated requests also works with `mindgraph-mcp install-hooks --harness codex --scope user --base-url http://127.0.0.1:18790`. For agent handoff, register MindGraph in the chosen agent against the same server and organization. See the Codex setup below if you use Codex. Choose the agent in Omarchy under **Setup → Defaults → Agent**.
-
-From a standalone repository, run the following once with the Space you want to use. An existing workspace can use the `space_uid` on each repository in its `.mindgraph/workspace.json` and the usual workspace-root `mindgraph-mcp on` flow.
+From this checkout, run the installer as your regular desktop user. It uses Node.js 20 or later, npm, and Arch’s `makepkg` to build the locked runtime, installs it with pacman, and adds the entries to your personal Omarchy menu.
 
 ```bash
-mindgraph-mcp on --space space:project:display
+./packaging/omarchy/install
 ```
+
+To write a package to `packaging/omarchy/out/` for another machine, use `./packaging/omarchy/install --build-only`. After installing the package there, open **MindGraph** from Apps to set up the user's menu and connection. For an existing npm-based installation, build with `npm ci && npm run build`, install the result with `npm install --global "$(npm pack --silent)"`, and run `mindgraph-mcp desktop install-menu` to upgrade the menu.
+
+### Connect and link a checkout
+
+1. Choose **Remember this**, **Recall**, or **Resume project**. On first use, choose **Connect to MindGraph Cloud** and approve the desktop in your browser, or use an existing saved connection. For a self-hosted instance, **Connect to a custom server** accepts its URL and a hidden API key. Setup verifies graph access before saving the connection in the owner-only user settings.
+2. Choose a checkout from the local list or enter its folder. Approve looking up its Git origin in the selected organization. For an existing repository anchor, setup shows the current task when available and puts its Space first. Choose a Space by name or create one, then review and approve the checkout. Existing workspace mappings are reused. You return to the action you originally selected.
+3. Choose how future coding sessions should behave. **Enable automatic reconnect** allows another standalone checkout directly alongside an approved checkout to use the same Space when their Git origins match. Enable this for folders where you trust the sibling checkouts. Each new machine starts with its own approvals. Different origins and workspace changes require review. `mindgraph-mcp off` disables a reconnected checkout.
+4. Setup detects Omarchy's default coding agent. For **Claude Code** and **Codex**, it can add a user-scoped `mindgraph-desktop` MCP registration and lifecycle hooks. This registration reads the saved connection at launch. Setup starts its command in the selected checkout and verifies the repository-scoped work brief, including the task UID if one exists. Review new Codex hooks with `/hooks` in Codex. For another agent, register its MindGraph coding tools before handoff.
+
+Use **Set up MindGraph** to link another checkout, check or replace the connection, change the reconnect preference, or retry agent setup. The desktop and its registered coding server use the cloud API directly. A browser sign-in for a hosted MCP connector in another app remains specific to that app.
 
 | Menu action | What you can do |
 | --- | --- |
