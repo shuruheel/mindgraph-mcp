@@ -225,3 +225,85 @@ export function dismissBlockerAlert(
     dismissedEpisodes: [...dismissed],
   };
 }
+
+export interface OmarchyBarStatus {
+  text: string;
+  tooltip: string;
+  class: "signed-out" | "idle" | "attention" | "blocker";
+  alt: "signed-out" | "idle" | "attention" | "blocker";
+  connected: boolean;
+  activeBlockers: number;
+  pausedBlockers: number;
+  pendingDecisions: number;
+}
+
+/**
+ * Format cached shell-daemon widget summaries into a Waybar / omarchy-shell
+ * custom-module JSON payload (`{ text, tooltip, class, alt, ... }`).
+ * Only active-lane stopped blockers trigger the `blocker` alert class; paused-lane
+ * blockers remain visible in tooltip without inflating active urgency.
+ */
+export function formatBarStatus(opts: {
+  connected: boolean;
+  blockers?: BlockerSummary[];
+  decisionsCount?: number;
+  lanesCount?: number;
+}): OmarchyBarStatus {
+  if (!opts.connected) {
+    return {
+      text: "MindGraph",
+      tooltip: "MindGraph is signed out — open Omarchy menu to connect.",
+      class: "signed-out",
+      alt: "signed-out",
+      connected: false,
+      activeBlockers: 0,
+      pausedBlockers: 0,
+      pendingDecisions: 0,
+    };
+  }
+  const open = (opts.blockers ?? []).filter((b) => b.work_state !== "resolved");
+  const activeBlockers = open.filter(
+    (b) => b.work_state === "stopped" && b.lane_state === "active",
+  );
+  const pausedBlockers = open.filter((b) => b.lane_state === "suspended");
+  const pendingDecisions = Math.max(0, opts.decisionsCount ?? 0);
+
+  if (activeBlockers.length > 0) {
+    const first = activeBlockers[0];
+    return {
+      text: `MindGraph · ${activeBlockers.length} blocked`,
+      tooltip: `Needs you: ${first.question}${pausedBlockers.length ? ` (+${pausedBlockers.length} paused)` : ""}`,
+      class: "blocker",
+      alt: "blocker",
+      connected: true,
+      activeBlockers: activeBlockers.length,
+      pausedBlockers: pausedBlockers.length,
+      pendingDecisions,
+    };
+  }
+  if (pendingDecisions > 0) {
+    return {
+      text: `MindGraph · ${pendingDecisions} to review`,
+      tooltip: `${pendingDecisions} story decision(s) waiting for your approval.`,
+      class: "attention",
+      alt: "attention",
+      connected: true,
+      activeBlockers: 0,
+      pausedBlockers: pausedBlockers.length,
+      pendingDecisions,
+    };
+  }
+  return {
+    text: "MindGraph",
+    tooltip:
+      pausedBlockers.length > 0
+        ? `Connected · ${pausedBlockers.length} blocker(s) in paused lane(s).`
+        : `Connected · ${opts.lanesCount ?? 0} lane(s) active.`,
+    class: "idle",
+    alt: "idle",
+    connected: true,
+    activeBlockers: 0,
+    pausedBlockers: pausedBlockers.length,
+    pendingDecisions: 0,
+  };
+}

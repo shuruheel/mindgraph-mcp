@@ -9,7 +9,7 @@ import { configureAgent, configureSelectedAgents } from "./desktop-agent.js";
 import { CLOUD_API, checkConnection, connection, graphClient, humanSetup, linkProject, pick, projectIdentity, reconnectPreference, record, setupConnection, type DesktopIo } from "./desktop-setup.js";
 import { desktopConnectionStatus, revokeDeviceAuth } from "./device-auth.js";
 import { mindgraphConfigDir, mindgraphRuntimeDir, updateHookConfig } from "./hook-env.js";
-import { clearShellRuntimeState, loadWidgetPreferences, saveWidgetPreferences, WIDGET_KINDS, type WidgetKind } from "./shell-widgets.js";
+import { clearShellRuntimeState, formatBarStatus, loadWidgetPreferences, saveWidgetPreferences, WIDGET_KINDS, type BlockerSummary, type WidgetKind } from "./shell-widgets.js";
 import { createShellDaemon, queryShellDaemon, shellSocketPath } from "./shell-daemon.js";
 import { sessionConsent } from "./session-consent.js";
 import { loadConsentStore, pathContains, resolveConsent, type PinnedRepository } from "./consent.js";
@@ -284,11 +284,37 @@ async function runWidgets(rest: string[], io: DesktopIo): Promise<void> {
 
 export async function runDesktop(args: string[], io: DesktopIo): Promise<void> {
   const [action, ...rest] = args;
-  const validActions = ["install-menu", "uninstall-menu", "setup", "remember", "recall", "resume", "disconnect", "status", "dashboard", "widgets", "shell-daemon"];
-  const validStatusArgs = action === "status" && (rest.length === 0 || (rest.length === 1 && rest[0] === "--json"));
-  const allowsRest = action === "status" || action === "widgets";
-  if (!validActions.includes(action) || (!allowsRest && rest.length !== 0) || (action === "status" && !validStatusArgs)) {
-    throw new Error("Usage: mindgraph-mcp desktop install-menu|uninstall-menu|setup|remember|recall|resume|disconnect|status [--json]|dashboard|widgets|shell-daemon");
+  const validActions = ["install-menu", "uninstall-menu", "setup", "remember", "recall", "resume", "disconnect", "status", "dashboard", "widgets", "shell-daemon", "bar-status"];
+  const validStatusArgs = (action === "status" || action === "bar-status") && (rest.length === 0 || (rest.length === 1 && rest[0] === "--json"));
+  const allowsRest = action === "status" || action === "bar-status" || action === "widgets";
+  if (!validActions.includes(action) || (!allowsRest && rest.length !== 0) || ((action === "status" || action === "bar-status") && !validStatusArgs)) {
+    throw new Error("Usage: mindgraph-mcp desktop install-menu|uninstall-menu|setup|remember|recall|resume|disconnect|status [--json]|bar-status [--json]|dashboard|widgets|shell-daemon");
+  }
+  if (action === "bar-status") {
+    const refusal = evalHomeRefusal(io.env);
+    if (refusal) throw new Error(refusal);
+    const status = desktopConnectionStatus(io.env, CLOUD_API);
+    let blockers: BlockerSummary[] = [];
+    let decisionsCount = 0;
+    let lanesCount = 0;
+    if (status.connected) {
+      try {
+        const res = await queryShellDaemon(shellSocketPath(io.env), { id: "bar", method: "summary" }, 800);
+        if (res.ok && res.result && typeof res.result === "object") {
+          const widgets = (res.result as { widgets?: Record<string, unknown> }).widgets;
+          if (widgets && typeof widgets === "object") {
+            if (Array.isArray(widgets.blockers)) blockers = widgets.blockers as BlockerSummary[];
+            if (Array.isArray(widgets.decisions)) decisionsCount = widgets.decisions.length;
+            if (Array.isArray(widgets.lanes)) lanesCount = widgets.lanes.length;
+          }
+        }
+      } catch {
+        // Daemon not running yet: still report connected idle bar status with zero network I/O.
+      }
+    }
+    const bar = formatBarStatus({ connected: status.connected, blockers, decisionsCount, lanesCount });
+    io.out(rest[0] === "--json" ? JSON.stringify(bar) : bar.text);
+    return;
   }
   if (action === "widgets") return runWidgets(rest, io);
   if (action === "shell-daemon") {

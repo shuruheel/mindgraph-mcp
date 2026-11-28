@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   addExcludedDirectory,
   addExcludedRemote,
+  createCloudRemoteResolver,
   desktopExclusionsPath,
   loadDesktopExclusions,
   loadLocalFoldersStore,
@@ -472,5 +473,40 @@ describe("non-git local folder continuity", () => {
       expect(otherMachineA.localFolderId).not.toBe(firstA.localFolderId);
     }
     expect(resolveRemote).not.toHaveBeenCalled();
+  });
+
+  it("createCloudRemoteResolver calls POST /v1/checkouts/resolve with ONLY normalizedOrigin", async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      expect(Object.keys(body)).toEqual(["normalizedOrigin"]);
+      expect(body.normalizedOrigin).toBe("github.com/Acme/Platform");
+      return new Response(
+        JSON.stringify({
+          status: "matched",
+          orgId: "org-acme",
+          spaceUid: "space:repo:repo-1",
+          repoUid: "repo-1",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const resolver = createCloudRemoteResolver({
+      baseUrl: "https://api.mindgraph.cloud",
+      getAccessToken: () => "tok-desktop",
+      orgId: "org-acme",
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+    const out = await resolver({ normalizedOrigin: "github.com/Acme/Platform" });
+    expect(out).toEqual({
+      status: "matched",
+      orgId: "org-acme",
+      spaceUid: "space:repo:repo-1",
+      repoUid: "repo-1",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.mindgraph.cloud/v1/checkouts/resolve");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer tok-desktop");
   });
 });

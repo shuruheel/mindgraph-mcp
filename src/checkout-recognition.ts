@@ -704,3 +704,63 @@ export async function recognizeCheckout(
       };
   }
 }
+
+export interface CloudRemoteResolverOptions {
+  baseUrl: string;
+  getAccessToken: () => Promise<string> | string;
+  orgId?: string;
+  fetchImpl?: typeof fetch;
+}
+
+/**
+ * Create a `RemoteResolver` backed by `POST /v1/checkouts/resolve` on
+ * `mindgraph-cloud`. Strictly transmits ONLY `{ normalizedOrigin }`.
+ */
+export function createCloudRemoteResolver(
+  options: CloudRemoteResolverOptions,
+): RemoteResolver {
+  const fetchFn = options.fetchImpl ?? globalThis.fetch;
+  const endpoint = `${options.baseUrl.replace(/\/+$/, "")}/v1/checkouts/resolve`;
+
+  return async (input: RemoteLookupInput): Promise<RemoteLookupResult> => {
+    const token = await options.getAccessToken();
+    const res = await fetchFn(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        ...(options.orgId ? { "X-MindGraph-Org": options.orgId } : {}),
+      },
+      body: JSON.stringify({ normalizedOrigin: input.normalizedOrigin }),
+    });
+    if (!res.ok) {
+      throw new Error(`Cloud checkout resolution failed with HTTP ${res.status}`);
+    }
+    const data = (await res.json()) as Record<string, unknown>;
+    if (
+      data.status === "matched" &&
+      typeof data.orgId === "string" &&
+      typeof data.spaceUid === "string"
+    ) {
+      return {
+        status: "matched",
+        orgId: data.orgId,
+        spaceUid: data.spaceUid,
+        repoUid: typeof data.repoUid === "string" ? data.repoUid : data.spaceUid,
+      };
+    }
+    if (data.status === "ambiguous" && typeof data.candidateCount === "number") {
+      return {
+        status: "ambiguous",
+        candidateCount: data.candidateCount,
+      };
+    }
+    if (data.status === "new_identity" && typeof data.spaceUid === "string") {
+      return {
+        status: "new_identity",
+        spaceUid: data.spaceUid,
+      };
+    }
+    throw new Error("Unexpected response payload from /v1/checkouts/resolve");
+  };
+}

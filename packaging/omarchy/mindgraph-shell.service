@@ -1,0 +1,18 @@
+[Unit]
+Description=MindGraph Omarchy Desktop Shell Widget Daemon
+Documentation=https://github.com/shuruheel/mindgraph-mcp
+After=graphical-session.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/mindgraph-mcp desktop shell-daemon
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=mindgraph
+RuntimeDirectoryMode=0700
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=graphical-session.target
